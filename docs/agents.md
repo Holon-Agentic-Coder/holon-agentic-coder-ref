@@ -958,23 +958,23 @@ def score_intent_quality(proposed_intent, agent_id, ledger, kb):
         score += 0.2
     if responds_to_failure(proposed_intent, ledger):
         score += 0.3
-    
+
     # Novelty vs redundancy
     similar_intents = kb.find_similar_intents(proposed_intent.goal)
     if len(similar_intents) == 0:
         score += 0.2  # Novel
     else:
         score -= 0.1  # Redundant
-    
+
     # Agent track record
     agent_trust_score = compute_trust_score(agent_id, ledger)
     score += 0.2 * agent_trust_score
-    
+
     # Predicted EV
     predicted_ev = estimate_intent_ev(proposed_intent, kb, ledger)
     if predicted_ev > 50:
         score += 0.2
-    
+
     return max(0.0, min(1.0, score))
 
 ```
@@ -992,14 +992,14 @@ def approve_intent_proposal(proposed_intent, agent_id, quality_score):
             return "auto_approved"
         else:
             return "human_review_required"
-    
+
     elif agent.trust_level == "highest":
         # Highest trust: auto-approve if quality > 0.5
         if quality_score > 0.5:
             return "auto_approved"
         else:
             return "human_review_required"
-    
+
     else:
         # Lower trust: always require human review
         return "human_review_required"
