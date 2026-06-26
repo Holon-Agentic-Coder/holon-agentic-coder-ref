@@ -41,7 +41,8 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 ## 2) Branch Naming Convention
 
-Every intent uses the `/_` suffix to serve as a terminal leaf node, which prevents naming collisions and enables the creation of a clean, filesystem-like hierarchy for nested sub-intents, plans, and executions.
+Every intent uses the `/_` suffix to serve as a terminal leaf node, which prevents naming collisions and enables the
+creation of a clean, filesystem-like hierarchy for nested sub-intents, plans, and executions.
 
 ### 2.1 Root Intent Branch
 
@@ -83,7 +84,8 @@ I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890391-p-suc
 
 ### 2.4 Plan Branch (Proposal)
 
-Plan branches are created as siblings to the `/_` node within the same intent directory, using a timestamped identifier to allow for multiple competing proposals.
+Plan branches are created as siblings to the `/_` node within the same intent directory, using a timestamped identifier
+to allow for multiple competing proposals.
 
 ```
 I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}
@@ -97,7 +99,8 @@ I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.5
 
 ### 2.5 Execution Branch (Action)
 
-Execution branches are branched off a specific plan, appending the action slug to the plan's path to maintain a strict lineage from intent to proposal to implementation.
+Execution branches are branched off a specific plan, appending the action slug to the plan's path to maintain a strict
+lineage from intent to proposal to implementation.
 
 ```
 I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}
@@ -202,11 +205,11 @@ $ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
 **Process:**
 
 1. Generate review package:
-   - Intent goal and constraints
-   - Predicted vs actual metrics
-   - Diff summary
-   - Test results
-   - Calibration errors
+    - Intent goal and constraints
+    - Predicted vs actual metrics
+    - Diff summary
+    - Test results
+    - Calibration errors
 2. Request human review
 3. Human approves or rejects
 4. If approved, merge to `main`
@@ -429,17 +432,20 @@ main
 ### Merge Flow
 
 1. **Depth 2 → Depth 1** (automatic):
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890391-p-success/_` → `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890392-entropy/_` → `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890393-impact/_` → `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
+    - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890391-p-success/_` →
+      `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
+    - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890392-entropy/_` →
+      `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
+    - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890393-impact/_` →
+      `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
 
 2. **Depth 1 → Root** (automatic):
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_` → `I-1771890389-refactor-metrics/_`
-   - `I-1771890389-refactor-metrics/I-1771890394-add-logging/_` → `I-1771890389-refactor-metrics/_`
-   - `I-1771890389-refactor-metrics/I-1771890395-add-tests/_` → `I-1771890389-refactor-metrics/_`
+    - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_` → `I-1771890389-refactor-metrics/_`
+    - `I-1771890389-refactor-metrics/I-1771890394-add-logging/_` → `I-1771890389-refactor-metrics/_`
+    - `I-1771890389-refactor-metrics/I-1771890395-add-tests/_` → `I-1771890389-refactor-metrics/_`
 
 3. **Root → Main** (human review):
-   - `I-1771890389-refactor-metrics/_` → `main` (after human approval)
+    - `I-1771890389-refactor-metrics/_` → `main` (after human approval)
 
 ---
 
@@ -548,14 +554,15 @@ Even discarded intents provide value:
 ## 12) Summary Table
 
 | Operation                 | Automatic? | Human Review? | Rebase Required?       |
-| ------------------------- | ---------- | ------------- | ---------------------- |
+|---------------------------|------------|---------------|------------------------|
 | Sub-intent → Parent merge | ✓ Yes      | ✗ No          | ✓ Yes (before & after) |
 | Root intent → Main merge  | ✗ No       | ✓ Yes         | ✓ Yes (before)         |
 | Branch creation           | ✓ Yes      | ✗ No          | N/A                    |
 | Conflict resolution       | Attempted  | If fails      | N/A                    |
 | Sub-intent discard        | ✓ Yes      | ✗ No          | N/A                    |
 
-**Key insight:** Human review is only required at the root intent level. All sub-intent merges are automatic and evaluation-based.
+**Key insight:** Human review is only required at the root intent level. All sub-intent merges are automatic and
+evaluation-based.
 
 ---
 
