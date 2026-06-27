@@ -31,7 +31,8 @@ create.
 - **`slug`** (string, required if `branch` is omitted): A short URL-safe identifier for the task.
 - **`description`** (string, optional): A high-level description of what changes are being made.
 - **`goal`** (string, optional): The target objective or test criteria.
-- **`target_branch`** (string, optional): The base branch to check out and fork the new branch from (e.g. `develop`). If omitted, defaults to `main`.
+- **`target_branch`** (string, optional): The base branch to check out and fork the new branch from (e.g. `develop`). If
+  omitted, defaults to `main`.
 
 ### Example (`intent.json`)
 
@@ -55,7 +56,7 @@ Run the following command, replacing `/path/to/intent.json` with the absolute pa
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
-  -v /path/to/intent.json:/tmp/intent.json \
+  -v $(pwd)/intents/intent.json:/tmp/intent.json \
   -v ~/.ssh:/home/holon/.ssh:ro \
   holon/orchestrator
 ```
@@ -78,5 +79,5 @@ docker run --rm \
 Once execution completes, you should verify:
 
 1. A new remote branch has been created: `I-1771890389-refactor-metrics/_`.
-2. The intent is appended to `holon-knowledge/ledger/intents.jsonl` on that branch with status `"proposed"` and a UTC `"created_at"`
-   timestamp.
+2. The intent is appended to `holon-knowledge/ledger/intents.jsonl` on that branch with status `"proposed"` and a UTC
+   `"created_at"` timestamp.

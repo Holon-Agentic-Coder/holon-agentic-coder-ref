@@ -3,9 +3,8 @@
 This directory is used for drafting local intent configuration files (`*.json`) on your host machine before executing
 them in the sandboxed Docker environment.
 
-> [!NOTE]
-> This directory is added to `.gitignore` to prevent draft configurations from being committed. The official, permanent
-> ledger of executed intents is automatically saved and committed inside the repository at
+> [!NOTE] This directory is added to `.gitignore` to prevent draft configurations from being committed. The official,
+> permanent ledger of executed intents is automatically saved and committed inside the repository at
 > `holon-knowledge/ledger/intents.jsonl`.
 
 ## Schema for `intent.json`
@@ -17,7 +16,8 @@ Every intent configuration file must be a JSON object with the following fields:
 - **`slug`** (string, required if `branch` is omitted): A short URL-safe identifier for the task.
 - **`description`** (string, optional): A high-level description of what changes are being made.
 - **`goal`** (string, optional): The target objective or test criteria.
-- **`target_branch`** (string, optional): The base branch to check out and fork the new branch from (e.g. `develop`). If omitted, defaults to `main`.
+- **`target_branch`** (string, optional): The base branch to check out and fork the new branch from (e.g. `develop`). If
+  omitted, defaults to `main`.
 
 ### Example (`intents/refactor-metrics.json`)
 
