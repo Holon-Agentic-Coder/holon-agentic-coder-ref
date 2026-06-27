@@ -69,8 +69,8 @@ goal: |
   }
 ```
 
-*Note: If using this workaround, the host CLI wrapper converts the YAML config to `/tmp/intent.json` on the fly before
-mounting it into the container.*
+_Note: If using this workaround, the host CLI wrapper converts the YAML config to `/tmp/intent.json` on the fly before
+mounting it into the container._
 
 ### Workaround 2: External File Reference
 
