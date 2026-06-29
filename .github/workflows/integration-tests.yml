@@ -1,20 +1,21 @@
-name: CI
+name: Integration Tests
 
 on:
   push:
     branches:
       - main
-      - -develop
+      - develop
   pull_request:
     branches:
       - main
       - develop
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  integration-tests:
     runs-on: ubuntu-latest
 
     steps:
@@ -32,8 +33,11 @@ jobs:
           version: 'latest'
           enable-cache: true
 
-      - name: Run tests
+      - name: Build orchestrator docker image
+        run: |
+          docker build --target holon-orchestrator -t holon/orchestrator ./apps/sandbox-executor
+
+      - name: Run integration tests
         run: |
           uv lock --check
-          uv run pytest -m "not integration_test"
-
+          uv run pytest -m "integration_test"
