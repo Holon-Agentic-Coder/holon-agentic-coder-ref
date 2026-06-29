@@ -57,6 +57,10 @@ USER holon
 FROM holon-base AS agent-hermes
 RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
+# --- Antigravity Agent Layer ---
+FROM holon-base AS agent-antigravity
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+
 # --- Final Orchestrator Image ---
 FROM holon-base AS holon-orchestrator
 
