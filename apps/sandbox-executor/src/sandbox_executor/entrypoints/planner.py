@@ -183,13 +183,10 @@ Include metrics in this format:
 
     binary_name, package_name = agent_mapping.get(agent_id, ("pi", "@mariozechner/pi-coding-agent"))
 
-    if shutil.which(binary_name):
+    if shutil.which(binary_name) or not package_name:
         cmd = [binary_name]
     else:
-        if package_name:
-            cmd = ["npx", "-y", "--package", package_name, binary_name]
-        else:
-            cmd = [binary_name]
+        cmd = ["npx", "-y", "--package", package_name, binary_name]
 
     cmd.extend(["-p", "--model", model_name])
     pi_provider = os.getenv("PI_PROVIDER")
