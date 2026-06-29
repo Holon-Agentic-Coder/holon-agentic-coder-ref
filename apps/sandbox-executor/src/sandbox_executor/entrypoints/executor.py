@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-import os
-import sys
-import json
-import time
 import subprocess
-from datetime import datetime, UTC
+import sys
+
 
 def run_cmd(args, cwd=None, env=None, check=True):
     print(f"Running: {' '.join(args)}")
@@ -16,8 +13,10 @@ def run_cmd(args, cwd=None, env=None, check=True):
         sys.exit(result.returncode)
     return result
 
+
 def main():
     raise Exception("FIXME: not implemented yet")
+
 
 if __name__ == "__main__":
     main()
