@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor.entrypoints import planner
+from sandbox_executor.entrypoint import planner
 
 
+@patch.dict("os.environ", {"GEMINI_API_KEY": "dummy"})
 class TestPlanner(unittest.TestCase):
     def test_get_file_structure(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -51,7 +52,7 @@ class TestPlanner(unittest.TestCase):
     @patch("os.makedirs")
     @patch("shutil.rmtree")
     def test_planner_main(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
-        test_args = ["planner.py", "I-12345/_", "test-agent", "gemini"]
+        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 
         intent_data = {
             "branch": "I-12345",
@@ -142,7 +143,7 @@ class TestPlanner(unittest.TestCase):
     @patch("os.makedirs")
     @patch("shutil.rmtree")
     def test_planner_main_fail_fast(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
-        test_args = ["planner.py", "I-12345/_", "test-agent", "gemini"]
+        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 
         intent_data = {
             "branch": "I-12345",

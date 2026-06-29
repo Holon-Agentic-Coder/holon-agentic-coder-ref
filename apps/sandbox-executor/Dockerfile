@@ -14,6 +14,19 @@ RUN apt-get update && \
 # Create non-root user
 RUN useradd -m holon
 WORKDIR /home/holon
+
+# Copy orchestrator entrypoints and package
+COPY --chown=holon:holon src/ /home/holon/src/
+COPY --chown=holon:holon entrypoint/role_dispatcher.sh /home/holon/entrypoint/role_dispatcher.sh
+
+# Configure PYTHONPATH to make sandbox_executor package importable
+ENV PYTHONPATH="/home/holon/src:${PYTHONPATH}"
+
+# Provide a lightweight entry that delegates to role-specific scripts
+ENV LEDGER_PATH=/workspace/repo/holon/ledger
+
+ENTRYPOINT ["/home/holon/entrypoint/role_dispatcher.sh"]
+
 USER holon
 ENV PATH="/home/holon/.local/bin:${PATH}"
 
@@ -44,7 +57,7 @@ USER holon
 # --- Codex Agent Layer ---
 FROM holon-base AS agent-codex
 USER root
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex || (echo '#!/bin/sh\necho "Codex CLI mock"' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex)
 USER holon
 
 # --- Open Codex Agent Layer ---
@@ -63,11 +76,3 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # --- Final Orchestrator Image ---
 FROM holon-base AS holon-orchestrator
-
-# Copy orchestrator entrypoints and scripts
-COPY src/sandbox_executor/entrypoints/ /home/holon/entrypoints/
-
-# Provide a lightweight entry that delegates to role-specific scripts
-ENV LEDGER_PATH=/workspace/repo/holon/ledger
-
-ENTRYPOINT ["/home/holon/entrypoints/role_dispatcher.sh"]

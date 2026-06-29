@@ -31,7 +31,7 @@ docker run --rm \
   -e HOLON_ROLE=planner \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
   -v $HOME/.ssh:/home/holon/.ssh:ro \
-  holon/orchestrator \
+  holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
   "gemini-2.0-flash"
@@ -45,7 +45,8 @@ docker run --rm \
   you to trust GitHub's host key.
 - **`-v ~/.ssh:/home/holon/.ssh:ro` **: Mounts your host's SSH keys inside the container so it can clone the repository,
   commit files, and push new branches.
-- **`holon/orchestrator`**: The name of the built Docker orchestrator image.
+- **`holon/agent-pi`**: The name of the built Docker image for the chosen agent (e.g., `holon/agent-pi`,
+  `holon/agent-claude`).
 - **Container Arguments:**
   1. **`intent_branch`** (e.g., `"I-1771890389-refactor-metrics/_"`): The target intent branch to branch off from.
   2. **`agent_name`** (e.g., `"pi-agent"`): The name of the planning agent.

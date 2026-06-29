@@ -5,13 +5,13 @@ ROLE="${HOLON_ROLE:-}"
 
 case "$ROLE" in
     intent-creator)
-        exec python3 /home/holon/entrypoints/intent_creator.py "$@"
+        exec python3 -m sandbox_executor.entrypoint.intent_creator "$@"
         ;;
     planner)
-        exec python3 /home/holon/entrypoints/planner.py "$@"
+        exec python3 -m sandbox_executor.entrypoint.planner "$@"
         ;;
     executor)
-        exec python3 /home/holon/entrypoints/executor.py "$@"
+        exec python3 -m sandbox_executor.entrypoint.executor "$@"
         ;;
     *)
         # If no role, allow running arbitrary commands (like ls or bash)
