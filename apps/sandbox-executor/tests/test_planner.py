@@ -101,9 +101,7 @@ class TestPlanner(unittest.TestCase):
 
         def mock_exists_impl(path):
             path_str = str(path)
-            if "intents.jsonl" in path_str or "planner.template.md" in path_str or "plans/P-" in path_str:
-                return True
-            return False
+            return "intents.jsonl" in path_str or "planner.template.md" in path_str or "plans/P-" in path_str
 
         mock_exists.side_effect = mock_exists_impl
         mock_getsize.return_value = 100
@@ -131,7 +129,7 @@ class TestPlanner(unittest.TestCase):
         self.assertTrue(any("git push" in cmd for cmd in called_cmds))
 
         # Check plans.jsonl written
-        plans_file = [k for k in file_contents.keys() if "plans.jsonl" in k][0]
+        plans_file = next(k for k in file_contents if "plans.jsonl" in k)
         plans_mock = file_contents[plans_file]
         plans_mock.write.assert_called()
         plans_entry = json.loads(plans_mock.write.call_args[0][0].strip())
@@ -174,9 +172,7 @@ class TestPlanner(unittest.TestCase):
 
         def mock_exists_impl(path):
             path_str = str(path)
-            if "intents.jsonl" in path_str:
-                return True
-            return False
+            return "intents.jsonl" in path_str
 
         mock_exists.side_effect = mock_exists_impl
         mock_getsize.return_value = 0
