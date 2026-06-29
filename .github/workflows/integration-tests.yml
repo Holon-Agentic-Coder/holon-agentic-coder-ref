@@ -37,16 +37,12 @@ jobs:
         run: |
           docker build --target holon-orchestrator -t holon/orchestrator ./apps/sandbox-executor
 
-      - name: Lint with Ruff
+      - name: Lint and format check with Ruff
         run: |
           uv run ruff check .
-
-      - name: Check formatting with Ruff
-        run: |
           uv run ruff format --check .
 
       - name: Run integration tests
         run: |
           uv lock --check
           uv run pytest -m "integration_test"
-

@@ -32,17 +32,12 @@ jobs:
           version: 'latest'
           enable-cache: true
 
-      - name: Lint with Ruff
+      - name: Lint and format check with Ruff
         run: |
           uv run ruff check .
-
-      - name: Check formatting with Ruff
-        run: |
           uv run ruff format --check .
 
       - name: Run tests
         run: |
           uv lock --check
           uv run pytest -m "not integration_test"
-
-

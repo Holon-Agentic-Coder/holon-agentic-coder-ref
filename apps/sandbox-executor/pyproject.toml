@@ -1,3 +1,4 @@
+# NOTE: When hitting stale code in the virtual machine/environment, perform `uv run task clean` to clean up caches and the virtual environment.
 # NOTE: If we ever need to build artifacts (wheels) for this package, the build system should be hatchling
 # and configured as follows:
 #
