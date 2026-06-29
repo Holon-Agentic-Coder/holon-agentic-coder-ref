@@ -50,7 +50,7 @@ class TestIntentCreator(unittest.TestCase):
         self.assertTrue(any("git commit" in cmd for cmd in called_cmds))
 
         # Check that intents.jsonl was written to
-        written_file_path = [k for k in file_contents.keys() if "intents.jsonl" in k][0]
+        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())
@@ -89,7 +89,7 @@ class TestIntentCreator(unittest.TestCase):
             intent_creator.main()
 
         # Check that intents.jsonl was written to
-        written_file_path = [k for k in file_contents.keys() if "intents.jsonl" in k][0]
+        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())
@@ -176,7 +176,7 @@ class TestIntentCreator(unittest.TestCase):
             intent_creator.main()
 
         # Check that intents.jsonl was written to
-        written_file_path = [k for k in file_contents.keys() if "intents.jsonl" in k][0]
+        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())
