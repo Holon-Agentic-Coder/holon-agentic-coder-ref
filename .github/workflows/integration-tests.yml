@@ -38,6 +38,9 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build all Docker images
         run: |
           ./apps/sandbox-executor/build_all_images.sh
