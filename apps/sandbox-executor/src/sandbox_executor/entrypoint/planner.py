@@ -7,6 +7,8 @@ import sys
 import time
 from datetime import UTC, datetime
 
+from sandbox_executor.agent_runner import get_runner
+
 
 def run_cmd(args, cwd=None, env=None, check=True):
     print(f"Running: {' '.join(args)}")
@@ -74,6 +76,10 @@ def main():
     intent_branch = sys.argv[1]
     agent_name = sys.argv[2]
     model_name = sys.argv[3]
+
+    # Validate agent and environment early before executing any git operations or cloning
+    runner = get_runner(agent_name)
+    runner.validate()
 
     intent_branch_prefix = intent_branch
     if intent_branch_prefix.endswith("/_"):
@@ -169,35 +175,24 @@ Include metrics in this format:
     plan_md_path = os.path.join(repo_dir, plan_md_rel)
     os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 
-    agent_id = agent_name.lower().replace("-agent", "").replace("agent-", "")
-    agent_mapping = {
-        "pi": ("pi", "@mariozechner/pi-coding-agent"),
-        "open-codex": ("open-codex", "open-codex"),
-        "claude": ("claude", "@anthropic-ai/claude-code"),
-        "gemini": ("gemini", "@google/gemini-cli"),
-        "opencode": ("opencode", "opencode-ai"),
-        "codex": ("codex", "@openai/codex"),
-        "hermes": ("hermes", None),
-        "antigravity": ("agy", None),
-    }
+    # Load full prompt content for agents that don't support file-based parameters
+    with open(prompt_file) as f:
+        prompt_content = f.read()
+    with open(intent_file) as f:
+        intent_content = f.read()
+    full_prompt = f"{prompt_content}\n\nIntent metadata:\n{intent_content}"
 
-    binary_name, package_name = agent_mapping.get(agent_id, ("pi", "@mariozechner/pi-coding-agent"))
+    runner = get_runner(agent_name)
+    cmd = runner.build_cmd(model_name, prompt_file, intent_file, full_prompt)
 
-    if shutil.which(binary_name) or not package_name:
-        cmd = [binary_name]
-    else:
-        cmd = ["npx", "-y", "--package", package_name, binary_name]
-
-    cmd.extend(["-p", "--model", model_name])
-    pi_provider = os.getenv("PI_PROVIDER")
-    if pi_provider:
-        cmd.extend(["--provider", pi_provider])
-    pi_api_key = os.getenv("PI_API_KEY")
-    if pi_api_key:
-        cmd.extend(["--api-key", pi_api_key])
-    cmd.extend([f"@{prompt_file}", f"@{intent_file}"])
-
-    print(f"Running command: {' '.join(cmd)}")
+    # Show a truncated print command if the prompt argument is very large
+    print_cmd = []
+    for arg in cmd:
+        if len(arg) > 100:
+            print_cmd.append(arg[:100] + "...")
+        else:
+            print_cmd.append(arg)
+    print(f"Running command: {' '.join(print_cmd)}")
     agent_failed = False
     exit_code = 0
     try:

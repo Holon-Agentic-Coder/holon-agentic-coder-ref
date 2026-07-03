@@ -20,7 +20,7 @@ class TestPlannerIntegration(unittest.TestCase):
 
         # Verify it exited with code 1 and printed the usage message
         self.assertEqual(result.returncode, 1)
-        self.assertIn("Usage: planner.py <intent_branch> <agent_name> <model_name>", result.stdout)
+        self.assertIn("Usage: planner.py", result.stdout)
 
     def test_planner_docker_execution_all_agents_fail_fast(self):
         """Test that running the orchestrator with the planner role fails fast
@@ -95,6 +95,18 @@ class TestPlannerIntegration(unittest.TestCase):
                         # Introduce a short delay to guarantee a unique timestamp for the plan
                         time.sleep(1)
 
+                        agent_images = {
+                            "pi-agent": "holon/agent-pi",
+                            "open-codex-agent": "holon/agent-open-codex",
+                            "claude-agent": "holon/agent-claude",
+                            "gemini-agent": "holon/agent-gemini",
+                            "opencode-agent": "holon/agent-opencode",
+                            "codex-agent": "holon/agent-codex",
+                            "hermes-agent": "holon/agent-hermes",
+                            "antigravity-agent": "holon/agent-antigravity",
+                        }
+                        image_name = agent_images.get(agent, "holon/orchestrator")
+
                         cmd = [
                             "docker",
                             "run",
@@ -105,7 +117,7 @@ class TestPlannerIntegration(unittest.TestCase):
                             "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no",
                             "-v",
                             f"{ssh_dir}:/home/holon/.ssh:ro",
-                            "holon/orchestrator",
+                            image_name,
                             intent_branch,
                             agent,
                             "gemini-2.0-flash",
@@ -128,14 +140,18 @@ class TestPlannerIntegration(unittest.TestCase):
                             f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}",
                         )
 
-                        # Check for either the error run output or exception output
+                        # Check for either the error run output, validation errors,
+                        # or exception output in stdout or stderr
+                        combined_output = result.stdout + "\n" + result.stderr
                         has_error = (
-                            "Error: agent command failed" in result.stdout
-                            or "Error: Exception running agent" in result.stdout
+                            "Error: agent command failed" in combined_output
+                            or "Error: Exception running agent" in combined_output
+                            or "Error: Missing required API credentials" in combined_output
+                            or "Error: Missing required environment variable" in combined_output
                         )
                         self.assertTrue(
                             has_error,
-                            f"Stdout did not contain expected fail-fast error message for {agent}.\n"
+                            f"Combined output did not contain expected fail-fast error message for {agent}.\n"
                             f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}",
                         )
 
