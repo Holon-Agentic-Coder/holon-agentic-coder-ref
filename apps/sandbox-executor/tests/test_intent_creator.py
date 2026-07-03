@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor.entrypoints import intent_creator
+from sandbox_executor.entrypoint import intent_creator
 
 
 class TestIntentCreator(unittest.TestCase):
