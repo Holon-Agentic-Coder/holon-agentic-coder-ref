@@ -19,12 +19,13 @@ members = [
 ]
 
 [tool.uv.sources]
-sandbox-executor = { path = "apps/sandbox-executor" }
+sandbox-executor = { path = "apps/sandbox-executor", editable = true }
 
 [tool.taskipy.tasks]
 clean = 'find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" \) -not -path "*/.venv/*" -exec rm -rf {} + && rm -rf .venv'
 lint = "ruff check ."
-format = "ruff format ."
+format = "ruff format --check ."
+auto-format = "ruff format . && ruff check --fix ."
 
 [tool.pytest.ini_options]
 markers = [

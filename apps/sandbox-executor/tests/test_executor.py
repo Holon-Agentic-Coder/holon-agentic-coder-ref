@@ -2,7 +2,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from sandbox_executor.entrypoints import executor
+from sandbox_executor.entrypoint import executor
 
 
 class TestExecutor(unittest.TestCase):
