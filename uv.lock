@@ -27,7 +27,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "sandbox-executor", directory = "apps/sandbox-executor" }]
+requires-dist = [{ name = "sandbox-executor", editable = "apps/sandbox-executor" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -140,7 +140,7 @@ wheels = [
 [[package]]
 name = "sandbox-executor"
 version = "0.1.0"
-source = { directory = "apps/sandbox-executor" }
+source = { editable = "apps/sandbox-executor" }
 
 [[package]]
 name = "taskipy"
