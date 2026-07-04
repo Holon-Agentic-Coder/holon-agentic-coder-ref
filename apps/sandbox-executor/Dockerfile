@@ -38,50 +38,55 @@ ENTRYPOINT ["/home/holon/entrypoint/role_dispatcher.sh"]
 
 USER holon
 ENV PATH="/home/holon/.local/bin:${PATH}"
+RUN mkdir -p /home/holon/.cache
 
 # --- Claude Agent Layer ---
 FROM holon-base AS agent-claude
 USER root
-RUN npm install -g @anthropic-ai/claude-code
+RUN --mount=type=cache,id=npm-claude,target=/root/.npm \
+    npm install -g @anthropic-ai/claude-code
 USER holon
 
 # --- Gemini Agent Layer ---
 FROM holon-base AS agent-gemini
 USER root
-RUN npm install -g @google/gemini-cli
+RUN --mount=type=cache,id=npm-gemini,target=/root/.npm \
+    npm install -g @google/gemini-cli
 USER holon
 
 # --- OpenCode Agent Layer (opencode) ---
 FROM holon-base AS agent-opencode
 USER root
-RUN npm install -g opencode-ai
+RUN --mount=type=cache,id=npm-opencode,target=/root/.npm \
+    npm install -g opencode-ai
 USER holon
 
 # --- Pi Agent Layer ---
 FROM holon-base AS agent-pi
 USER root
-RUN npm install -g @earendil-works/pi-coding-agent
+RUN --mount=type=cache,id=npm-pi,target=/root/.npm \
+    npm install -g @earendil-works/pi-coding-agent
 USER holon
 
 # --- Codex Agent Layer ---
 FROM holon-base AS agent-codex
 USER root
-RUN npm install -g @openai/codex || (echo '#!/bin/sh\necho "Codex CLI mock"' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex)
+RUN --mount=type=cache,id=npm-codex,target=/root/.npm \
+    (npm install -g @openai/codex || (echo '#!/bin/sh\necho "Codex CLI mock"' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex))
 USER holon
 
 # --- Open Codex Agent Layer ---
 FROM holon-base AS agent-open-codex
 USER root
-RUN npm install -g open-codex
+RUN --mount=type=cache,id=npm-open-codex,target=/root/.npm \
+    npm install -g open-codex
 USER holon
-
-# --- Hermes Agent Layer ---
-FROM holon-base AS agent-hermes
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # --- Antigravity Agent Layer ---
 FROM holon-base AS agent-antigravity
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+RUN --mount=type=cache,id=uv-antigravity,uid=1000,gid=1000,target=/home/holon/.cache/uv \
+    --mount=type=cache,id=npm-antigravity,uid=1000,gid=1000,target=/home/holon/.npm \
+    curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # --- Final Orchestrator Image ---
 FROM holon-base AS holon-orchestrator

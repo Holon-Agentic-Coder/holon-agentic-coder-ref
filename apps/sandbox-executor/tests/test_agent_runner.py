@@ -28,7 +28,6 @@ class TestAgentRunner(unittest.TestCase):
             "gemini": ["gemini", "--model", "gemini-2.0-flash", "-p", "compiled prompt text"],
             "opencode": ["opencode", "run", "--model", "gemini-2.0-flash", "compiled prompt text"],
             "codex": ["codex", "exec", "-m", "gemini-2.0-flash", "compiled prompt text"],
-            "hermes": ["hermes", "-m", "gemini-2.0-flash", "-z", "compiled prompt text"],
             "antigravity": ["agy", "--model", "gemini-2.0-flash", "-p", "compiled prompt text"],
         }
         dummy_env = {
@@ -122,7 +121,6 @@ class TestAgentRunner(unittest.TestCase):
             "gemini": "holon/agent-gemini",
             "opencode": "holon/agent-opencode",
             "codex": "holon/agent-codex",
-            "hermes": "holon/agent-hermes",
             "antigravity": "holon/agent-antigravity",
         }
 

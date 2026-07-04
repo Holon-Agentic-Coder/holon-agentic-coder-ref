@@ -174,16 +174,6 @@ runners = {
         ],
         custom_validator="codex",
     ),
-    "hermes": StandardAgentRunner(
-        "hermes",
-        "hermes",
-        "-m",
-        suffix=["-z"],
-        env_mappings=[
-            EnvMapping("HERMES_PROVIDER", "--provider"),
-        ],
-        required_keys=["OPENAI_API_KEY", "OPENROUTER_API_KEY", "HERMES_API_KEY", "TOGETHER_API_KEY"],
-    ),
     "antigravity": StandardAgentRunner(
         "antigravity",
         "agy",
