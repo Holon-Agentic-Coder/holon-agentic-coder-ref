@@ -14,17 +14,49 @@ Builds all Docker images for the Holon agentic environments (base, agents, and o
 Options:
   -h, --help      Show this help message and exit
   --no-cache      Build Docker images without using the cache (forces fresh packages/dependencies)
+  --output-log    Print all build logs to stdout with timestamps prepended
 EOF
 }
 
 # Check command line arguments
 NO_CACHE_FLAG=""
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  show_help
-  exit 0
-elif [[ "${1:-}" == "--no-cache" ]]; then
-  NO_CACHE_FLAG="--no-cache"
-fi
+OUTPUT_LOG="false"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --no-cache)
+      NO_CACHE_FLAG="--no-cache"
+      shift
+      ;;
+    --output-log)
+      OUTPUT_LOG="true"
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      show_help
+      exit 1
+      ;;
+  esac
+done
+
+# Helper function to print log lines from stdin with timestamps in real-time
+print_log_with_timestamps() {
+  # Check if bash version supports built-in printf %(...)T (introduced in bash 4.2)
+  if [[ "${BASH_VERSINFO[0]}" -gt 4 || ( "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 2 ) ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf "[%(%Y-%m-%d %H:%M:%S)T] %s\n" -1 "$line"
+    done
+  else
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      echo "[$(date +'%Y-%m-%d %H:%M:%S')] $line"
+    done
+  fi
+}
 
 # Helper function to build a single Docker target image
 build_image() {
@@ -51,7 +83,7 @@ build_image() {
   fi
 
   echo "Building $image_tag (target: $target)..."
-  if ! $build_cmd $NO_CACHE_FLAG "${cache_opts[@]}" --target "$target" "${build_args[@]}" -t "$image_tag" "$SCRIPT_DIR" > "$log_file" 2>&1; then
+  if ! $build_cmd $NO_CACHE_FLAG "${cache_opts[@]}" --target "$target" "${build_args[@]}" -t "$image_tag" "$SCRIPT_DIR" 2>&1 | print_log_with_timestamps > "$log_file"; then
     echo "ERROR: Failed to build $image_tag (target: $target)!"
     cat "$log_file"
     rm -f "$log_file"
@@ -59,6 +91,11 @@ build_image() {
   fi
 
   echo "Successfully built $image_tag"
+  if [[ "$OUTPUT_LOG" == "true" ]]; then
+    echo "=== Build log for $image_tag (target: $target) ==="
+    cat "$log_file"
+    echo "=== End build log for $image_tag ==="
+  fi
   rm -f "$log_file"
   return 0
 }

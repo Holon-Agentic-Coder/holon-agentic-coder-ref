@@ -8,8 +8,17 @@
 # --- Base Layer ---
 FROM python:3.13-slim AS holon-base
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates npm nodejs ssh vim && \
+    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Node.js v24.18.0 (multi-architecture support)
+RUN dpkgArch="$(dpkg --print-architecture)" && \
+    case "${dpkgArch##*-}" in \
+      amd64) ARCH='x64';; \
+      arm64) ARCH='arm64';; \
+      *) echo "unsupported architecture"; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-${ARCH}.tar.gz" | tar -xz --strip-components=1 -C /usr/local
 
 # Create non-root user
 RUN useradd -m holon
@@ -20,7 +29,7 @@ COPY --chown=holon:holon src/ /home/holon/src/
 COPY --chown=holon:holon entrypoint/role_dispatcher.sh /home/holon/entrypoint/role_dispatcher.sh
 
 # Configure PYTHONPATH to make sandbox_executor package importable
-ENV PYTHONPATH="/home/holon/src:${PYTHONPATH}"
+ENV PYTHONPATH="/home/holon/src"
 
 # Provide a lightweight entry that delegates to role-specific scripts
 ENV LEDGER_PATH=/workspace/repo/holon/ledger
@@ -51,7 +60,7 @@ USER holon
 # --- Pi Agent Layer ---
 FROM holon-base AS agent-pi
 USER root
-RUN npm install -g @mariozechner/pi-coding-agent
+RUN npm install -g @earendil-works/pi-coding-agent
 USER holon
 
 # --- Codex Agent Layer ---
