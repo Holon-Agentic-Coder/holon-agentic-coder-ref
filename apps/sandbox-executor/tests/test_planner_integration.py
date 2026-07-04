@@ -85,7 +85,6 @@ class TestPlannerIntegration(unittest.TestCase):
                 "gemini-agent",
                 "opencode-agent",
                 "codex-agent",
-                "hermes-agent",
                 "antigravity-agent",
             ]
 
@@ -102,7 +101,6 @@ class TestPlannerIntegration(unittest.TestCase):
                             "gemini-agent": "holon/agent-gemini",
                             "opencode-agent": "holon/agent-opencode",
                             "codex-agent": "holon/agent-codex",
-                            "hermes-agent": "holon/agent-hermes",
                             "antigravity-agent": "holon/agent-antigravity",
                         }
                         image_name = agent_images.get(agent, "holon/orchestrator")
