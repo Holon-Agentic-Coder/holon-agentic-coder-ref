@@ -54,17 +54,17 @@ target "agent-pi" {
 
 This bypasses importing and exporting intermediate base layers to disk, significantly reducing disk I/O.
 
-### 3. Isolated Cache Scopes
+### 3. Unified Cache Scope
 
-Each image is assigned its own remote GHA cache scope:
+The entire project is assigned a single unified remote GHA cache scope (`holon-sandbox-executor`):
 
 ```hcl
-cache-from = CI == "true" ? ["type=gha,scope=agent-pi"] : []
-cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-pi"] : []
+cache-from = CI == "true" ? ["type=gha,scope=holon-sandbox-executor"] : []
+cache-to = CI == "true" ? ["type=gha,mode=max,scope=holon-sandbox-executor"] : []
 ```
 
-This isolates the cache metadata for each target, preventing cache thrashing and enabling concurrent remote cache
-fetches and uploads.
+This ensures BuildKit can match parent (`holon-base`) and child layer metadata correctly, enabling full layer caching
+across targets and preventing cache thrashing.
 
 ---
 
