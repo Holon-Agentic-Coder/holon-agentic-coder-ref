@@ -5,14 +5,14 @@ variable "CI" {
 target "common" {
   context = "apps/sandbox-executor"
   dockerfile = "Dockerfile"
+  cache-from = CI == "true" ? ["type=gha,scope=holon-sandbox-executor"] : []
+  cache-to = CI == "true" ? ["type=gha,mode=max,scope=holon-sandbox-executor"] : []
 }
 
 target "base" {
   inherits = ["common"]
   target = "holon-base"
   tags = ["holon/base"]
-  cache-from = CI == "true" ? ["type=gha,scope=base"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=base"] : []
 }
 
 target "agent-claude" {
@@ -22,8 +22,6 @@ target "agent-claude" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-claude"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-claude"] : []
 }
 
 target "agent-codex" {
@@ -33,8 +31,6 @@ target "agent-codex" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-codex"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-codex"] : []
 }
 
 target "agent-gemini" {
@@ -44,8 +40,6 @@ target "agent-gemini" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-gemini"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-gemini"] : []
 }
 
 target "agent-opencode" {
@@ -55,8 +49,6 @@ target "agent-opencode" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-opencode"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-opencode"] : []
 }
 
 target "agent-open-codex" {
@@ -66,8 +58,6 @@ target "agent-open-codex" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-open-codex"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-open-codex"] : []
 }
 
 target "agent-pi" {
@@ -77,8 +67,6 @@ target "agent-pi" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-pi"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-pi"] : []
 }
 
 target "agent-antigravity" {
@@ -88,8 +76,6 @@ target "agent-antigravity" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=agent-antigravity"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=agent-antigravity"] : []
 }
 
 target "orchestrator" {
@@ -99,8 +85,6 @@ target "orchestrator" {
   contexts = {
     holon-base = "target:base"
   }
-  cache-from = CI == "true" ? ["type=gha,scope=orchestrator"] : []
-  cache-to = CI == "true" ? ["type=gha,mode=max,scope=orchestrator"] : []
 }
 
 group "default" {
