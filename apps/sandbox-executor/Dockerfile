@@ -44,42 +44,42 @@ RUN mkdir -p /home/holon/.cache
 FROM holon-base AS agent-claude
 USER root
 RUN --mount=type=cache,id=npm-claude,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code
+    npm install -g --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.202
 USER holon
 
 # --- Gemini Agent Layer ---
 FROM holon-base AS agent-gemini
 USER root
 RUN --mount=type=cache,id=npm-gemini,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @google/gemini-cli
+    npm install -g --prefer-offline --no-audit --no-fund @google/gemini-cli@0.49.0
 USER holon
 
 # --- OpenCode Agent Layer (opencode) ---
 FROM holon-base AS agent-opencode
 USER root
 RUN --mount=type=cache,id=npm-opencode,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund opencode-ai
+    npm install -g --prefer-offline --no-audit --no-fund opencode-ai@1.17.14
 USER holon
 
 # --- Pi Agent Layer ---
 FROM holon-base AS agent-pi
 USER root
 RUN --mount=type=cache,id=npm-pi,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent
+    npm install -g --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.80.3
 USER holon
 
 # --- Codex Agent Layer ---
 FROM holon-base AS agent-codex
 USER root
 RUN --mount=type=cache,id=npm-codex,target=/root/.npm \
-    (npm install -g --prefer-offline --no-audit --no-fund @openai/codex || (echo '#!/bin/sh\necho "Codex CLI mock"' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex))
+    npm install -g --prefer-offline --no-audit --no-fund @openai/codex@0.142.5
 USER holon
 
 # --- Open Codex Agent Layer ---
 FROM holon-base AS agent-open-codex
 USER root
 RUN --mount=type=cache,id=npm-open-codex,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund open-codex
+    npm install -g --prefer-offline --no-audit --no-fund open-codex@0.1.31
 USER holon
 
 # --- Antigravity Agent Layer ---
