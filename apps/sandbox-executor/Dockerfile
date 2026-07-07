@@ -18,7 +18,8 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
       arm64) ARCH='arm64';; \
       *) echo "unsupported architecture"; exit 1 ;; \
     esac && \
-    curl -fsSL "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-${ARCH}.tar.gz" | tar -xz --strip-components=1 -C /usr/local
+    curl -fsSL "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-${ARCH}.tar.gz" | tar -xz --strip-components=1 -C /usr/local && \
+    npm install -g npm@11.18.0
 
 # Create non-root user
 RUN useradd -m holon
@@ -37,50 +38,42 @@ ENV LEDGER_PATH=/workspace/repo/holon/ledger
 ENTRYPOINT ["/home/holon/entrypoint/role_dispatcher.sh"]
 
 USER holon
-ENV PATH="/home/holon/.local/bin:${PATH}"
+ENV PATH="/home/holon/.local/bin:/home/holon/.local/node_modules/.bin:${PATH}"
 RUN mkdir -p /home/holon/.cache
 
 # --- Claude Agent Layer ---
 FROM holon-base AS agent-claude
-USER root
-RUN --mount=type=cache,id=npm-claude,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.202
-USER holon
+RUN --mount=type=cache,id=npm-claude,uid=1000,gid=1000,target=/home/holon/.npm \
+    echo "allow-scripts=@anthropic-ai/claude-code" > /home/holon/.npmrc && \
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.202
 
 # --- Gemini Agent Layer ---
 FROM holon-base AS agent-gemini
-USER root
-RUN --mount=type=cache,id=npm-gemini,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @google/gemini-cli@0.49.0
-USER holon
+RUN --mount=type=cache,id=npm-gemini,uid=1000,gid=1000,target=/home/holon/.npm \
+    echo "allow-scripts=@github/keytar,node-pty" > /home/holon/.npmrc && \
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @google/gemini-cli@0.49.0
 
 # --- OpenCode Agent Layer (opencode) ---
 FROM holon-base AS agent-opencode
-USER root
-RUN --mount=type=cache,id=npm-opencode,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund opencode-ai@1.17.14
-USER holon
+RUN --mount=type=cache,id=npm-opencode,uid=1000,gid=1000,target=/home/holon/.npm \
+    echo "allow-scripts=opencode-ai" > /home/holon/.npmrc && \
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund opencode-ai@1.17.14
 
 # --- Pi Agent Layer ---
 FROM holon-base AS agent-pi
-USER root
-RUN --mount=type=cache,id=npm-pi,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.80.3
-USER holon
+RUN --mount=type=cache,id=npm-pi,uid=1000,gid=1000,target=/home/holon/.npm \
+    echo "allow-scripts=@google/genai,protobufjs" > /home/holon/.npmrc && \
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.80.3
 
 # --- Codex Agent Layer ---
 FROM holon-base AS agent-codex
-USER root
-RUN --mount=type=cache,id=npm-codex,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund @openai/codex@0.142.5
-USER holon
+RUN --mount=type=cache,id=npm-codex,uid=1000,gid=1000,target=/home/holon/.npm \
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.142.5
 
 # --- Open Codex Agent Layer ---
 FROM holon-base AS agent-open-codex
-USER root
-RUN --mount=type=cache,id=npm-open-codex,target=/root/.npm \
-    npm install -g --prefer-offline --no-audit --no-fund open-codex@0.1.31
-USER holon
+RUN --mount=type=cache,id=npm-open-codex,uid=1000,gid=1000,target=/home/holon/.npm \
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund open-codex@0.1.31
 
 # --- Antigravity Agent Layer ---
 FROM holon-base AS agent-antigravity
