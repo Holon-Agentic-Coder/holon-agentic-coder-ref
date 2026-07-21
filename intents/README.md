@@ -35,11 +35,14 @@ Every intent configuration file must be a JSON object with the following fields:
 To run the Intent Creator with an intent draft from this directory, run the following Docker command from the repository
 root:
 
+> [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
+> `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
+
 ```bash
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
-  -v "$(pwd)/intents/your-intent-file.json:/tmp/intent.json" \
+  -v "$PWD/intents/your-intent-file.json:/tmp/intent.json" \
   -v ~/.ssh:/home/holon/.ssh:ro \
   holon/orchestrator
 ```
