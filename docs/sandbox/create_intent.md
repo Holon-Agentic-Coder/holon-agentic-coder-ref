@@ -50,13 +50,16 @@ create.
 
 ## 2. Execute the Docker Container
 
-Run the following command, replacing `/path/to/intent.json` with the absolute path to the JSON file you created:
+Run the following command, replacing the volume mount path with the path to the JSON file you created.
+
+> [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
+> `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
 
 ```bash
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
-  -v $(pwd)/intents/intent.json:/tmp/intent.json \
+  -v "$PWD/intents/intent.json:/tmp/intent.json" \
   -v ~/.ssh:/home/holon/.ssh:ro \
   holon/orchestrator
 ```
