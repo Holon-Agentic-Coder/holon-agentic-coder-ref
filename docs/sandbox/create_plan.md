@@ -17,7 +17,9 @@ Before running the command, ensure you have:
    ./apps/sandbox-executor/build_all_images.sh
    ```
 2. Set up SSH keys on your host machine configured for GitHub access.
-3. Created an intent branch (e.g., `I-1771890389-refactor-metrics/_`) and registered it in the intent ledger.
+3. Configured SSH keys and ensured your local SSH agent is running and has your keys loaded (i.e., `ssh-add -l` displays
+   your key), as SSH Agent Forwarding inside the container relies on host authentication.
+4. Created an intent branch (e.g., `I-1771890389-refactor-metrics/_`) and registered it in the intent ledger.
 
 ---
 
@@ -26,11 +28,30 @@ Before running the command, ensure you have:
 Run the following command to start the planner container, replacing the branch, agent name, and model name arguments as
 needed:
 
+### For macOS (Docker Desktop)
+
 ```bash
 docker run --rm \
   -e HOLON_ROLE=planner \
-  -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
-  -v $HOME/.ssh:/home/holon/.ssh:ro \
+  -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
+  -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock \
+  holon/agent-pi \
+  "I-1782654790-bootstrap-holon-cli-intent/_" \
+  "pi-agent" \
+  "gemini-2.0-flash"
+```
+
+### For Linux
+
+> [!IMPORTANT] Ensure your `SSH_AUTH_SOCK` environment variable is set and non-empty (e.g., `echo $SSH_AUTH_SOCK` shows
+> a path) before running this command. If it is empty, the bind mount `-v "$SSH_AUTH_SOCK:/run/ssh-agent"` will resolve
+> to a syntax error.
+
+```bash
+docker run --rm \
+  -e HOLON_ROLE=planner \
+  -v "$SSH_AUTH_SOCK:/run/ssh-agent" \
+  -e SSH_AUTH_SOCK=/run/ssh-agent \
   holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
@@ -39,12 +60,12 @@ docker run --rm \
 
 ### Argument Breakdown:
 
-- **`-e HOLON_ROLE=planner`**: Routes the entrypoint call to the Python planner module ( `planner.py`) inside the
+- **`-e HOLON_ROLE=planner`**: Routes the entrypoint call to the Python planner module (`planner.py`) inside the
   container.
-- **`-e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"` **: Prevents the container from pausing to interactively ask
-  you to trust GitHub's host key.
-- **`-v ~/.ssh:/home/holon/.ssh:ro` **: Mounts your host's SSH keys inside the container so it can clone the repository,
-  commit files, and push new branches.
+- **`-v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock` / `-v "$SSH_AUTH_SOCK:/run/ssh-agent"`**:
+  Mounts the host's SSH agent socket into the container to enable SSH Agent Forwarding. This allows the container to
+  authenticate using your host's SSH credentials securely without exposing private key files directly to the container.
+  (The container automatically configures `StrictHostKeyChecking=no` internally).
 - **`holon/agent-pi`**: The name of the built Docker image for the chosen agent (e.g., `holon/agent-pi`,
   `holon/agent-claude`).
 - **Container Arguments:**
