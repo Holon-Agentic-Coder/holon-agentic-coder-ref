@@ -16,6 +16,8 @@ Before running the command, ensure you have:
    ./apps/sandbox-executor/build_all_images.sh
    ```
 2. Set up SSH keys on your host machine configured for GitHub access.
+3. Configured SSH keys and ensured your local SSH agent is running and has your keys loaded (i.e., `ssh-add -l` displays
+   your key), as SSH Agent Forwarding inside the container relies on host authentication.
 
 ---
 
@@ -55,12 +57,29 @@ Run the following command, replacing the volume mount path with the path to the 
 > [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
 > `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
 
+### For macOS (Docker Desktop)
+
 ```bash
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
-  -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
   -v "$PWD/intents/intent.json:/tmp/intent.json" \
-  -v ~/.ssh:/home/holon/.ssh:ro \
+  -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
+  -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock \
+  holon/orchestrator
+```
+
+### For Linux
+
+> [!IMPORTANT] Ensure your `SSH_AUTH_SOCK` environment variable is set and non-empty (e.g., `echo $SSH_AUTH_SOCK` shows
+> a path) before running this command. If it is empty, the bind mount `-v "$SSH_AUTH_SOCK:/run/ssh-agent"` will resolve
+> to a syntax error.
+
+```bash
+docker run --rm \
+  -e HOLON_ROLE=intent-creator \
+  -v "$PWD/intents/intent.json:/tmp/intent.json" \
+  -v "$SSH_AUTH_SOCK:/run/ssh-agent" \
+  -e SSH_AUTH_SOCK=/run/ssh-agent \
   holon/orchestrator
 ```
 
@@ -68,12 +87,12 @@ docker run --rm \
 
 - **`-e HOLON_ROLE=intent-creator`**: Routes the entrypoint call to the Python intent creator module inside the
   container.
-- **`-e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"`**: Prevents the container from pausing to interactively ask
-  you to trust GitHub's host key.
 - **`-v /path/to/intent.json:/tmp/intent.json`**: Mounts your host-defined JSON file into the container at the expected
   path.
-- **`-v ~/.ssh:/home/holon/.ssh:ro`**: Mounts your host's SSH keys inside the container so it can clone the repository
-  and push the new branch.
+- **`-v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock` / `-v "$SSH_AUTH_SOCK:/run/ssh-agent"`**:
+  Mounts the host's SSH agent socket into the container to enable SSH Agent Forwarding. This allows the container to
+  authenticate using your host's SSH credentials securely without exposing private key files directly to the container.
+  (The container automatically configures `StrictHostKeyChecking=no` internally).
 
 ---
 

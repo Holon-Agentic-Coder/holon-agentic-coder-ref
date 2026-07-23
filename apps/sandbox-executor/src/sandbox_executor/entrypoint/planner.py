@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import UTC, datetime
 
-from sandbox_executor.agent_runner import get_runner
+from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -91,7 +91,7 @@ def main():
     os.makedirs(repo_dir, exist_ok=True)
 
     # Clone the repo
-    repo_url = "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git"
+    repo_url = get_repo_url()
     run_cmd(["git", "clone", "--branch", intent_branch, "--single-branch", "--depth", "1", repo_url, "."], cwd=repo_dir)
 
     plan_seq = int(time.time())

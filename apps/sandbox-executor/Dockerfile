@@ -11,6 +11,13 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim && \
     rm -rf /var/lib/apt/lists/*
 
+# Configure SSH globally inside the container to automatically accept host keys
+# NOTE: Disabling StrictHostKeyChecking globally is acceptable for throwaway sandboxes.
+# If this image is reused in a persistent or production environment, it should be
+# hardened by pinning known hosts instead of disabling checking entirely.
+RUN mkdir -p /etc/ssh && \
+    printf "\nHost *\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n" >> /etc/ssh/ssh_config
+
 # Install Node.js v24.18.0 (multi-architecture support)
 RUN dpkgArch="$(dpkg --print-architecture)" && \
     case "${dpkgArch##*-}" in \
