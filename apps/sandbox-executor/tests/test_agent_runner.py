@@ -2,7 +2,7 @@ import subprocess
 import unittest
 
 import pytest
-from sandbox_executor.agent_runner import get_runner, runners
+from sandbox_executor.agent_runner import get_repo_url, get_runner, runners
 
 
 class TestAgentRunner(unittest.TestCase):
@@ -145,3 +145,20 @@ class TestAgentRunner(unittest.TestCase):
                     pass
                 except Exception as e:
                     self.fail(f"Failed to run container for agent {agent_id}: {e}")
+
+
+class TestGetRepoUrl(unittest.TestCase):
+    def test_ssh_agent_forwarding_default(self):
+        """Test that get_repo_url returns the standard SSH URL."""
+        import unittest.mock
+
+        with unittest.mock.patch.dict("os.environ", {}, clear=True):
+            url = get_repo_url()
+            self.assertEqual(url, "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git")
+
+    def test_ssh_agent_forwarding_override(self):
+        """Test that get_repo_url respects the HOLON_REPO_URL environment variable."""
+        import unittest.mock
+
+        with unittest.mock.patch.dict("os.environ", {"HOLON_REPO_URL": "git@github.com:custom/repo.git"}):
+            self.assertEqual(get_repo_url(), "git@github.com:custom/repo.git")

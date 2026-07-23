@@ -32,18 +32,38 @@ Every intent configuration file must be a JSON object with the following fields:
 
 ## How to Run
 
+> [!IMPORTANT] Ensure your local SSH agent is running and has your keys loaded (i.e., `ssh-add -l` displays your key),
+> as SSH Agent Forwarding inside the container relies on host authentication.
+
 To run the Intent Creator with an intent draft from this directory, run the following Docker command from the repository
 root:
 
 > [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
 > `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
 
+### For macOS (Docker Desktop)
+
 ```bash
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
-  -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
   -v "$PWD/intents/your-intent-file.json:/tmp/intent.json" \
-  -v ~/.ssh:/home/holon/.ssh:ro \
+  -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
+  -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock \
+  holon/orchestrator
+```
+
+### For Linux
+
+> [!IMPORTANT] Ensure your `SSH_AUTH_SOCK` environment variable is set and non-empty (e.g., `echo $SSH_AUTH_SOCK` shows
+> a path) before running this command. If it is empty, the bind mount `-v "$SSH_AUTH_SOCK:/run/ssh-agent"` will resolve
+> to a syntax error.
+
+```bash
+docker run --rm \
+  -e HOLON_ROLE=intent-creator \
+  -v "$PWD/intents/your-intent-file.json:/tmp/intent.json" \
+  -v "$SSH_AUTH_SOCK:/run/ssh-agent" \
+  -e SSH_AUTH_SOCK=/run/ssh-agent \
   holon/orchestrator
 ```
 

@@ -192,3 +192,8 @@ def get_runner(agent_name: str) -> AgentRunner:
         print(f"Error: Unsupported agent '{agent_name}'. Supported agents are: {supported}")
         sys.exit(1)
     return runners[agent_id]
+
+
+def get_repo_url() -> str:
+    """Helper to get the repository URL for git operations."""
+    return os.getenv("HOLON_REPO_URL", "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git")
