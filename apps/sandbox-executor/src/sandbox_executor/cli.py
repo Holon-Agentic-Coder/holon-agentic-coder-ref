@@ -193,9 +193,7 @@ def main() -> None:
     if args.command == "intent":
         image_name = "holon/orchestrator"
         sys.exit(
-            run_docker_container(
-                "intent-creator", image_name, [], agent_id="antigravity", intent_file=args.intent_file
-            )
+            run_docker_container("intent-creator", image_name, [], agent_id="antigravity", intent_file=args.intent_file)
         )
 
     elif args.command == "plan":
