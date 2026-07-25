@@ -200,6 +200,114 @@ class TestPlanner(unittest.TestCase):
         finally:
             sys.argv = old_argv
 
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.getsize")
+    @patch("os.makedirs")
+    @patch("shutil.rmtree")
+    def test_planner_main_model_sanitization(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
+        # Test model names with special characters to ensure robust sanitization
+        test_cases = [
+            ("gemini/3.5-flash (Medium) [Special]*?", "gemini_3.5-flash-Medium-Special"),
+            ("gemini..3.5", "gemini.3.5"),
+            (".gemini.pro.", "gemini.pro"),
+            ("gemini 3.5  flash", "gemini-3.5-flash"),
+            ("gemini\t3.5\nflash", "gemini-3.5-flash"),
+            ("a" * 70, "a" * 64),
+            ("a" * 63 + "-extra", "a" * 63),
+            ("*?($", "unknown-model"),
+        ]
+
+        intent_data = {
+            "branch": "I-12345",
+            "intent_id": "I-12345",
+            "description": "Test description",
+            "goal": "Test goal",
+            "entropy_budget": "15.0",
+        }
+
+        def _make_mock_open(intent_data, file_contents):
+            """Factory for mock_open_impl — defined outside the loop to avoid fragile redefinition."""
+
+            def mock_open_impl(file, mode="r", *args, _fc=file_contents, **kwargs):
+                file_str = str(file)
+                if "intents.jsonl" in file_str:
+                    mock_file = MagicMock()
+                    mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
+                    mock_file.__enter__.return_value = mock_file
+                    return mock_file
+                elif "planner.template.md" in file_str:
+                    mock_file = MagicMock()
+                    mock_file.read.return_value = "Template content {intent_json} {plan_id} {safe_model}"
+                    mock_file.__enter__.return_value = mock_file
+                    return mock_file
+                elif "plans/P-" in file_str and "md" in file_str and "r" in mode:
+                    mock_file = MagicMock()
+                    plan_md_content = """# Plan
+
+## Overall Plan Metrics
+
+| metric | value |
+| --- | --- |
+| p_success_pred | 0.8 |
+| entropy_pred | 2.5 |
+| impact_pred | 1.0 |
+| cost_pred | 0.5 |
+| learning_value_pred | 0.5 |
+| ev_pred | 0.6 |
+"""
+                    mock_file.read.return_value = plan_md_content
+                    mock_file.__enter__.return_value = mock_file
+                    return mock_file
+                else:
+                    mock_file = MagicMock()
+                    mock_file.write = MagicMock()
+                    mock_file.__enter__.return_value = mock_file
+                    _fc[file_str] = mock_file
+                    return mock_file
+
+            return mock_open_impl
+
+        def _make_mock_exists():
+            """Factory for mock_exists_impl — defined outside the loop to avoid fragile redefinition."""
+
+            def mock_exists_impl(path):
+                path_str = str(path)
+                return "intents.jsonl" in path_str or "planner.template.md" in path_str or "plans/P-" in path_str
+
+            return mock_exists_impl
+
+        for model_name, expected_safe_model in test_cases:
+            with self.subTest(model_name=model_name):
+                mock_run.reset_mock()
+                test_args = ["planner.py", "I-12345/_", "pi-agent", model_name]
+
+                file_contents = {}
+                mock_exists.side_effect = _make_mock_exists()
+                mock_getsize.return_value = 100
+
+                mock_run_result = MagicMock()
+                mock_run_result.returncode = 0
+                mock_run_result.stdout = "Successful Agent Run Output"
+                mock_run.return_value = mock_run_result
+
+                old_argv = sys.argv
+                sys.argv = test_args
+                try:
+                    with patch("builtins.open", side_effect=_make_mock_open(intent_data, file_contents)):
+                        planner.main()
+                finally:
+                    sys.argv = old_argv
+
+                # Check git branch checkout command — use explicit list assertion for a clear
+                # AssertionError (not StopIteration) when no matching command is found.
+                called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
+                checkout_cmds = [cmd for cmd in called_cmds if "git checkout -b" in cmd]
+                self.assertTrue(checkout_cmds, f"No 'git checkout -b' command found in: {called_cmds}")
+                checkout_cmd = checkout_cmds[0]
+
+                self.assertIn(expected_safe_model, checkout_cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
