@@ -38,7 +38,7 @@ docker run --rm \
   holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
-  "gemini-2.0-flash"
+  "gemini-3.5-flash"
 ```
 
 ### For Linux
@@ -55,7 +55,7 @@ docker run --rm \
   holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
-  "gemini-2.0-flash"
+  "gemini-3.5-flash"
 ```
 
 ### Argument Breakdown:
@@ -71,7 +71,7 @@ docker run --rm \
 - **Container Arguments:**
   1. **`intent_branch`** (e.g., `"I-1771890389-refactor-metrics/_"`): The target intent branch to branch off from.
   2. **`agent_name`** (e.g., `"pi-agent"`): The name of the planning agent.
-  3. **`model_name`** (e.g., `"gemini-2.0-flash"`): The model used for planning.
+  3. **`model_name`** (e.g., `"gemini-3.5-flash"`): The model used for planning.
 
 ---
 
@@ -99,8 +99,10 @@ Once execution completes, you should verify:
 1. A new remote plan branch exists:
    ```bash
    git fetch origin && git branch -r
-   # e.g., origin/I-1771890389-refactor-metrics/P-1772691068-architect-agent-gemini-2.0-flash/_
+   # e.g., origin/I-1771890389-refactor-metrics/P-1772691068-pi-agent-gemini-3.5-flash/_
    ```
+   > [!NOTE] The agent name in the branch and plan identifiers reflects the `agent_name` argument passed to the
+   > container (e.g., `pi-agent`, `claude-agent`, `antigravity-agent`).
 2. The generated plan markdown file is present under `plans/`:
    ```markdown
    # plans/P-{timestamp}-{agent}-{model}.md
@@ -109,10 +111,10 @@ Once execution completes, you should verify:
    calculations:
    ```json
    {
-     "plan_id": "P-1772691068-architect-agent-gemini-2.0-flash",
+     "plan_id": "P-1772691068-pi-agent-gemini-3.5-flash",
      "intent_branch": "I-1771890389-refactor-metrics/_",
-     "agent": "architect-agent",
-     "model": "gemini-2.0-flash",
+     "agent": "pi-agent",
+     "model": "gemini-3.5-flash",
      "p_success": 0.7,
      "entropy": 2.5,
      "impact": 1.0,
@@ -120,7 +122,7 @@ Once execution completes, you should verify:
      "learning_value": 0.0,
      "ev": 0.45,
      "created_at": "2026-06-27T13:14:15.000Z",
-     "plan_file": "plans/P-1772691068-architect-agent-gemini-2.0-flash.md",
+     "plan_file": "plans/P-1772691068-pi-agent-gemini-3.5-flash.md",
      "status": "proposed"
    }
    ```
