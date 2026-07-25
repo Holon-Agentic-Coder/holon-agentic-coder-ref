@@ -84,7 +84,8 @@ def run_docker_container(
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
         return 1
 
-    docker_cmd = ["docker", "run", "--rm", "-it"]
+    tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
+    docker_cmd = ["docker", "run", "--rm"] + tty_flag
 
     # Set Role
     docker_cmd.extend(["-e", f"HOLON_ROLE={role}"])
@@ -121,7 +122,14 @@ def run_docker_container(
     docker_cmd.append(image_name)
     docker_cmd.extend(container_args)
 
-    print(f"Executing: {' '.join(docker_cmd)}")
+    sanitized_cmd = []
+    for item in docker_cmd:
+        if any(item.startswith(f"{key}=") for key in ["GITHUB_TOKEN", "HOLON_AGENT_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]):
+            k, _ = item.split("=", 1)
+            sanitized_cmd.append(f"{k}=***REDACTED***")
+        else:
+            sanitized_cmd.append(item)
+    print(f"Executing: {' '.join(sanitized_cmd)}")
     result = subprocess.run(docker_cmd)
     return result.returncode
 
