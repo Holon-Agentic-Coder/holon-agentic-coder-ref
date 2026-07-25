@@ -180,6 +180,27 @@ HR --> MAIN[Merge to main]
 
 ---
 
+## Running Sandbox Roles (`./holon` CLI)
+
+To execute Holon roles in sandboxed Docker environments, always use the host CLI wrapper script [`./holon`](./holon)
+instead of running raw `docker run` commands manually:
+
+```bash
+# 1. Initialize an Intent branch
+./holon intent intents/my-task.json
+
+# 2. Generate a Plan variant
+./holon plan "I-1781890389-my-task/_" --agent antigravity-agent --model gemini-3.5-flash
+
+# 3. Execute code changes in isolated sandbox
+./holon execute "I-1781890389-my-task/P-1781890400-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+```
+
+The `./holon` CLI automatically handles credential discovery (`GITHUB_TOKEN`, API keys), host SSH agent socket
+forwarding, read-only session mounts, and role container routing.
+
+---
+
 ## Git flow (summary)
 
 Holon enforces a strict Git discipline to ensure isolation, reproducibility, and clean human review boundaries.
@@ -245,12 +266,14 @@ I-1771890389-refactor-metrics/P-{timestamp}-{agent}-{model}
 I-1771890389-refactor-metrics/E-{timestamp}-{agent}-{model}
 ```
 
-<<<<<<< HEAD
-Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6` Example Execution Branch:
+<<<<<<< HEAD Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6` Example
+Execution Branch:
 =======
+
 Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-4.6-opus` Example Execution Branch:
->>>>>>> e7d223c (fix(planner): sanitize safe_model name for git branch compatibility (#22))
-`I-1771890389-refactor-metrics/E-1771890398-opencode-big-pickle`
+
+> > > > > > > e7d223c (fix(planner): sanitize safe_model name for git branch compatibility (#22))
+> > > > > > > `I-1771890389-refactor-metrics/E-1771890398-opencode-big-pickle`
 
 ---
 

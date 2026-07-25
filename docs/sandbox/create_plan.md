@@ -23,9 +23,22 @@ Before running the command, ensure you have:
 
 ---
 
-## 1. Execute the Docker Container
+## Recommended Execution Method (`./holon` CLI)
 
-Run the following command to start the planner container, replacing the branch, agent name, and model name arguments as
+> [!IMPORTANT] **Use `./holon` instead of raw `docker run` commands.** The host wrapper script [`./holon`](../../holon)
+> automatically manages image mapping, credential passing, and SSH agent socket mounts.
+
+Run from the repository root:
+
+```bash
+./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+```
+
+---
+
+## Low-Level Execution (Manual `docker run`)
+
+If you need to invoke Docker manually, run the following command to start the planner container, replacing arguments as
 needed:
 
 ### For macOS (Docker Desktop)
