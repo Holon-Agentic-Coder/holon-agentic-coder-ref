@@ -175,7 +175,10 @@ class TestAgentRunner(unittest.TestCase):
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
             # Test targeting non-matching agent (gemini) -> should not set GEMINI_API_KEY
-            with patch.dict(os.environ, env, clear=True), patch("os.path.exists", side_effect=lambda p: p == bundle_path):
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("os.path.exists", side_effect=lambda p: p == bundle_path),
+            ):
                 runner = get_runner("gemini")
                 with self.assertRaises(SystemExit):
                     runner.validate()
