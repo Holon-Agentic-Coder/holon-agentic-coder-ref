@@ -1,5 +1,8 @@
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 class EnvMapping:
@@ -44,15 +47,73 @@ class StandardAgentRunner(AgentRunner):
         self.required_keys = required_keys or []
         self.custom_validator = custom_validator
 
+    def resolve_credentials(self) -> None:
+        """Processes Tier 1 secret bundles / generic envvars and maps credentials into os.environ."""
+        # 1. Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
+        secret_bundle_path = os.getenv("HOLON_SECRET_BUNDLE_PATH", "/run/secrets/holon_auth.json")
+        if os.path.exists(secret_bundle_path):
+            try:
+                import json
+
+                with open(secret_bundle_path) as f:
+                    bundle = json.load(f)
+                target_agent = bundle.get("agent_id", "")
+                if not target_agent or target_agent.lower() == self.agent_id:
+                    api_key = bundle.get("api_key") or bundle.get("token")
+                    if api_key:
+                        self._apply_generic_token(api_key)
+
+                    # Unpack session files into /home/holon/ if specified
+                    config_files = bundle.get("config_files", {})
+                    base_home = os.path.abspath(os.path.expanduser("~"))
+                    if not base_home.endswith(os.sep):
+                        base_home += os.sep
+                    for rel_path, content in config_files.items():
+                        full_dest = os.path.abspath(os.path.expanduser(rel_path))
+                        if not full_dest.startswith(base_home):
+                            raise ValueError(f"Path traversal detected in config_files path: {rel_path}")
+                        os.makedirs(os.path.dirname(full_dest), exist_ok=True)
+                        with open(full_dest, "w") as sf:
+                            sf.write(content)
+            except Exception as e:
+                logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
+
+        # 2. Universal Env Contract (HOLON_AGENT_KEY)
+        generic_token = os.getenv("HOLON_AGENT_KEY")
+        if generic_token:
+            self._apply_generic_token(generic_token)
+
+    def _apply_generic_token(self, token: str) -> None:
+        """Maps generic auth token to agent-specific environment variables in os.environ."""
+        mapping = {
+            "antigravity": ["AGY_USER_TOKEN", "GOOGLE_API_KEY"],
+            "claude": ["ANTHROPIC_API_KEY"],
+            "pi": ["PI_API_KEY"],
+            "codex": ["OPENAI_API_KEY"],
+            "open-codex": ["OPENAI_API_KEY"],
+            "gemini": ["GEMINI_API_KEY"],
+            "opencode": ["OPENCODE_API_KEY"],
+        }
+        target_envs = mapping.get(self.agent_id, [])
+        for target_env in target_envs:
+            if not os.getenv(target_env):
+                os.environ[target_env] = token
+
     def validate(self) -> None:
-        """Validates that the required environment variables or credentials exist."""
+        """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
+        self.resolve_credentials()
+
+        # Tier 2 & 3: Agent-specific environment variables and session directory fallbacks
         if self.custom_validator == "codex":
             if os.getenv("CODEX_OSS") in ("true", "1"):
                 return
-            if not os.getenv("OPENAI_API_KEY"):
+            has_key = os.getenv("OPENAI_API_KEY")
+            has_session = os.path.exists("/home/holon/.codex") or os.path.exists(os.path.expanduser("~/.codex"))
+            if not (has_key or has_session):
                 print(
-                    "Error: Missing required environment variable 'OPENAI_API_KEY' for agent 'codex'.\n"
-                    "Please set 'OPENAI_API_KEY' or set 'CODEX_OSS=true' to use a local/OSS inference provider.",
+                    "Error: Missing required credentials for agent 'codex'.\n"
+                    "Please set 'OPENAI_API_KEY', set 'CODEX_OSS=true', "
+                    "mount active credentials to '/home/holon/.codex', or set 'HOLON_AGENT_KEY'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -73,27 +134,43 @@ class StandardAgentRunner(AgentRunner):
             return
 
         if self.custom_validator == "antigravity":
-            has_key = os.getenv("GOOGLE_API_KEY")
-            has_gcloud = os.path.exists("/home/holon/.config/gcloud") or os.path.exists(
-                os.path.expanduser("~/.config/gcloud")
+            has_key = os.getenv("GOOGLE_API_KEY") or os.getenv("AGY_USER_TOKEN") or os.getenv("AGY_SESSION_TOKEN")
+            has_session = (
+                os.path.exists("/home/holon/.gemini/antigravity-cli")
+                or os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli"))
+                or os.path.exists("/home/holon/.config/gcloud")
+                or os.path.exists(os.path.expanduser("~/.config/gcloud"))
             )
-            if not (has_key or has_gcloud):
+            if not (has_key or has_session):
                 print(
                     "Error: Missing required API credentials for agent 'antigravity'.\n"
-                    "Please set 'GOOGLE_API_KEY' or mount active gcloud credentials to '/home/holon/.config/gcloud'.",
+                    "Please set 'AGY_USER_TOKEN', 'GOOGLE_API_KEY', "
+                    "mount active session to '/home/holon/.gemini/antigravity-cli', or set 'HOLON_AGENT_KEY'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
             return
 
-        if self.required_keys and not any(os.getenv(k) for k in self.required_keys):
-            keys_str = ", ".join(self.required_keys)
-            print(
-                f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
-                f"Please set at least one of the following environment variables: {keys_str}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        if self.required_keys:
+            session_dirs = {
+                "claude": ["/home/holon/.config/claude", "~/.config/claude"],
+                "pi": ["/home/holon/.config/pi", "~/.config/pi"],
+            }
+            has_session_dir = False
+            if self.agent_id in session_dirs:
+                has_session_dir = any(
+                    os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[self.agent_id]
+                )
+
+            if not (any(os.getenv(k) for k in self.required_keys) or has_session_dir):
+                keys_str = ", ".join(self.required_keys)
+                print(
+                    f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
+                    f"Please set at least one of the following environment variables: {keys_str}, "
+                    "set 'HOLON_AGENT_KEY', or mount session credentials.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
         self.validate()
@@ -196,4 +273,11 @@ def get_runner(agent_name: str) -> AgentRunner:
 
 def get_repo_url() -> str:
     """Helper to get the repository URL for git operations."""
-    return os.getenv("HOLON_REPO_URL", "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git")
+    if os.getenv("HOLON_REPO_URL"):
+        return os.environ["HOLON_REPO_URL"]
+
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or os.getenv("HOLON_AGENT_KEY")
+    if token and (token.startswith("gh") or token.startswith("github_pat_")):
+        return f"https://x-access-token:{token}@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git"
+
+    return "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git"
