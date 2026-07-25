@@ -118,7 +118,7 @@ class TestPlannerIntegration(unittest.TestCase):
                             image_name,
                             intent_branch,
                             agent,
-                            "gemini-2.0-flash",
+                            "gemini-3.5-flash",
                         ]
 
                         # Run docker run (with a generous 60-second timeout to allow cloning and execution)

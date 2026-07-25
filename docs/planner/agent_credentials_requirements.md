@@ -32,7 +32,7 @@ docker run --rm \
   -e HOLON_ROLE=planner \
   -e PI_API_KEY="your-gemini-key" \
   holon/agent-pi \
-  "I-intent-branch/_" "pi-agent" "gemini-2.0-flash"
+  "I-intent-branch/_" "pi-agent" "gemini-3.5-flash"
 ```
 
 ### Claude Agent (`claude-agent`)
@@ -44,7 +44,7 @@ docker run --rm \
   -e HOLON_ROLE=planner \
   -e ANTHROPIC_API_KEY="your-anthropic-key" \
   holon/agent-claude \
-  "I-intent-branch/_" "claude-agent" "claude-3-5-sonnet"
+  "I-intent-branch/_" "claude-agent" "claude-4-6-sonnet"
 ```
 
 ### Antigravity Agent (`antigravity-agent` / `agy`)
@@ -59,5 +59,5 @@ sessions, it initiates an OAuth browser flow. For headless executions within the
      -e HOLON_ROLE=planner \
      -v "$HOME/.config/gcloud:/home/holon/.config/gcloud:ro" \
      holon/agent-antigravity \
-     "I-intent-branch/_" "antigravity-agent" "gemini-2.0-flash"
+     "I-intent-branch/_" "antigravity-agent" "gemini-3.5-flash"
    ```

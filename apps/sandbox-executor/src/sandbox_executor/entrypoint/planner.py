@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,27 @@ def run_cmd(args, cwd=None, env=None, check=True):
         print(f"Stderr:\n{result.stderr}")
         sys.exit(result.returncode)
     return result
+
+
+def _sanitize_model_name(model_name: str) -> str:
+    """Sanitize a model name so it is safe for use in git branch names and filenames.
+
+    Steps:
+    1. Replace path separators (/) with underscores.
+    2. Collapse any run of whitespace into a single hyphen.
+    3. Strip all characters not in [a-zA-Z0-9_.-].
+    4. Collapse consecutive hyphens.
+    5. Collapse consecutive dots.
+    6. Strip leading/trailing hyphens and dots.
+    7. Enforce a maximum length of 64 characters to prevent excessively long branch/filename strings.
+    8. Fall back to 'unknown-model' if the result is empty.
+    """
+    s = re.sub(r"\s+", "-", model_name.replace("/", "_"))
+    s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
+    s = re.sub(r"-+", "-", s)
+    s = re.sub(r"\.+", ".", s)
+    s = s[:64].strip(".-")
+    return s or "unknown-model"
 
 
 def get_file_structure(root_dir, max_depth=3):
@@ -95,7 +117,7 @@ def main():
     run_cmd(["git", "clone", "--branch", intent_branch, "--single-branch", "--depth", "1", repo_url, "."], cwd=repo_dir)
 
     plan_seq = int(time.time())
-    safe_model = model_name.replace("/", "_")
+    safe_model = _sanitize_model_name(model_name)
     plan_id = f"P-{plan_seq}-{agent_name}-{safe_model}"
     plan_branch = f"{intent_branch_prefix}/P-{plan_seq}-{agent_name}-{safe_model}/_"
 
