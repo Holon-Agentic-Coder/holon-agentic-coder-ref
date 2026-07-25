@@ -39,13 +39,59 @@ class TestHolonCLI(unittest.TestCase):
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_main_subcommands(self, mock_run_container):
-        test_args = ["holon", "plan", "intent_branch_name", "--agent", "antigravity-agent", "--model", "gemini-3.5-flash"]
+        test_args = [
+            "holon",
+            "plan",
+            "intent_branch_name",
+            "--agent",
+            "antigravity-agent",
+            "--model",
+            "gemini-3.5-flash",
+        ]
         with patch("sys.argv", test_args):
             with self.assertRaises(SystemExit) as cm:
                 main()
             self.assertEqual(cm.exception.code, 0)
             mock_run_container.assert_called_once_with(
-                "planner", "holon/agent-antigravity", ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"], agent_id="antigravity"
+                "planner",
+                "holon/agent-antigravity",
+                ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"],
+                agent_id="antigravity",
+            )
+
+        mock_run_container.reset_mock()
+        test_intent_args = ["holon", "intent", "intents/test.json"]
+        with patch("sys.argv", test_intent_args):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_run_container.assert_called_once_with(
+                "intent-creator",
+                "holon/orchestrator",
+                [],
+                agent_id="antigravity",
+                intent_file="intents/test.json",
+            )
+
+        mock_run_container.reset_mock()
+        test_exec_args = [
+            "holon",
+            "execute",
+            "plan_branch_name",
+            "--agent",
+            "antigravity-agent",
+            "--model",
+            "gemini-3.5-flash",
+        ]
+        with patch("sys.argv", test_exec_args):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_run_container.assert_called_once_with(
+                "executor",
+                "holon/agent-antigravity",
+                ["plan_branch_name", "antigravity-agent", "gemini-3.5-flash"],
+                agent_id="antigravity",
             )
 
 

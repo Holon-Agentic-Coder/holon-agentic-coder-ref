@@ -10,7 +10,7 @@ import sys
 
 def find_github_token() -> str | None:
     """Auto-detect GitHub token from environment variables or gh CLI."""
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or os.getenv("HOLON_AGENT_KEY")
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
     if token:
         return token
     if shutil.which("gh"):
@@ -29,13 +29,13 @@ def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
     env_vars = {}
 
     ssh_sock = os.getenv("SSH_AUTH_SOCK")
-    if sys.platform == "darwin":
+    if ssh_sock and os.path.exists(ssh_sock):
+        mounts.extend(["-v", f"{ssh_sock}:/run/ssh-agent"])
+        env_vars["SSH_AUTH_SOCK"] = "/run/ssh-agent"
+    elif sys.platform == "darwin":
         # macOS Docker Desktop magic socket path
         mounts.extend(["-v", "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"])
         env_vars["SSH_AUTH_SOCK"] = "/run/host-services/ssh-auth.sock"
-    elif ssh_sock and os.path.exists(ssh_sock):
-        mounts.extend(["-v", f"{ssh_sock}:/run/ssh-agent"])
-        env_vars["SSH_AUTH_SOCK"] = "/run/ssh-agent"
 
     return mounts, env_vars
 
@@ -85,7 +85,7 @@ def run_docker_container(
         return 1
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
-    docker_cmd = ["docker", "run", "--rm"] + tty_flag
+    docker_cmd = ["docker", "run", "--rm", *tty_flag]
 
     # Set Role
     docker_cmd.extend(["-e", f"HOLON_ROLE={role}"])
@@ -96,7 +96,12 @@ def run_docker_container(
         docker_cmd.extend(["-e", f"GITHUB_TOKEN={gh_token}"])
 
     # Auto-detect HOLON_AGENT_KEY
-    agent_key = os.getenv("HOLON_AGENT_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
+    agent_key = (
+        os.getenv("HOLON_AGENT_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("ANTHROPIC_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
     if agent_key:
         docker_cmd.extend(["-e", f"HOLON_AGENT_KEY={agent_key}"])
 
@@ -122,9 +127,16 @@ def run_docker_container(
     docker_cmd.append(image_name)
     docker_cmd.extend(container_args)
 
+    sensitive_keys = [
+        "GITHUB_TOKEN",
+        "HOLON_AGENT_KEY",
+        "GOOGLE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ]
     sanitized_cmd = []
     for item in docker_cmd:
-        if any(item.startswith(f"{key}=") for key in ["GITHUB_TOKEN", "HOLON_AGENT_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]):
+        if any(item.startswith(f"{key}=") for key in sensitive_keys):
             k, _ = item.split("=", 1)
             sanitized_cmd.append(f"{k}=***REDACTED***")
         else:
@@ -180,7 +192,11 @@ def main() -> None:
 
     if args.command == "intent":
         image_name = "holon/orchestrator"
-        sys.exit(run_docker_container("intent-creator", image_name, [], agent_id="antigravity", intent_file=args.intent_file))
+        sys.exit(
+            run_docker_container(
+                "intent-creator", image_name, [], agent_id="antigravity", intent_file=args.intent_file
+            )
+        )
 
     elif args.command == "plan":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
