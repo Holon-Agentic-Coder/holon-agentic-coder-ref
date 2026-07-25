@@ -145,6 +145,70 @@ class TestAgentRunner(unittest.TestCase):
                 for env_var in env_vars:
                     self.assertEqual(os.getenv(env_var), "test-key-999")
 
+    def test_secret_bundle_parsing_and_filtering(self):
+        """Test secret bundle parsing, agent filtering, and config_files unpacking."""
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, "holon_auth.json")
+            bundle_data = {
+                "agent_id": "claude",
+                "api_key": "bundle-claude-key",
+                "config_files": {
+                    "~/.config/claude/config.json": '{"setting": true}',
+                },
+            }
+            with open(bundle_path, "w") as f:
+                json.dump(bundle_data, f)
+
+            # Test targeting matching agent (claude)
+            fake_home = os.path.join(tmpdir, "home")
+            os.makedirs(fake_home, exist_ok=True)
+            env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
+            with patch.dict(os.environ, env, clear=True):
+                runner = get_runner("claude")
+                runner.validate()
+                self.assertEqual(os.getenv("ANTHROPIC_API_KEY"), "bundle-claude-key")
+                self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
+
+            # Test targeting non-matching agent (gemini) -> should not set GEMINI_API_KEY
+            with patch.dict(os.environ, env, clear=True), patch("os.path.exists", side_effect=lambda p: p == bundle_path):
+                runner = get_runner("gemini")
+                with self.assertRaises(SystemExit):
+                    runner.validate()
+                self.assertIsNone(os.getenv("GEMINI_API_KEY"))
+
+    def test_secret_bundle_path_traversal(self):
+        """Test that path traversal attempts in secret bundle config_files are detected and blocked."""
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, "holon_auth.json")
+            bundle_data = {
+                "agent_id": "claude",
+                "api_key": "key",
+                "config_files": {
+                    "../../etc/malicious": "data",
+                },
+            }
+            with open(bundle_path, "w") as f:
+                json.dump(bundle_data, f)
+
+            fake_home = os.path.join(tmpdir, "home")
+            os.makedirs(fake_home, exist_ok=True)
+            env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
+            with patch.dict(os.environ, env, clear=True), patch("logging.Logger.warning") as mock_warn:
+                runner = get_runner("claude")
+                runner.resolve_credentials()
+                mock_warn.assert_called()
+                self.assertIn("Path traversal detected", str(mock_warn.call_args))
+
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
         """Integration test to verify that the configured agent runner binaries
@@ -199,3 +263,25 @@ class TestGetRepoUrl(unittest.TestCase):
 
         with unittest.mock.patch.dict("os.environ", {"HOLON_REPO_URL": "git@github.com:custom/repo.git"}):
             self.assertEqual(get_repo_url(), "git@github.com:custom/repo.git")
+
+    def test_classic_pat_token(self):
+        """Test that get_repo_url supports classic GitHub PAT tokens starting with gh."""
+        import unittest.mock
+
+        with unittest.mock.patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_secret123"}, clear=True):
+            url = get_repo_url()
+            self.assertEqual(
+                url,
+                "https://x-access-token:ghp_secret123@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
+            )
+
+    def test_fine_grained_pat_token(self):
+        """Test that get_repo_url supports fine-grained GitHub PAT tokens starting with github_pat_."""
+        import unittest.mock
+
+        with unittest.mock.patch.dict("os.environ", {"GITHUB_TOKEN": "github_pat_secret456"}, clear=True):
+            url = get_repo_url()
+            self.assertEqual(
+                url,
+                "https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
+            )

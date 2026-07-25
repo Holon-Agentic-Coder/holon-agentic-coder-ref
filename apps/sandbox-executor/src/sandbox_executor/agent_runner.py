@@ -1,5 +1,8 @@
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 class EnvMapping:
@@ -46,8 +49,8 @@ class StandardAgentRunner(AgentRunner):
 
     def resolve_credentials(self) -> None:
         """Processes Tier 1 secret bundles / generic envvars and maps credentials into os.environ."""
-        # 1. Ephemeral Secret Bundle Injection (/run/secrets/holon_auth.json)
-        secret_bundle_path = "/run/secrets/holon_auth.json"
+        # 1. Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
+        secret_bundle_path = os.getenv("HOLON_SECRET_BUNDLE_PATH", "/run/secrets/holon_auth.json")
         if os.path.exists(secret_bundle_path):
             try:
                 import json
@@ -62,13 +65,16 @@ class StandardAgentRunner(AgentRunner):
 
                     # Unpack session files into /home/holon/ if specified
                     config_files = bundle.get("config_files", {})
+                    base_home = os.path.abspath(os.path.expanduser("~"))
                     for rel_path, content in config_files.items():
-                        full_dest = os.path.expanduser(rel_path)
+                        full_dest = os.path.abspath(os.path.expanduser(rel_path))
+                        if not full_dest.startswith(base_home):
+                            raise ValueError(f"Path traversal detected in config_files path: {rel_path}")
                         os.makedirs(os.path.dirname(full_dest), exist_ok=True)
                         with open(full_dest, "w") as sf:
                             sf.write(content)
             except Exception as e:
-                print(f"Warning: Failed to process secret bundle {secret_bundle_path}: {e}", file=sys.stderr)
+                logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
 
         # 2. Universal Env Contract (HOLON_AGENT_KEY)
         generic_token = os.getenv("HOLON_AGENT_KEY")
@@ -94,10 +100,6 @@ class StandardAgentRunner(AgentRunner):
     def validate(self) -> None:
         """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
         self.resolve_credentials()
-
-        # Tier 1: Universal Secret Bundle Injection (/run/secrets/holon_auth.json) or Universal Env Contract
-        if os.path.exists("/run/secrets/holon_auth.json") or os.getenv("HOLON_AGENT_KEY"):
-            return
 
         # Tier 2 & 3: Agent-specific environment variables and session directory fallbacks
         if self.custom_validator == "codex":
@@ -273,7 +275,7 @@ def get_repo_url() -> str:
         return os.environ["HOLON_REPO_URL"]
 
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or os.getenv("HOLON_AGENT_KEY")
-    if token and token.startswith("gh"):
+    if token and (token.startswith("gh") or token.startswith("github_pat_")):
         return f"https://x-access-token:{token}@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git"
 
     return "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git"
