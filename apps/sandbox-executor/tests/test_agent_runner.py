@@ -22,13 +22,13 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         expected_commands = {
-            "pi": ["pi", "-p", "--model", "gemini-2.0-flash", "compiled prompt text"],
-            "open-codex": ["open-codex", "-q", "-m", "gemini-2.0-flash", "compiled prompt text"],
-            "claude": ["claude", "--model", "gemini-2.0-flash", "-p", "compiled prompt text"],
-            "gemini": ["gemini", "--model", "gemini-2.0-flash", "-p", "compiled prompt text"],
-            "opencode": ["opencode", "run", "--model", "gemini-2.0-flash", "compiled prompt text"],
-            "codex": ["codex", "exec", "-m", "gemini-2.0-flash", "compiled prompt text"],
-            "antigravity": ["agy", "--model", "gemini-2.0-flash", "-p", "compiled prompt text"],
+            "pi": ["pi", "-p", "--model", "gemini-3.5-flash", "compiled prompt text"],
+            "open-codex": ["open-codex", "-q", "-m", "gemini-3.5-flash", "compiled prompt text"],
+            "claude": ["claude", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
+            "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
+            "opencode": ["opencode", "run", "--model", "gemini-3.5-flash", "compiled prompt text"],
+            "codex": ["codex", "exec", "-m", "gemini-3.5-flash", "compiled prompt text"],
+            "antigravity": ["agy", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
         }
         dummy_env = {
             "OPENAI_API_KEY": "dummy",
@@ -42,7 +42,7 @@ class TestAgentRunner(unittest.TestCase):
                 with self.subTest(agent=agent_name):
                     runner = get_runner(agent_name)
                     cmd = runner.build_cmd(
-                        model_name="gemini-2.0-flash",
+                        model_name="gemini-3.5-flash",
                         prompt_file="/tmp/prompt.md",
                         intent_file="/tmp/intent.json",
                         full_prompt="compiled prompt text",
