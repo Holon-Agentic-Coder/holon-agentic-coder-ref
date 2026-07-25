@@ -19,6 +19,7 @@ def find_github_token() -> str | None:
             if res.returncode == 0 and res.stdout.strip():
                 return res.stdout.strip()
         except Exception:
+            # gh CLI not logged in or failed to retrieve token
             pass
     return None
 
@@ -28,14 +29,15 @@ def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
     mounts = []
     env_vars = {}
 
-    ssh_sock = os.getenv("SSH_AUTH_SOCK")
-    if ssh_sock and os.path.exists(ssh_sock):
-        mounts.extend(["-v", f"{ssh_sock}:/run/ssh-agent"])
-        env_vars["SSH_AUTH_SOCK"] = "/run/ssh-agent"
-    elif sys.platform == "darwin":
+    if sys.platform == "darwin":
         # macOS Docker Desktop magic socket path
         mounts.extend(["-v", "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"])
         env_vars["SSH_AUTH_SOCK"] = "/run/host-services/ssh-auth.sock"
+    else:
+        ssh_sock = os.getenv("SSH_AUTH_SOCK")
+        if ssh_sock and os.path.exists(ssh_sock):
+            mounts.extend(["-v", f"{ssh_sock}:/run/ssh-agent"])
+            env_vars["SSH_AUTH_SOCK"] = "/run/ssh-agent"
 
     return mounts, env_vars
 
