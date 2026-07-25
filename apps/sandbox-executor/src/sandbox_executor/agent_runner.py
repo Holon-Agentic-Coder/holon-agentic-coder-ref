@@ -66,6 +66,8 @@ class StandardAgentRunner(AgentRunner):
                     # Unpack session files into /home/holon/ if specified
                     config_files = bundle.get("config_files", {})
                     base_home = os.path.abspath(os.path.expanduser("~"))
+                    if not base_home.endswith(os.sep):
+                        base_home += os.sep
                     for rel_path, content in config_files.items():
                         full_dest = os.path.abspath(os.path.expanduser(rel_path))
                         if not full_dest.startswith(base_home):

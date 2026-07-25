@@ -192,25 +192,30 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            bundle_path = os.path.join(tmpdir, "holon_auth.json")
-            bundle_data = {
-                "agent_id": "claude",
-                "api_key": "key",
-                "config_files": {
-                    "../../etc/malicious": "data",
-                },
-            }
-            with open(bundle_path, "w") as f:
-                json.dump(bundle_data, f)
-
             fake_home = os.path.join(tmpdir, "home")
             os.makedirs(fake_home, exist_ok=True)
-            env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
-            with patch.dict(os.environ, env, clear=True), patch("logging.Logger.warning") as mock_warn:
-                runner = get_runner("claude")
-                runner.resolve_credentials()
-                mock_warn.assert_called()
-                self.assertIn("Path traversal detected", str(mock_warn.call_args))
+            bundle_path = os.path.join(tmpdir, "holon_auth.json")
+
+            traversal_paths = [
+                "../../etc/malicious",
+                "~/../home_sibling/malicious",
+            ]
+
+            for rel_path in traversal_paths:
+                bundle_data = {
+                    "agent_id": "claude",
+                    "api_key": "key",
+                    "config_files": {rel_path: "data"},
+                }
+                with open(bundle_path, "w") as f:
+                    json.dump(bundle_data, f)
+
+                env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
+                with patch.dict(os.environ, env, clear=True), patch("logging.Logger.warning") as mock_warn:
+                    runner = get_runner("claude")
+                    runner.resolve_credentials()
+                    mock_warn.assert_called()
+                    self.assertIn("Path traversal detected", str(mock_warn.call_args))
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
