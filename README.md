@@ -245,12 +245,8 @@ I-1771890389-refactor-metrics/P-{timestamp}-{agent}-{model}
 I-1771890389-refactor-metrics/E-{timestamp}-{agent}-{model}
 ```
 
-<<<<<<< HEAD
-Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6` Example Execution Branch:
-=======
-Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-4.6-opus` Example Execution Branch:
->>>>>>> e7d223c (fix(planner): sanitize safe_model name for git branch compatibility (#22))
-`I-1771890389-refactor-metrics/E-1771890398-opencode-big-pickle`
+Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6`  
+Example Execution Branch: `I-1771890389-refactor-metrics/E-1771890398-opencode-big-pickle`
 
 ---
 
