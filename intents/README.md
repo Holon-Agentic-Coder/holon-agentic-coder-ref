@@ -32,11 +32,22 @@ Every intent configuration file must be a JSON object with the following fields:
 
 ## How to Run
 
-> [!IMPORTANT] Ensure your local SSH agent is running and has your keys loaded (i.e., `ssh-add -l` displays your key),
-> as SSH Agent Forwarding inside the container relies on host authentication.
+> [!IMPORTANT] **Use `./holon` instead of raw `docker run` commands.** Always execute sandbox environments using the
+> `./holon` host CLI script from the repository root:
 
-To run the Intent Creator with an intent draft from this directory, run the following Docker command from the repository
-root:
+```bash
+./holon intent intents/your-intent-file.json
+```
+
+The `./holon` script automatically handles credential discovery, SSH agent socket forwarding, volume mounts, and
+container routing.
+
+---
+
+### Low-Level Manual Docker Execution
+
+If you need to invoke Docker manually without the CLI wrapper, ensure your local SSH agent is running (`ssh-add -l`) and
+run:
 
 > [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
 > `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
