@@ -54,7 +54,7 @@ class TestAgentRunner(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), patch("os.path.exists", return_value=False):
             for agent_name in runners:
                 with self.subTest(agent=agent_name):
                     runner = get_runner(agent_name)
@@ -107,6 +107,43 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("anthropic", cmd)
             self.assertIn("--api-key", cmd)
             self.assertIn("sk-ant-123", cmd)
+
+    def test_three_tier_fallback_contract(self):
+        """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "universal-token-123"}, clear=True):
+            for agent_name in runners:
+                with self.subTest(agent=agent_name):
+                    runner = get_runner(agent_name)
+                    # Should pass validation without raising SystemExit
+                    runner.validate()
+
+    def test_generic_token_mapping(self):
+        """Test that HOLON_AGENT_KEY maps to agent-specific environment variables in os.environ."""
+        import os
+        from unittest.mock import patch
+
+        expected_env_mapping = {
+            "claude": ["ANTHROPIC_API_KEY"],
+            "antigravity": ["AGY_USER_TOKEN", "GOOGLE_API_KEY"],
+            "pi": ["PI_API_KEY"],
+            "codex": ["OPENAI_API_KEY"],
+            "open-codex": ["OPENAI_API_KEY"],
+            "gemini": ["GEMINI_API_KEY"],
+            "opencode": ["OPENCODE_API_KEY"],
+        }
+
+        for agent_id, env_vars in expected_env_mapping.items():
+            with (
+                self.subTest(agent=agent_id),
+                patch.dict(os.environ, {"HOLON_AGENT_KEY": "test-key-999"}, clear=True),
+            ):
+                runner = get_runner(agent_id)
+                runner.validate()
+                for env_var in env_vars:
+                    self.assertEqual(os.getenv(env_var), "test-key-999")
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
