@@ -63,21 +63,21 @@ class TestExecutor(unittest.TestCase):
 
         mock_run_cmd.side_effect = side_effect
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}):
-                ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}),
+        ):
+            ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 
-                with patch(
-                    "sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]
-                ):
-                    executor.main()
+            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+                executor.main()
 
-                mock_runner.validate.assert_called_once()
-                self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
-                with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                    content = ef.read()
-                    self.assertIn("P-123", content)
-                    self.assertIn("success", content)
+            mock_runner.validate.assert_called_once()
+            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
+            with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
+                content = ef.read()
+                self.assertIn("P-123", content)
+                self.assertIn("success", content)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -116,27 +116,26 @@ class TestExecutor(unittest.TestCase):
 
         mock_run_cmd.side_effect = side_effect
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}):
-                ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}),
+        ):
+            ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 
-                with patch(
-                    "sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]
-                ):
-                    executor.main()
+            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+                executor.main()
 
-                mock_runner.validate.assert_called_once()
-                self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
-                with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                    content = ef.read()
-                    self.assertIn("P-123", content)
-                    self.assertIn("decomposed", content)
-                self.assertTrue(os.path.exists(os.path.join(ledger_dir, "intents.jsonl")))
-                with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
-                    content = inf.read()
-                    self.assertIn("sub-intent-part-1", content)
+            mock_runner.validate.assert_called_once()
+            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
+            with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
+                content = ef.read()
+                self.assertIn("P-123", content)
+                self.assertIn("decomposed", content)
+            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "intents.jsonl")))
+            with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
+                content = inf.read()
+                self.assertIn("sub-intent-part-1", content)
 
 
 if __name__ == "__main__":
     unittest.main()
-
