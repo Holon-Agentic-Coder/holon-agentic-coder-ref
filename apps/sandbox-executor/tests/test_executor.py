@@ -35,13 +35,47 @@ class TestExecutor(unittest.TestCase):
         self.assertFalse(decompose)
         self.assertEqual(len(sub_intents), 0)
 
+    def test_safe_float(self):
+        self.assertEqual(executor._safe_float(None, 5.0), 5.0)
+        self.assertEqual(executor._safe_float(None), 0.0)
+        self.assertEqual(executor._safe_float(3.14), 3.14)
+        self.assertEqual(executor._safe_float("2.5"), 2.5)
+        self.assertEqual(executor._safe_float("invalid", 1.0), 1.0)
+
+    def test_should_decompose_numbered_list(self):
+        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
+        plan_content = """# Plan
+## Sub-Intents
+1. Create DB schema
+2. Build API routes
+3. Write unit tests
+"""
+        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
+        self.assertTrue(decompose)
+        self.assertEqual(len(sub_intents), 3)
+        self.assertEqual(sub_intents[0]["slug"], "create-db-schema")
+        self.assertEqual(sub_intents[1]["slug"], "build-api-routes")
+        self.assertEqual(sub_intents[2]["slug"], "write-unit-tests")
+
+    def test_should_decompose_none_entropy(self):
+        plan_data = {"entropy": None, "entropy_budget": None}
+        plan_content = "# Plan\nStandard plan without sub-intents"
+        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
+        self.assertFalse(decompose)
+        self.assertEqual(len(sub_intents), 0)
+
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     def test_main_execution_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
         mock_get_runner.return_value = mock_runner
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "OK"
 
         def side_effect(args, cwd=None, **kwargs):
             if "clone" in args:
@@ -60,6 +94,7 @@ class TestExecutor(unittest.TestCase):
                         )
                         + "\n"
                     )
+            return mock_result
 
         mock_run_cmd.side_effect = side_effect
 
@@ -73,6 +108,7 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             mock_runner.validate.assert_called_once()
+            mock_runner.build_cmd.assert_called_once()
             self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
             with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                 content = ef.read()
@@ -86,6 +122,9 @@ class TestExecutor(unittest.TestCase):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_get_runner.return_value = mock_runner
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
 
         def side_effect(args, cwd=None, **kwargs):
             if "clone" in args:
@@ -113,6 +152,7 @@ class TestExecutor(unittest.TestCase):
                         )
                         + "\n"
                     )
+            return mock_result
 
         mock_run_cmd.side_effect = side_effect
 
