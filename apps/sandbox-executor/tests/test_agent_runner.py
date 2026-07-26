@@ -31,11 +31,7 @@ class TestAgentRunner(unittest.TestCase):
             "antigravity": ["agy", "--model", "gemini-3.5-flash", "--effort", "medium", "-p", "compiled prompt text"],
         }
         dummy_env = {
-            "OPENAI_API_KEY": "dummy",
-            "ANTHROPIC_API_KEY": "dummy",
-            "GEMINI_API_KEY": "dummy",
-            "OPENCODE_API_KEY": "dummy",
-            "GOOGLE_API_KEY": "dummy",
+            "HOLON_AGENT_KEY": "dummy",
         }
         with patch.dict(os.environ, dummy_env):
             for agent_name, expected_cmd in expected_commands.items():
@@ -67,7 +63,7 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         # 1. Claude settings
-        with patch.dict(os.environ, {"CLAUDE_SETTINGS": "/path/to/settings.json", "ANTHROPIC_API_KEY": "dummy"}):
+        with patch.dict(os.environ, {"HOLON_AGENT_SETTINGS": "/path/to/settings.json", "HOLON_AGENT_KEY": "dummy"}):
             runner = get_runner("claude")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--settings", cmd)
@@ -75,9 +71,9 @@ class TestAgentRunner(unittest.TestCase):
 
         # 2. Codex OSS and local provider configurations
         env = {
-            "CODEX_OSS": "true",
-            "CODEX_LOCAL_PROVIDER": "ollama",
-            "CODEX_CONFIG": "temperature=0.2",
+            "HOLON_AGENT_OSS_MODE": "true",
+            "HOLON_AGENT_LOCAL_PROVIDER": "ollama",
+            "HOLON_AGENT_CONFIG": "temperature=0.2",
         }
         with patch.dict(os.environ, env):
             runner = get_runner("codex")
@@ -89,24 +85,22 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("temperature=0.2", cmd)
 
         # 3. Open Codex provider
-        with patch.dict(os.environ, {"OPEN_CODEX_PROVIDER": "custom-ollama", "OPENAI_API_KEY": "dummy"}):
+        with patch.dict(os.environ, {"HOLON_AGENT_PROVIDER": "custom-ollama", "HOLON_AGENT_KEY": "dummy"}):
             runner = get_runner("open-codex")
             cmd = runner.build_cmd("m", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--provider", cmd)
             self.assertIn("custom-ollama", cmd)
 
-        # 4. Pi provider and api-key
+        # 4. Pi provider (auth handled internally via HOLON_AGENT_KEY -> PI_API_KEY)
         env = {
-            "PI_PROVIDER": "anthropic",
-            "PI_API_KEY": "sk-ant-123",
+            "HOLON_AGENT_PROVIDER": "anthropic",
+            "HOLON_AGENT_KEY": "sk-ant-123",
         }
         with patch.dict(os.environ, env):
             runner = get_runner("pi-agent")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--provider", cmd)
             self.assertIn("anthropic", cmd)
-            self.assertIn("--api-key", cmd)
-            self.assertIn("sk-ant-123", cmd)
 
     def test_three_tier_fallback_contract(self):
         """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
@@ -121,7 +115,12 @@ class TestAgentRunner(unittest.TestCase):
                     runner.validate()
 
     def test_generic_token_mapping(self):
-        """Test that HOLON_AGENT_KEY maps to agent-specific environment variables in os.environ."""
+        """Test that HOLON_AGENT_KEY is internally mapped to agent-CLI-specific env vars in os.environ.
+
+        The internal mapping is an implementation detail: it ensures each agent CLI binary
+        can authenticate using its own vendor-specific variable even though the public
+        interface only exposes HOLON_AGENT_KEY.
+        """
         import os
         from unittest.mock import patch
 

@@ -98,12 +98,7 @@ def run_docker_container(
         docker_cmd.extend(["-e", f"GITHUB_TOKEN={gh_token}"])
 
     # Auto-detect HOLON_AGENT_KEY
-    agent_key = (
-        os.getenv("HOLON_AGENT_KEY")
-        or os.getenv("GOOGLE_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-    )
+    agent_key = os.getenv("HOLON_AGENT_KEY")
     if agent_key:
         docker_cmd.extend(["-e", f"HOLON_AGENT_KEY={agent_key}"])
 
@@ -132,9 +127,6 @@ def run_docker_container(
     sensitive_keys = [
         "GITHUB_TOKEN",
         "HOLON_AGENT_KEY",
-        "GOOGLE_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
     ]
     sanitized_cmd = []
     for item in docker_cmd:
