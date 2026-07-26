@@ -62,7 +62,7 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
                     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
                     sub_intents.append(
                         {
-                            "slug": slug or f"sub-intent-{len(sub_intents)+1}",
+                            "slug": slug or f"sub-intent-{len(sub_intents) + 1}",
                             "description": text,
                             "goal": text,
                         }
@@ -113,9 +113,7 @@ def main():
         os.makedirs(repo_dir, exist_ok=True)
 
     repo_url = get_repo_url()
-    run_cmd(
-        ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."], cwd=repo_dir
-    )
+    run_cmd(["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."], cwd=repo_dir)
 
     exec_seq = int(time.time())
     safe_agent = _sanitize_string(agent_name)
