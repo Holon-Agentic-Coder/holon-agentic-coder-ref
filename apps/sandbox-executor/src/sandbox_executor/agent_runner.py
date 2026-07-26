@@ -255,7 +255,7 @@ runners = {
         "antigravity",
         "agy",
         "--model",
-        suffix=["-p"],
+        suffix=["--effort", os.getenv("AGY_EFFORT", "medium"), "-p"],
         custom_validator="antigravity",
     ),
 }
