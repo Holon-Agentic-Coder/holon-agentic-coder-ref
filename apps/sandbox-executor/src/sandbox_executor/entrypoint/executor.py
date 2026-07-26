@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 
@@ -103,10 +104,11 @@ def main():
     if plan_branch_prefix.endswith("/_"):
         plan_branch_prefix = plan_branch_prefix[:-2]
 
-    repo_dir = os.path.expanduser("~/repo")
-    if os.path.exists(repo_dir):
-        shutil.rmtree(repo_dir)
-    os.makedirs(repo_dir, exist_ok=True)
+    repo_dir = os.getenv("HOLON_REPO_DIR") or os.getenv("EXECUTOR_REPO_DIR")
+    if not repo_dir:
+        repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
+    else:
+        os.makedirs(repo_dir, exist_ok=True)
 
     repo_url = get_repo_url()
     run_cmd(
@@ -130,8 +132,9 @@ def main():
                     continue
                 try:
                     data = json.loads(line)
-                    if data.get("plan_id") in plan_branch_prefix or plan_branch_prefix.endswith(
-                        data.get("plan_id", "")
+                    plan_id = data.get("plan_id")
+                    if isinstance(plan_id, str) and (
+                        plan_id in plan_branch_prefix or plan_branch_prefix.endswith(plan_id)
                     ):
                         plan_data = data
                 except Exception as e:
@@ -167,8 +170,9 @@ def main():
                     data = json.loads(line)
                     if data.get("branch") and data["branch"] in target_intent_branch:
                         intent_data = data
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Ignore invalid or corrupted lines in intents ledger
+                    print(f"Warning: skipping unparseable line in intents.jsonl: {e}")
 
     if not intent_data:
         intent_data = {"branch": plan_data.get("intent_branch", "I-unknown")}
@@ -252,7 +256,11 @@ def main():
     run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
     run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
     run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
-    run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+    skip_push = os.getenv("HOLON_SKIP_PUSH") or os.getenv("EXECUTOR_SKIP_PUSH")
+    if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
+        run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+    else:
+        print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
 
     print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
 

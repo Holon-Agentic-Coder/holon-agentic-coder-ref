@@ -44,11 +44,12 @@ class TestExecutor(unittest.TestCase):
         mock_get_runner.return_value = mock_runner
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            with patch("os.path.expanduser", return_value=tmp_dir):
+            with patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}):
                 # Create fake holon-knowledge/ledger
                 ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(json.dumps({"plan_id": None}) + "\n")  # Safe check on None plan_id
                     f.write(
                         json.dumps(
                             {
