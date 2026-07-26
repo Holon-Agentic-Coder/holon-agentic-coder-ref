@@ -108,6 +108,8 @@ def main():
     if not repo_dir:
         repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
     else:
+        if os.path.exists(repo_dir):
+            shutil.rmtree(repo_dir)
         os.makedirs(repo_dir, exist_ok=True)
 
     repo_url = get_repo_url()
@@ -116,9 +118,10 @@ def main():
     )
 
     exec_seq = int(time.time())
+    safe_agent = _sanitize_string(agent_name)
     safe_model = _sanitize_string(model_name)
-    exec_id = f"E-{exec_seq}-{agent_name}-{safe_model}"
-    exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{agent_name}-{safe_model}/_"
+    exec_id = f"E-{exec_seq}-{safe_agent}-{safe_model}"
+    exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{safe_agent}-{safe_model}/_"
 
     run_cmd(["git", "checkout", "-b", exec_branch], cwd=repo_dir)
 
@@ -168,7 +171,10 @@ def main():
                     continue
                 try:
                     data = json.loads(line)
-                    if data.get("branch") and data["branch"] in target_intent_branch:
+                    branch = data.get("branch")
+                    if branch and (
+                        target_intent_branch.startswith(branch) or branch == target_intent_branch.rstrip("/_")
+                    ):
                         intent_data = data
                 except Exception as e:
                     # Ignore invalid or corrupted lines in intents ledger
