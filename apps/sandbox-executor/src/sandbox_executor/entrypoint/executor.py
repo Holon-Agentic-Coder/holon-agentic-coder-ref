@@ -249,8 +249,8 @@ def main():
             )
         else:
             print(f"Executing plan {plan_branch} using agent {agent_name}...")
-            prompt_file = f"/tmp/exec_prompt-{exec_seq}.md"
-            intent_file = f"/tmp/exec_intent-{exec_seq}.json"
+            prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{exec_seq}.md")
+            intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{exec_seq}.json")
             full_prompt = (
                 f"Execute plan {plan_branch}.\n\n"
                 f"Plan content:\n{plan_content}\n\n"

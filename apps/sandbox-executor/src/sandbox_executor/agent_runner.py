@@ -190,6 +190,20 @@ class StandardAgentRunner(AgentRunner):
         return cmd
 
 
+class AntigravityAgentRunner(StandardAgentRunner):
+    """Runner for the Antigravity agent.
+
+    Defers evaluation of the ``AGY_EFFORT`` environment variable to
+    :meth:`build_cmd` so that runtime changes to the variable are always
+    respected instead of being frozen at module import time.
+    """
+
+    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+        # Resolve AGY_EFFORT at call time, not at module-import time.
+        self.suffix = ["--effort", os.getenv("AGY_EFFORT", "medium"), "-p"]
+        return super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
+
+
 runners = {
     "pi": StandardAgentRunner(
         "pi",
@@ -251,11 +265,10 @@ runners = {
         ],
         custom_validator="codex",
     ),
-    "antigravity": StandardAgentRunner(
+    "antigravity": AntigravityAgentRunner(
         "antigravity",
         "agy",
         "--model",
-        suffix=["--effort", os.getenv("AGY_EFFORT", "medium"), "-p"],
         custom_validator="antigravity",
     ),
 }
