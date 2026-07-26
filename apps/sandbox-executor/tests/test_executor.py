@@ -65,7 +65,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 
@@ -118,7 +118,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "EXECUTOR_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 

@@ -104,7 +104,7 @@ def main():
     if plan_branch_prefix.endswith("/_"):
         plan_branch_prefix = plan_branch_prefix[:-2]
 
-    repo_dir = os.getenv("HOLON_REPO_DIR") or os.getenv("EXECUTOR_REPO_DIR")
+    repo_dir = os.getenv("HOLON_REPO_DIR")
     if not repo_dir:
         repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
     else:
@@ -264,7 +264,7 @@ def main():
     run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
     run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
     run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
-    skip_push = os.getenv("HOLON_SKIP_PUSH") or os.getenv("EXECUTOR_SKIP_PUSH")
+    skip_push = os.getenv("HOLON_SKIP_PUSH")
     if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
         run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
     else:
