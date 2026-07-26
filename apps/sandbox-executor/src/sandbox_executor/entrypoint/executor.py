@@ -109,7 +109,11 @@ def main():
         repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
     else:
         if os.path.exists(repo_dir):
-            shutil.rmtree(repo_dir)
+            # Ensure we only wipe directory if it's explicitly designated as temporary/sandbox
+            if "sandbox_executor" in repo_dir or "tmp" in repo_dir.lower():
+                shutil.rmtree(repo_dir)
+            else:
+                print(f"Warning: Reusing existing repo directory without wipe: {repo_dir}")
         os.makedirs(repo_dir, exist_ok=True)
 
     repo_url = get_repo_url()
