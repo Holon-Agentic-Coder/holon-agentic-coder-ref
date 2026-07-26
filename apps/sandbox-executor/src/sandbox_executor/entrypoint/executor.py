@@ -57,7 +57,7 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
             if in_section and (
                 line.strip().startswith("- ") or line.strip().startswith("* ") or line.strip().startswith("1.")
             ):
-                text = line.strip().lstrip("-*0123456789. ").strip()
+                text = re.sub(r"^[\s\-*0-9.]+", "", line.strip()).strip()
                 if text:
                     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
                     sub_intents.append(
@@ -110,7 +110,7 @@ def main():
     else:
         if os.path.exists(repo_dir):
             # Ensure we only wipe directory if it's explicitly designated as temporary/sandbox
-            if "sandbox_executor" in repo_dir or "tmp" in repo_dir.lower():
+            if os.path.basename(repo_dir).startswith("sandbox_executor_"):
                 shutil.rmtree(repo_dir)
             else:
                 print(f"Warning: Reusing existing repo directory without wipe: {repo_dir}")
@@ -142,6 +142,7 @@ def main():
                         plan_id in plan_branch_prefix or plan_branch_prefix.endswith(plan_id)
                     ):
                         plan_data = data
+                        break
                 except Exception as e:
                     print(f"Warning: skipping line {line_no} in plans.jsonl: {e}")
 
@@ -178,6 +179,7 @@ def main():
                         target_intent_branch.startswith(branch) or branch == target_intent_branch.rstrip("/_")
                     ):
                         intent_data = data
+                        break
                 except Exception as e:
                     # Ignore invalid or corrupted lines in intents ledger
                     print(f"Warning: skipping unparseable line in intents.jsonl: {e}")

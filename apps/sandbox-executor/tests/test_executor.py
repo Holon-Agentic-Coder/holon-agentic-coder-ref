@@ -64,7 +64,7 @@ class TestExecutor(unittest.TestCase):
         mock_run_cmd.side_effect = side_effect
 
         with (
-            tempfile.TemporaryDirectory() as tmp_dir,
+            tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
@@ -117,7 +117,7 @@ class TestExecutor(unittest.TestCase):
         mock_run_cmd.side_effect = side_effect
 
         with (
-            tempfile.TemporaryDirectory() as tmp_dir,
+            tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
