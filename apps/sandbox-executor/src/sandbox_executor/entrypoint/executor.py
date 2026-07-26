@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import contextlib
 import json
 import os
 import re
@@ -12,14 +13,19 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
-def run_cmd(args, cwd=None, env=None, check=True):
+def run_cmd(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     print(f"Running: {' '.join(args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
         print(f"Stdout:\n{result.stdout}")
         print(f"Stderr:\n{result.stderr}")
-        sys.exit(abs(result.returncode) or 1)
+        raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
     return result
 
 
@@ -65,7 +71,9 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
                 break
             stripped_line = line.strip()
             if in_section and (
-                stripped_line.startswith("- ") or stripped_line.startswith("* ") or re.match(r"^\d+\.\s+", stripped_line)
+                stripped_line.startswith("- ")
+                or stripped_line.startswith("* ")
+                or re.match(r"^\d+\.\s+", stripped_line)
             ):
                 text = re.sub(r"^([\s\-*]|\d+\.)\s*", "", stripped_line).strip()
                 if text:
@@ -120,17 +128,14 @@ def main():
         repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
         is_temp_dir = True
     else:
-        if os.path.exists(repo_dir):
-            # Ensure we only wipe directory if it's explicitly designated as temporary/sandbox
-            if os.path.basename(repo_dir).startswith("sandbox_executor_"):
-                shutil.rmtree(repo_dir)
-            else:
-                print(f"Warning: Reusing existing repo directory without wipe: {repo_dir}")
         os.makedirs(repo_dir, exist_ok=True)
 
     try:
         repo_url = get_repo_url()
-        run_cmd(["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."], cwd=repo_dir)
+        run_cmd(
+            ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
+            cwd=repo_dir,
+        )
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
@@ -188,9 +193,7 @@ def main():
                     try:
                         data = json.loads(line)
                         branch = data.get("branch")
-                        if isinstance(branch, str) and (
-                            target_intent_branch.rstrip("/_") == branch.rstrip("/_")
-                        ):
+                        if isinstance(branch, str) and (target_intent_branch.rstrip("/_") == branch.rstrip("/_")):
                             intent_data = data
                             break
                     except Exception as e:
@@ -200,7 +203,7 @@ def main():
         if not intent_data:
             intent_data = {"branch": plan_data.get("intent_branch", "I-unknown")}
 
-        timestamp_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        timestamp_str = datetime.now(UTC).isoformat()
         ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
         os.makedirs(ledger_dir, exist_ok=True)
 
@@ -271,10 +274,8 @@ def main():
             finally:
                 for tf in (prompt_file, intent_file):
                     if os.path.exists(tf):
-                        try:
+                        with contextlib.suppress(Exception):
                             os.remove(tf)
-                        except Exception:
-                            pass
 
             exec_file_rel = f"executions/{exec_id}.md"
             exec_file_path = os.path.join(repo_dir, exec_file_rel)
@@ -319,4 +320,3 @@ def main():
                 shutil.rmtree(repo_dir)
             except Exception as e:
                 print(f"Warning: Failed to clean up temp repo dir {repo_dir}: {e}")
-

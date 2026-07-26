@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -175,6 +176,33 @@ class TestExecutor(unittest.TestCase):
             with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
                 content = inf.read()
                 self.assertIn("sub-intent-part-1", content)
+
+    def test_run_cmd_raises_called_process_error(self):
+        with self.assertRaises(subprocess.CalledProcessError) as ctx:
+            executor.run_cmd(["false"], check=True)
+        self.assertEqual(ctx.exception.returncode, 1)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_main_custom_holon_repo_dir_not_deleted(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_get_runner.return_value = mock_runner
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_run_cmd.return_value = mock_result
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            custom_dir = os.path.join(tmp_dir, "custom_repo")
+            os.makedirs(custom_dir, exist_ok=True)
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": custom_dir, "HOLON_SKIP_PUSH": "1"}),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            ):
+                executor.main()
+
+            self.assertTrue(os.path.exists(custom_dir))
 
 
 if __name__ == "__main__":
