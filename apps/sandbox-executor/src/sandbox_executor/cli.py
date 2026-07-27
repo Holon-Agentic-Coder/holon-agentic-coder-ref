@@ -92,20 +92,18 @@ def run_docker_container(
     # Set Role
     docker_cmd.extend(["-e", f"HOLON_ROLE={role}"])
 
-    # Auto-detect GitHub Token
+    # Forward all host environment variables prefixed with HOLON_AGENT_ and GITHUB_TOKEN
+    env_to_forward = {}
     gh_token = find_github_token()
     if gh_token:
-        docker_cmd.extend(["-e", f"GITHUB_TOKEN={gh_token}"])
+        env_to_forward["GITHUB_TOKEN"] = gh_token
 
-    # Auto-detect HOLON_AGENT_KEY
-    agent_key = (
-        os.getenv("HOLON_AGENT_KEY")
-        or os.getenv("GOOGLE_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-    )
-    if agent_key:
-        docker_cmd.extend(["-e", f"HOLON_AGENT_KEY={agent_key}"])
+    for key, value in os.environ.items():
+        if key.startswith("HOLON_AGENT_") or key == "GITHUB_TOKEN":
+            env_to_forward[key] = value
+
+    for key, value in sorted(env_to_forward.items()):
+        docker_cmd.extend(["-e", f"{key}={value}"])
 
     # SSH Agent Socket Mounts
     ssh_mounts, ssh_envs = get_ssh_auth_mounts()
@@ -132,9 +130,6 @@ def run_docker_container(
     sensitive_keys = [
         "GITHUB_TOKEN",
         "HOLON_AGENT_KEY",
-        "GOOGLE_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
     ]
     sanitized_cmd = []
     for item in docker_cmd:

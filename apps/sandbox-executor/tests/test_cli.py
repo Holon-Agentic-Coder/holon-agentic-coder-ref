@@ -29,13 +29,37 @@ class TestHolonCLI(unittest.TestCase):
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container(self, mock_which, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
-        with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}):
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
             code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
             self.assertEqual(code, 0)
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
             self.assertIn("GITHUB_TOKEN=secret_token", args)
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        env = {
+            "GITHUB_TOKEN": "my-github-token",
+            "HOLON_AGENT_KEY": "my-agent-key",
+            "HOLON_AGENT_EFFORT": "high",
+            "HOLON_AGENT_PROVIDER": "anthropic",
+            "SOME_OTHER_VAR": "should-not-be-forwarded",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
+            self.assertEqual(code, 0)
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0][0]
+            self.assertIn("docker", args)
+            self.assertIn("GITHUB_TOKEN=my-github-token", args)
+            self.assertIn("HOLON_AGENT_KEY=my-agent-key", args)
+            self.assertIn("HOLON_AGENT_EFFORT=high", args)
+            self.assertIn("HOLON_AGENT_PROVIDER=anthropic", args)
+            # Ensure non-prefixed variable is NOT forwarded
+            self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_main_subcommands(self, mock_run_container):

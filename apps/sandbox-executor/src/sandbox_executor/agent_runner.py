@@ -48,8 +48,8 @@ class StandardAgentRunner(AgentRunner):
         self.custom_validator = custom_validator
 
     def resolve_credentials(self) -> None:
-        """Processes Tier 1 secret bundles / generic envvars and maps credentials into os.environ."""
-        # 1. Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
+        """Processes Tier 1 secret bundles to unpack configuration files."""
+        # Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
         secret_bundle_path = os.getenv("HOLON_SECRET_BUNDLE_PATH", "/run/secrets/holon_auth.json")
         if os.path.exists(secret_bundle_path):
             try:
@@ -61,7 +61,7 @@ class StandardAgentRunner(AgentRunner):
                 if not target_agent or target_agent.lower() == self.agent_id:
                     api_key = bundle.get("api_key") or bundle.get("token")
                     if api_key:
-                        self._apply_generic_token(api_key)
+                        os.environ["HOLON_AGENT_KEY"] = api_key
 
                     # Unpack session files into /home/holon/ if specified
                     config_files = bundle.get("config_files", {})
@@ -78,63 +78,42 @@ class StandardAgentRunner(AgentRunner):
             except Exception as e:
                 logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
 
-        # 2. Universal Env Contract (HOLON_AGENT_KEY)
-        generic_token = os.getenv("HOLON_AGENT_KEY")
-        if generic_token:
-            self._apply_generic_token(generic_token)
-
-    def _apply_generic_token(self, token: str) -> None:
-        """Maps generic auth token to agent-specific environment variables in os.environ."""
-        mapping = {
-            "antigravity": ["AGY_USER_TOKEN", "GOOGLE_API_KEY"],
-            "claude": ["ANTHROPIC_API_KEY"],
-            "pi": ["PI_API_KEY"],
-            "codex": ["OPENAI_API_KEY"],
-            "open-codex": ["OPENAI_API_KEY"],
-            "gemini": ["GEMINI_API_KEY"],
-            "opencode": ["OPENCODE_API_KEY"],
-        }
-        target_envs = mapping.get(self.agent_id, [])
-        for target_env in target_envs:
-            if not os.getenv(target_env):
-                os.environ[target_env] = token
-
     def validate(self) -> None:
         """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
         self.resolve_credentials()
 
         # Tier 2 & 3: Agent-specific environment variables and session directory fallbacks
         if self.custom_validator == "codex":
-            if os.getenv("CODEX_OSS") in ("true", "1"):
+            if os.getenv("HOLON_AGENT_OSS_MODE") in ("true", "1"):
                 return
-            has_key = os.getenv("OPENAI_API_KEY")
+            has_key = os.getenv("HOLON_AGENT_KEY")
             has_session = os.path.exists("/home/holon/.codex") or os.path.exists(os.path.expanduser("~/.codex"))
             if not (has_key or has_session):
                 print(
                     "Error: Missing required credentials for agent 'codex'.\n"
-                    "Please set 'OPENAI_API_KEY', set 'CODEX_OSS=true', "
-                    "mount active credentials to '/home/holon/.codex', or set 'HOLON_AGENT_KEY'.",
+                    "Please set 'HOLON_AGENT_KEY', set 'HOLON_AGENT_OSS_MODE=true', "
+                    "or mount active credentials to '/home/holon/.codex'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
             return
 
         if self.custom_validator == "gemini":
-            has_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            has_key = os.getenv("HOLON_AGENT_KEY")
             has_gcloud = os.path.exists("/home/holon/.config/gcloud") or os.path.exists(
                 os.path.expanduser("~/.config/gcloud")
             )
             if not (has_key or has_gcloud):
                 print(
                     "Error: Missing required API credentials for agent 'gemini'.\n"
-                    "Please set 'GEMINI_API_KEY' or mount active gcloud credentials to '/home/holon/.config/gcloud'.",
+                    "Please set 'HOLON_AGENT_KEY' or mount active gcloud credentials to '/home/holon/.config/gcloud'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
             return
 
         if self.custom_validator == "antigravity":
-            has_key = os.getenv("GOOGLE_API_KEY") or os.getenv("AGY_USER_TOKEN") or os.getenv("AGY_SESSION_TOKEN")
+            has_key = os.getenv("HOLON_AGENT_KEY")
             has_session = (
                 os.path.exists("/home/holon/.gemini/antigravity-cli")
                 or os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli"))
@@ -144,8 +123,7 @@ class StandardAgentRunner(AgentRunner):
             if not (has_key or has_session):
                 print(
                     "Error: Missing required API credentials for agent 'antigravity'.\n"
-                    "Please set 'AGY_USER_TOKEN', 'GOOGLE_API_KEY', "
-                    "mount active session to '/home/holon/.gemini/antigravity-cli', or set 'HOLON_AGENT_KEY'.",
+                    "Please set 'HOLON_AGENT_KEY' or mount active session to '/home/holon/.gemini/antigravity-cli'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -162,12 +140,12 @@ class StandardAgentRunner(AgentRunner):
                     os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[self.agent_id]
                 )
 
-            if not (any(os.getenv(k) for k in self.required_keys) or has_session_dir):
-                keys_str = ", ".join(self.required_keys)
+            has_key = any(os.getenv(k) for k in self.required_keys)
+
+            if not (has_key or has_session_dir):
                 print(
                     f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
-                    f"Please set at least one of the following environment variables: {keys_str}, "
-                    "set 'HOLON_AGENT_KEY', or mount session credentials.",
+                    "Please set 'HOLON_AGENT_KEY' or mount session credentials.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -193,17 +171,24 @@ class StandardAgentRunner(AgentRunner):
 class AntigravityAgentRunner(StandardAgentRunner):
     """Runner for the Antigravity agent.
 
-    Defers evaluation of the ``AGY_EFFORT`` environment variable to
+    Defers evaluation of the ``HOLON_AGENT_EFFORT`` environment variable to
     :meth:`build_cmd` so that runtime changes to the variable are always
     respected instead of being frozen at module import time.
     """
 
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
-        # Resolve AGY_EFFORT at call time, not at module-import time.
-        self.suffix = ["--effort", os.getenv("AGY_EFFORT", "medium"), "-p"]
+        # Resolve HOLON_AGENT_EFFORT at call time, not at module-import time.
+        self.suffix = ["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"]
         return super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
 
 
+# Runner registry: maps agent_id -> StandardAgentRunner instance.
+#
+# Architectural assumption: one agent per sandbox container execution.
+# HOLON_AGENT_PROVIDER is shared across runners that use it (pi-agent, open-codex),
+# but since only a single agent is active per container, a single HOLON_AGENT_PROVIDER
+# value is always unambiguous at runtime. If multi-agent orchestration is ever needed,
+# per-agent provider overrides would need to be introduced.
 runners = {
     "pi": StandardAgentRunner(
         "pi",
@@ -211,10 +196,12 @@ runners = {
         "--model",
         prefix=["-p"],
         env_mappings=[
-            EnvMapping("PI_PROVIDER", "--provider"),
-            EnvMapping("PI_API_KEY", "--api-key"),
+            # HOLON_AGENT_PROVIDER selects the backend provider (e.g. anthropic, openai).
+            # Auth is handled by HOLON_AGENT_KEY, which _apply_generic_token maps to PI_API_KEY
+            # internally so the pi CLI can authenticate via its native env var.
+            EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
         ],
-        required_keys=["PI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"],
+        required_keys=["HOLON_AGENT_KEY"],
     ),
     "open-codex": StandardAgentRunner(
         "open-codex",
@@ -222,9 +209,9 @@ runners = {
         "-m",
         prefix=["-q"],
         env_mappings=[
-            EnvMapping("OPEN_CODEX_PROVIDER", "--provider"),
+            EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
         ],
-        required_keys=["OPENAI_API_KEY"],
+        required_keys=["HOLON_AGENT_KEY"],
     ),
     "claude": StandardAgentRunner(
         "claude",
@@ -232,9 +219,9 @@ runners = {
         "--model",
         suffix=["-p"],
         env_mappings=[
-            EnvMapping("CLAUDE_SETTINGS", "--settings"),
+            EnvMapping("HOLON_AGENT_SETTINGS", "--settings"),
         ],
-        required_keys=["ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"],
+        required_keys=["HOLON_AGENT_KEY"],
     ),
     "gemini": StandardAgentRunner(
         "gemini",
@@ -249,9 +236,10 @@ runners = {
         "--model",
         prefix=["run"],
         env_mappings=[
-            EnvMapping("OPENCODE_AGENT", "--agent"),
+            # HOLON_AGENT_MODE selects the opencode sub-agent (e.g. code, architect).
+            EnvMapping("HOLON_AGENT_MODE", "--agent"),
         ],
-        required_keys=["OPENCODE_API_KEY", "KIMI_API_KEY"],
+        required_keys=["HOLON_AGENT_KEY"],
     ),
     "codex": StandardAgentRunner(
         "codex",
@@ -259,9 +247,10 @@ runners = {
         "-m",
         prefix=["exec"],
         env_mappings=[
-            EnvMapping("CODEX_OSS", "--oss", is_boolean=True),
-            EnvMapping("CODEX_LOCAL_PROVIDER", "--local-provider"),
-            EnvMapping("CODEX_CONFIG", "-c"),
+            # HOLON_AGENT_OSS_MODE=true enables offline/open-source mode (no API key required).
+            EnvMapping("HOLON_AGENT_OSS_MODE", "--oss", is_boolean=True),
+            EnvMapping("HOLON_AGENT_LOCAL_PROVIDER", "--local-provider"),
+            EnvMapping("HOLON_AGENT_CONFIG", "-c"),
         ],
         custom_validator="codex",
     ),
