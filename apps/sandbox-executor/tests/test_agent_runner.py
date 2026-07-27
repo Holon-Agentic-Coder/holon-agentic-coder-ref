@@ -170,6 +170,8 @@ class TestAgentRunner(unittest.TestCase):
             # so the pi CLI binary can authenticate using its native credential variable.
             self.assertEqual(os.getenv("PI_API_KEY"), "sk-ant-test",
                              "HOLON_AGENT_KEY must be mapped to PI_API_KEY by _apply_generic_token()")
+            # Regression guard: --api-key must never appear as a CLI flag (auth is env-based)
+            self.assertNotIn("--api-key", cmd)
 
     def test_secret_bundle_parsing_and_filtering(self):
         """Test secret bundle parsing, agent filtering, and config_files unpacking."""

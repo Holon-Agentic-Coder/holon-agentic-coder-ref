@@ -94,6 +94,26 @@ class TestHolonCLI(unittest.TestCase):
                 agent_id="antigravity",
             )
 
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_legacy_key_deprecation_warning(self, mock_which, mock_run):
+        """Deprecation warning is printed to stderr when a legacy API key is set but HOLON_AGENT_KEY is not.
+
+        Verifies the else-branch inside run_docker_container() that warns operators
+        who haven't migrated from vendor-specific keys (e.g. ANTHROPIC_API_KEY) to
+        the unified HOLON_AGENT_KEY variable.
+        """
+        import io
+
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-123"}, clear=True), \
+             patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+            run_docker_container("planner", "holon/agent-claude", [], agent_id="claude")
+            warning_output = mock_err.getvalue()
+            self.assertIn("ANTHROPIC_API_KEY", warning_output)
+            self.assertIn("HOLON_AGENT_KEY", warning_output)
+            self.assertIn("MIGRATION.md", warning_output)
+
 
 if __name__ == "__main__":
     unittest.main()

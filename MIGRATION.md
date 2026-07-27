@@ -64,13 +64,22 @@ native credential variable at runtime.
 
 ## Diagnostic Warning
 
-If `sandbox-executor` detects a legacy key (e.g. `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`)
-in the environment but `HOLON_AGENT_KEY` is not set, it will print a warning to stderr:
+If `sandbox-executor` detects a legacy key in the environment but `HOLON_AGENT_KEY` is not
+set, it will print a warning to stderr. The following keys are checked (in order):
+
+- `GOOGLE_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+- `OPENCODE_API_KEY`
+
+Example warning (first detected key wins):
 
 ```
 Warning: 'ANTHROPIC_API_KEY' is set but is no longer used by sandbox-executor.
-Please set 'HOLON_AGENT_KEY' instead. See MIGRATION.md for the complete variable mapping.
+Please set 'HOLON_AGENT_KEY' instead. See MIGRATION.md (...) for the complete variable mapping.
 ```
 
-This warning is emitted once per invocation and does **not** prevent execution — but the
-agent container will not receive an API key and authentication will fail inside the agent CLI.
+This warning is emitted **at most once per invocation** (the first detected legacy key triggers
+it and execution continues). The agent container will not receive an API key and authentication
+will fail inside the agent CLI.
