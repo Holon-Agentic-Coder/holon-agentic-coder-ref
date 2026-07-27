@@ -13,18 +13,28 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
+def redact_args(args: list[str]) -> list[str]:
+    import re
+    redacted = []
+    for arg in args:
+        masked = re.sub(r"(https?://[^:]+:)[^@]+(@)", r"\1*******\2", str(arg))
+        redacted.append(masked)
+    return redacted
+
+
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    print_args = [str(arg)[:100] + "..." if len(str(arg)) > 100 else str(arg) for arg in args]
+    redacted_args = redact_args(args)
+    print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
     print(f"Running: {' '.join(print_args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
-        print(f"Full args: {' '.join(args)}")
+        print(f"Full args: {' '.join(redacted_args)}")
         print(f"Stdout:\n{result.stdout}")
         print(f"Stderr:\n{result.stderr}")
         raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
@@ -125,9 +135,11 @@ def main():
         plan_branch_prefix = plan_branch_prefix[:-2]
 
     repo_dir = os.getenv("HOLON_REPO_DIR")
+    is_default_repo = False
     if not repo_dir:
-        repo_dir = os.path.expanduser("~/sandbox_executor_workspace")
-        if os.getenv("IS_SANDBOX") == "1" and os.path.exists(repo_dir):
+        repo_dir = os.path.expanduser("~/repo")
+        is_default_repo = True
+        if os.path.exists(repo_dir):
             shutil.rmtree(repo_dir, ignore_errors=True)
     os.makedirs(repo_dir, exist_ok=True)
     try:
@@ -318,5 +330,10 @@ def main():
         print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
 
     except Exception as e:
+        import traceback
         print(f"Execution failed: {e}")
+        traceback.print_exc()
         sys.exit(1)
+    finally:
+        if is_default_repo and os.path.exists(repo_dir):
+            shutil.rmtree(repo_dir, ignore_errors=True)

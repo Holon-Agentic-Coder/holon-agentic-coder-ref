@@ -205,5 +205,40 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(os.path.exists(custom_dir))
 
 
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
+    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
+    def test_main_default_workspace_deleted(
+        self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_get_runner.return_value = mock_runner
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_run_cmd.return_value = mock_result
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            default_dir = os.path.join(tmp_dir, "repo")
+            mock_expanduser.return_value = default_dir
+            os.makedirs(default_dir, exist_ok=True)
+            
+            env = os.environ.copy()
+            if "HOLON_REPO_DIR" in env:
+                del env["HOLON_REPO_DIR"]
+            env["HOLON_SKIP_PUSH"] = "1"
+            
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            ):
+                executor.main()
+
+            self.assertTrue(mock_rmtree.called)
+            mock_rmtree.assert_called_with(default_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
