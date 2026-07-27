@@ -101,6 +101,19 @@ def run_docker_container(
     agent_key = os.getenv("HOLON_AGENT_KEY")
     if agent_key:
         docker_cmd.extend(["-e", f"HOLON_AGENT_KEY={agent_key}"])
+    else:
+        # Warn operators who haven't migrated from legacy vendor-specific keys yet.
+        # These keys are no longer injected into the container — only HOLON_AGENT_KEY is used.
+        _legacy_keys = ["GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
+        for _legacy_key in _legacy_keys:
+            if os.getenv(_legacy_key):
+                print(
+                    f"Warning: '{_legacy_key}' is set but is no longer used by sandbox-executor. "
+                    "Please set 'HOLON_AGENT_KEY' instead. "
+                    "See MIGRATION.md for the complete variable mapping.",
+                    file=sys.stderr,
+                )
+                break
 
     # SSH Agent Socket Mounts
     ssh_mounts, ssh_envs = get_ssh_auth_mounts()

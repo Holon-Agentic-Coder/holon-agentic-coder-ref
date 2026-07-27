@@ -92,15 +92,20 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("custom-ollama", cmd)
 
         # 4. Pi provider (auth handled internally via HOLON_AGENT_KEY -> PI_API_KEY)
+        # Note: --api-key is NOT a CLI flag anymore; the pi CLI reads PI_API_KEY from
+        # os.environ directly. _apply_generic_token() maps HOLON_AGENT_KEY -> PI_API_KEY.
         env = {
             "HOLON_AGENT_PROVIDER": "anthropic",
             "HOLON_AGENT_KEY": "sk-ant-123",
         }
-        with patch.dict(os.environ, env):
+        with patch.dict(os.environ, env, clear=True):
             runner = get_runner("pi-agent")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--provider", cmd)
             self.assertIn("anthropic", cmd)
+            # Verify HOLON_AGENT_KEY was translated to PI_API_KEY in os.environ
+            # so the pi CLI binary can authenticate using its native env var.
+            self.assertEqual(os.getenv("PI_API_KEY"), "sk-ant-123")
 
     def test_three_tier_fallback_contract(self):
         """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
@@ -143,6 +148,28 @@ class TestAgentRunner(unittest.TestCase):
                 runner.validate()
                 for env_var in env_vars:
                     self.assertEqual(os.getenv(env_var), "test-key-999")
+
+    def test_pi_agent_api_key_env_injection(self):
+        """End-to-end: HOLON_AGENT_KEY is translated to PI_API_KEY in os.environ for pi-agent.
+
+        The pi CLI reads its API key from PI_API_KEY (its native env var), not from a
+        --api-key CLI flag. _apply_generic_token() performs this translation during build_cmd.
+        This test verifies the full chain: HOLON_AGENT_KEY -> PI_API_KEY -> available to
+        the pi CLI process at runtime.
+        """
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "sk-ant-test", "HOLON_AGENT_PROVIDER": "anthropic"}, clear=True):
+            runner = get_runner("pi-agent")
+            cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
+            # Confirm the CLI command contains the provider flag
+            self.assertIn("--provider", cmd)
+            self.assertIn("anthropic", cmd)
+            # Confirm HOLON_AGENT_KEY was injected as PI_API_KEY into the process environment
+            # so the pi CLI binary can authenticate using its native credential variable.
+            self.assertEqual(os.getenv("PI_API_KEY"), "sk-ant-test",
+                             "HOLON_AGENT_KEY must be mapped to PI_API_KEY by _apply_generic_token()")
 
     def test_secret_bundle_parsing_and_filtering(self):
         """Test secret bundle parsing, agent filtering, and config_files unpacking."""

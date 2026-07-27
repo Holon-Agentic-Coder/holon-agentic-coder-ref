@@ -206,6 +206,13 @@ class AntigravityAgentRunner(StandardAgentRunner):
         return super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
 
 
+# Runner registry: maps agent_id -> StandardAgentRunner instance.
+#
+# Architectural assumption: one agent per sandbox container execution.
+# HOLON_AGENT_PROVIDER is shared across runners that use it (pi-agent, open-codex),
+# but since only a single agent is active per container, a single HOLON_AGENT_PROVIDER
+# value is always unambiguous at runtime. If multi-agent orchestration is ever needed,
+# per-agent provider overrides would need to be introduced.
 runners = {
     "pi": StandardAgentRunner(
         "pi",
