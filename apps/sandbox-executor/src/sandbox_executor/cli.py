@@ -7,14 +7,6 @@ import shutil
 import subprocess
 import sys
 
-_LEGACY_ENV_VARS = [
-    "GOOGLE_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    "OPENCODE_API_KEY",
-]
-
 
 def find_github_token() -> str | None:
     """Auto-detect GitHub token from environment variables or gh CLI."""
@@ -109,20 +101,6 @@ def run_docker_container(
     agent_key = os.getenv("HOLON_AGENT_KEY")
     if agent_key:
         docker_cmd.extend(["-e", f"HOLON_AGENT_KEY={agent_key}"])
-    else:
-        # Warn operators who haven't migrated from legacy vendor-specific keys yet.
-        # These keys are no longer injected into the container — only HOLON_AGENT_KEY is used.
-        for _legacy_var in _LEGACY_ENV_VARS:
-            if os.getenv(_legacy_var):
-                print(
-                    f"Warning: '{_legacy_var}' is set but is no longer used by sandbox-executor. "
-                    "Please set 'HOLON_AGENT_KEY' instead. "
-                    "See MIGRATION.md "
-                    "(https://github.com/Holon-Agentic-Coder/holon-agentic-coder-ref/blob/main/MIGRATION.md) "
-                    "for the complete variable mapping.",
-                    file=sys.stderr,
-                )
-                break
 
     # SSH Agent Socket Mounts
     ssh_mounts, ssh_envs = get_ssh_auth_mounts()
