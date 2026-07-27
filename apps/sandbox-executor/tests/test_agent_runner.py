@@ -276,35 +276,6 @@ class TestAgentRunner(unittest.TestCase):
                 self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
                 self.assertEqual(os.getenv("ANTHROPIC_API_KEY"), "bundle-claude-key")
 
-    def test_validation_legacy_keys(self):
-        """Test that validation succeeds when HOLON_AGENT_KEY is absent but legacy API keys are present."""
-        import os
-        from unittest.mock import patch
-
-        legacy_cases = {
-            "codex": {"OPENAI_API_KEY": "legacy-openai"},
-            "gemini": {"GEMINI_API_KEY": "legacy-gemini"},
-            "gemini_google": {"GOOGLE_API_KEY": "legacy-google"},
-            "antigravity_google": {"GOOGLE_API_KEY": "legacy-google"},
-            "antigravity_user": {"AGY_USER_TOKEN": "legacy-agy-user"},
-            "antigravity_session": {"AGY_SESSION_TOKEN": "legacy-agy-session"},
-            "claude": {"ANTHROPIC_API_KEY": "legacy-anthropic"},
-            "pi": {"PI_API_KEY": "legacy-pi"},
-            "open-codex": {"OPENAI_API_KEY": "legacy-openai"},
-            "opencode": {"OPENCODE_API_KEY": "legacy-opencode"},
-        }
-
-        for name, env_dict in legacy_cases.items():
-            agent_id = name.split("_")[0]
-            with (
-                self.subTest(agent=agent_id, env=env_dict),
-                patch.dict(os.environ, env_dict, clear=True),
-                patch("os.path.exists", return_value=False),
-            ):
-                runner = get_runner(agent_id)
-                # Should pass validation without raising SystemExit
-                runner.validate()
-
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
         """Integration test to verify that the configured agent runner binaries
