@@ -61,6 +61,7 @@ class StandardAgentRunner(AgentRunner):
                 if not target_agent or target_agent.lower() == self.agent_id:
                     api_key = bundle.get("api_key") or bundle.get("token")
                     if api_key:
+                        os.environ["HOLON_AGENT_KEY"] = api_key
                         self._apply_generic_token(api_key)
 
                     # Unpack session files into /home/holon/ if specified
@@ -112,7 +113,7 @@ class StandardAgentRunner(AgentRunner):
         if self.custom_validator == "codex":
             if os.getenv("HOLON_AGENT_OSS_MODE") in ("true", "1"):
                 return
-            has_key = os.getenv("HOLON_AGENT_KEY")
+            has_key = os.getenv("HOLON_AGENT_KEY") or os.getenv("OPENAI_API_KEY")
             has_session = os.path.exists("/home/holon/.codex") or os.path.exists(os.path.expanduser("~/.codex"))
             if not (has_key or has_session):
                 print(
@@ -125,7 +126,7 @@ class StandardAgentRunner(AgentRunner):
             return
 
         if self.custom_validator == "gemini":
-            has_key = os.getenv("HOLON_AGENT_KEY")
+            has_key = os.getenv("HOLON_AGENT_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
             has_gcloud = os.path.exists("/home/holon/.config/gcloud") or os.path.exists(
                 os.path.expanduser("~/.config/gcloud")
             )
@@ -139,7 +140,12 @@ class StandardAgentRunner(AgentRunner):
             return
 
         if self.custom_validator == "antigravity":
-            has_key = os.getenv("HOLON_AGENT_KEY")
+            has_key = (
+                os.getenv("HOLON_AGENT_KEY")
+                or os.getenv("GOOGLE_API_KEY")
+                or os.getenv("AGY_USER_TOKEN")
+                or os.getenv("AGY_SESSION_TOKEN")
+            )
             has_session = (
                 os.path.exists("/home/holon/.gemini/antigravity-cli")
                 or os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli"))
@@ -166,7 +172,16 @@ class StandardAgentRunner(AgentRunner):
                     os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[self.agent_id]
                 )
 
-            if not (any(os.getenv(k) for k in self.required_keys) or has_session_dir):
+            mapping = {
+                "claude": ["ANTHROPIC_API_KEY"],
+                "pi": ["PI_API_KEY"],
+                "open-codex": ["OPENAI_API_KEY"],
+                "opencode": ["OPENCODE_API_KEY"],
+            }
+            legacy_keys = mapping.get(self.agent_id, [])
+            has_key = any(os.getenv(k) for k in self.required_keys) or any(os.getenv(k) for k in legacy_keys)
+
+            if not (has_key or has_session_dir):
                 print(
                     f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
                     "Please set 'HOLON_AGENT_KEY' or mount session credentials.",
