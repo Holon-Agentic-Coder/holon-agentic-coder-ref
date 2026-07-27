@@ -31,11 +31,7 @@ class TestAgentRunner(unittest.TestCase):
             "antigravity": ["agy", "--model", "gemini-3.5-flash", "--effort", "medium", "-p", "compiled prompt text"],
         }
         dummy_env = {
-            "OPENAI_API_KEY": "dummy",
-            "ANTHROPIC_API_KEY": "dummy",
-            "GEMINI_API_KEY": "dummy",
-            "OPENCODE_API_KEY": "dummy",
-            "GOOGLE_API_KEY": "dummy",
+            "HOLON_AGENT_KEY": "dummy",
         }
         with patch.dict(os.environ, dummy_env):
             for agent_name, expected_cmd in expected_commands.items():
@@ -67,7 +63,7 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         # 1. Claude settings
-        with patch.dict(os.environ, {"CLAUDE_SETTINGS": "/path/to/settings.json", "ANTHROPIC_API_KEY": "dummy"}):
+        with patch.dict(os.environ, {"HOLON_AGENT_SETTINGS": "/path/to/settings.json", "HOLON_AGENT_KEY": "dummy"}):
             runner = get_runner("claude")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--settings", cmd)
@@ -75,9 +71,9 @@ class TestAgentRunner(unittest.TestCase):
 
         # 2. Codex OSS and local provider configurations
         env = {
-            "CODEX_OSS": "true",
-            "CODEX_LOCAL_PROVIDER": "ollama",
-            "CODEX_CONFIG": "temperature=0.2",
+            "HOLON_AGENT_OSS_MODE": "true",
+            "HOLON_AGENT_LOCAL_PROVIDER": "ollama",
+            "HOLON_AGENT_CONFIG": "temperature=0.2",
         }
         with patch.dict(os.environ, env):
             runner = get_runner("codex")
@@ -89,24 +85,24 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("temperature=0.2", cmd)
 
         # 3. Open Codex provider
-        with patch.dict(os.environ, {"OPEN_CODEX_PROVIDER": "custom-ollama", "OPENAI_API_KEY": "dummy"}):
+        with patch.dict(os.environ, {"HOLON_AGENT_PROVIDER": "custom-ollama", "HOLON_AGENT_KEY": "dummy"}):
             runner = get_runner("open-codex")
             cmd = runner.build_cmd("m", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--provider", cmd)
             self.assertIn("custom-ollama", cmd)
 
-        # 4. Pi provider and api-key
+        # 4. Pi provider (auth handled internally via HOLON_AGENT_KEY -> PI_API_KEY)
+        # Note: --api-key is NOT a CLI flag anymore; the pi CLI reads PI_API_KEY from
+        # os.environ directly. _apply_generic_token() maps HOLON_AGENT_KEY -> PI_API_KEY.
         env = {
-            "PI_PROVIDER": "anthropic",
-            "PI_API_KEY": "sk-ant-123",
+            "HOLON_AGENT_PROVIDER": "anthropic",
+            "HOLON_AGENT_KEY": "sk-ant-123",
         }
-        with patch.dict(os.environ, env):
+        with patch.dict(os.environ, env, clear=True):
             runner = get_runner("pi-agent")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--provider", cmd)
             self.assertIn("anthropic", cmd)
-            self.assertIn("--api-key", cmd)
-            self.assertIn("sk-ant-123", cmd)
 
     def test_three_tier_fallback_contract(self):
         """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
@@ -119,31 +115,6 @@ class TestAgentRunner(unittest.TestCase):
                     runner = get_runner(agent_name)
                     # Should pass validation without raising SystemExit
                     runner.validate()
-
-    def test_generic_token_mapping(self):
-        """Test that HOLON_AGENT_KEY maps to agent-specific environment variables in os.environ."""
-        import os
-        from unittest.mock import patch
-
-        expected_env_mapping = {
-            "claude": ["ANTHROPIC_API_KEY"],
-            "antigravity": ["AGY_USER_TOKEN", "GOOGLE_API_KEY"],
-            "pi": ["PI_API_KEY"],
-            "codex": ["OPENAI_API_KEY"],
-            "open-codex": ["OPENAI_API_KEY"],
-            "gemini": ["GEMINI_API_KEY"],
-            "opencode": ["OPENCODE_API_KEY"],
-        }
-
-        for agent_id, env_vars in expected_env_mapping.items():
-            with (
-                self.subTest(agent=agent_id),
-                patch.dict(os.environ, {"HOLON_AGENT_KEY": "test-key-999"}, clear=True),
-            ):
-                runner = get_runner(agent_id)
-                runner.validate()
-                for env_var in env_vars:
-                    self.assertEqual(os.getenv(env_var), "test-key-999")
 
     def test_secret_bundle_parsing_and_filtering(self):
         """Test secret bundle parsing, agent filtering, and config_files unpacking."""
@@ -171,10 +142,10 @@ class TestAgentRunner(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True):
                 runner = get_runner("claude")
                 runner.validate()
-                self.assertEqual(os.getenv("ANTHROPIC_API_KEY"), "bundle-claude-key")
+                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
-            # Test targeting non-matching agent (gemini) -> should not set GEMINI_API_KEY
+            # Test targeting non-matching agent (gemini) -> should not set HOLON_AGENT_KEY
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("os.path.exists", side_effect=lambda p: p == bundle_path),
@@ -182,7 +153,7 @@ class TestAgentRunner(unittest.TestCase):
                 runner = get_runner("gemini")
                 with self.assertRaises(SystemExit):
                     runner.validate()
-                self.assertIsNone(os.getenv("GEMINI_API_KEY"))
+                self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
 
     def test_secret_bundle_path_traversal(self):
         """Test that path traversal attempts in secret bundle config_files are detected and blocked."""
@@ -216,6 +187,32 @@ class TestAgentRunner(unittest.TestCase):
                     runner.resolve_credentials()
                     mock_warn.assert_called()
                     self.assertIn("Path traversal detected", str(mock_warn.call_args))
+
+    def test_secret_bundle_api_key_only(self):
+        """Assert that a secret bundle containing only api_key (with no config files)
+        successfully validates and propagates the token.
+        """
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, "holon_auth.json")
+            bundle_data = {
+                "agent_id": "claude",
+                "api_key": "bundle-claude-key",
+            }
+            with open(bundle_path, "w") as f:
+                json.dump(bundle_data, f)
+
+            fake_home = os.path.join(tmpdir, "home")
+            os.makedirs(fake_home, exist_ok=True)
+            env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
+            with patch.dict(os.environ, env, clear=True):
+                runner = get_runner("claude")
+                runner.validate()
+                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
