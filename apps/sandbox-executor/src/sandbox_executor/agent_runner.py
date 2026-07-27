@@ -48,8 +48,8 @@ class StandardAgentRunner(AgentRunner):
         self.custom_validator = custom_validator
 
     def resolve_credentials(self) -> None:
-        """Processes Tier 1 secret bundles / generic envvars and maps credentials into os.environ."""
-        # 1. Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
+        """Processes Tier 1 secret bundles to unpack configuration files."""
+        # Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
         secret_bundle_path = os.getenv("HOLON_SECRET_BUNDLE_PATH", "/run/secrets/holon_auth.json")
         if os.path.exists(secret_bundle_path):
             try:
@@ -62,7 +62,6 @@ class StandardAgentRunner(AgentRunner):
                     api_key = bundle.get("api_key") or bundle.get("token")
                     if api_key:
                         os.environ["HOLON_AGENT_KEY"] = api_key
-                        self._apply_generic_token(api_key)
 
                     # Unpack session files into /home/holon/ if specified
                     config_files = bundle.get("config_files", {})
@@ -78,32 +77,6 @@ class StandardAgentRunner(AgentRunner):
                             sf.write(content)
             except Exception as e:
                 logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
-
-        # 2. Universal Env Contract (HOLON_AGENT_KEY)
-        generic_token = os.getenv("HOLON_AGENT_KEY")
-        if generic_token:
-            self._apply_generic_token(generic_token)
-
-    def _apply_generic_token(self, token: str) -> None:
-        """Maps HOLON_AGENT_KEY to agent-CLI-specific environment variables in os.environ.
-
-        This is an internal implementation detail — callers set only ``HOLON_AGENT_KEY``.
-        Each agent CLI requires its own vendor-specific variable to authenticate; this
-        method performs that internal translation so the public interface stays agnostic.
-        """
-        mapping = {
-            "antigravity": ["AGY_USER_TOKEN", "GOOGLE_API_KEY"],
-            "claude": ["ANTHROPIC_API_KEY"],
-            "pi": ["PI_API_KEY"],
-            "codex": ["OPENAI_API_KEY"],
-            "open-codex": ["OPENAI_API_KEY"],
-            "gemini": ["GEMINI_API_KEY"],
-            "opencode": ["OPENCODE_API_KEY"],
-        }
-        target_envs = mapping.get(self.agent_id, [])
-        for target_env in target_envs:
-            if not os.getenv(target_env):
-                os.environ[target_env] = token
 
     def validate(self) -> None:
         """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""

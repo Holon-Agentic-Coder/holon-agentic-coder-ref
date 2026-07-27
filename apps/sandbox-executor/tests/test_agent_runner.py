@@ -103,9 +103,6 @@ class TestAgentRunner(unittest.TestCase):
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--provider", cmd)
             self.assertIn("anthropic", cmd)
-            # Verify HOLON_AGENT_KEY was translated to PI_API_KEY in os.environ
-            # so the pi CLI binary can authenticate using its native env var.
-            self.assertEqual(os.getenv("PI_API_KEY"), "sk-ant-123")
 
     def test_three_tier_fallback_contract(self):
         """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
@@ -118,64 +115,6 @@ class TestAgentRunner(unittest.TestCase):
                     runner = get_runner(agent_name)
                     # Should pass validation without raising SystemExit
                     runner.validate()
-
-    def test_generic_token_mapping(self):
-        """Test that HOLON_AGENT_KEY is internally mapped to agent-CLI-specific env vars in os.environ.
-
-        The internal mapping is an implementation detail: it ensures each agent CLI binary
-        can authenticate using its own vendor-specific variable even though the public
-        interface only exposes HOLON_AGENT_KEY.
-        """
-        import os
-        from unittest.mock import patch
-
-        expected_env_mapping = {
-            "claude": ["ANTHROPIC_API_KEY"],
-            "antigravity": ["AGY_USER_TOKEN", "GOOGLE_API_KEY"],
-            "pi": ["PI_API_KEY"],
-            "codex": ["OPENAI_API_KEY"],
-            "open-codex": ["OPENAI_API_KEY"],
-            "gemini": ["GEMINI_API_KEY"],
-            "opencode": ["OPENCODE_API_KEY"],
-        }
-
-        for agent_id, env_vars in expected_env_mapping.items():
-            with (
-                self.subTest(agent=agent_id),
-                patch.dict(os.environ, {"HOLON_AGENT_KEY": "test-key-999"}, clear=True),
-            ):
-                runner = get_runner(agent_id)
-                runner.validate()
-                for env_var in env_vars:
-                    self.assertEqual(os.getenv(env_var), "test-key-999")
-
-    def test_pi_agent_api_key_env_injection(self):
-        """End-to-end: HOLON_AGENT_KEY is translated to PI_API_KEY in os.environ for pi-agent.
-
-        The pi CLI reads its API key from PI_API_KEY (its native env var), not from a
-        --api-key CLI flag. _apply_generic_token() performs this translation during build_cmd.
-        This test verifies the full chain: HOLON_AGENT_KEY -> PI_API_KEY -> available to
-        the pi CLI process at runtime.
-        """
-        import os
-        from unittest.mock import patch
-
-        env = {"HOLON_AGENT_KEY": "sk-ant-test", "HOLON_AGENT_PROVIDER": "anthropic"}
-        with patch.dict(os.environ, env, clear=True):
-            runner = get_runner("pi-agent")
-            cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
-            # Confirm the CLI command contains the provider flag
-            self.assertIn("--provider", cmd)
-            self.assertIn("anthropic", cmd)
-            # Confirm HOLON_AGENT_KEY was injected as PI_API_KEY into the process environment
-            # so the pi CLI binary can authenticate using its native credential variable.
-            self.assertEqual(
-                os.getenv("PI_API_KEY"),
-                "sk-ant-test",
-                "HOLON_AGENT_KEY must be mapped to PI_API_KEY by _apply_generic_token()",
-            )
-            # Regression guard: --api-key must never appear as a CLI flag (auth is env-based)
-            self.assertNotIn("--api-key", cmd)
 
     def test_secret_bundle_parsing_and_filtering(self):
         """Test secret bundle parsing, agent filtering, and config_files unpacking."""
@@ -203,10 +142,10 @@ class TestAgentRunner(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True):
                 runner = get_runner("claude")
                 runner.validate()
-                self.assertEqual(os.getenv("ANTHROPIC_API_KEY"), "bundle-claude-key")
+                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
-            # Test targeting non-matching agent (gemini) -> should not set GEMINI_API_KEY
+            # Test targeting non-matching agent (gemini) -> should not set HOLON_AGENT_KEY
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("os.path.exists", side_effect=lambda p: p == bundle_path),
@@ -214,7 +153,7 @@ class TestAgentRunner(unittest.TestCase):
                 runner = get_runner("gemini")
                 with self.assertRaises(SystemExit):
                     runner.validate()
-                self.assertIsNone(os.getenv("GEMINI_API_KEY"))
+                self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
 
     def test_secret_bundle_path_traversal(self):
         """Test that path traversal attempts in secret bundle config_files are detected and blocked."""
@@ -274,7 +213,6 @@ class TestAgentRunner(unittest.TestCase):
                 runner = get_runner("claude")
                 runner.validate()
                 self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
-                self.assertEqual(os.getenv("ANTHROPIC_API_KEY"), "bundle-claude-key")
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
