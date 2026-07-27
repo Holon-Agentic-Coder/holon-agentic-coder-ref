@@ -160,7 +160,8 @@ class TestAgentRunner(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "sk-ant-test", "HOLON_AGENT_PROVIDER": "anthropic"}, clear=True):
+        env = {"HOLON_AGENT_KEY": "sk-ant-test", "HOLON_AGENT_PROVIDER": "anthropic"}
+        with patch.dict(os.environ, env, clear=True):
             runner = get_runner("pi-agent")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             # Confirm the CLI command contains the provider flag
@@ -168,8 +169,11 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("anthropic", cmd)
             # Confirm HOLON_AGENT_KEY was injected as PI_API_KEY into the process environment
             # so the pi CLI binary can authenticate using its native credential variable.
-            self.assertEqual(os.getenv("PI_API_KEY"), "sk-ant-test",
-                             "HOLON_AGENT_KEY must be mapped to PI_API_KEY by _apply_generic_token()")
+            self.assertEqual(
+                os.getenv("PI_API_KEY"),
+                "sk-ant-test",
+                "HOLON_AGENT_KEY must be mapped to PI_API_KEY by _apply_generic_token()",
+            )
             # Regression guard: --api-key must never appear as a CLI flag (auth is env-based)
             self.assertNotIn("--api-key", cmd)
 

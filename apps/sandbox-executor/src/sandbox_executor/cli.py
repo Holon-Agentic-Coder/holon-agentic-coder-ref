@@ -7,8 +7,7 @@ import shutil
 import subprocess
 import sys
 
-
-_LEGACY_API_KEYS = [
+_LEGACY_ENV_VARS = [
     "GOOGLE_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -113,12 +112,13 @@ def run_docker_container(
     else:
         # Warn operators who haven't migrated from legacy vendor-specific keys yet.
         # These keys are no longer injected into the container — only HOLON_AGENT_KEY is used.
-        for _legacy_key in _LEGACY_API_KEYS:
-            if os.getenv(_legacy_key):
+        for _legacy_var in _LEGACY_ENV_VARS:
+            if os.getenv(_legacy_var):
                 print(
-                    f"Warning: '{_legacy_key}' is set but is no longer used by sandbox-executor. "
+                    f"Warning: '{_legacy_var}' is set but is no longer used by sandbox-executor. "
                     "Please set 'HOLON_AGENT_KEY' instead. "
-                    "See MIGRATION.md (https://github.com/Holon-Agentic-Coder/holon-agentic-coder-ref/blob/main/MIGRATION.md) "
+                    "See MIGRATION.md "
+                    "(https://github.com/Holon-Agentic-Coder/holon-agentic-coder-ref/blob/main/MIGRATION.md) "
                     "for the complete variable mapping.",
                     file=sys.stderr,
                 )

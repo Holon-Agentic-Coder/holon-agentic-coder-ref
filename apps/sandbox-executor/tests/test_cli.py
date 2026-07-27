@@ -106,8 +106,10 @@ class TestHolonCLI(unittest.TestCase):
         import io
 
         mock_run.return_value = MagicMock(returncode=0)
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-123"}, clear=True), \
-             patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+        with (
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-123"}, clear=True),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_err,
+        ):
             run_docker_container("planner", "holon/agent-claude", [], agent_id="claude")
             warning_output = mock_err.getvalue()
             self.assertIn("ANTHROPIC_API_KEY", warning_output)
