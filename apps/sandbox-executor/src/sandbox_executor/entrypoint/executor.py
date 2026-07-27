@@ -19,7 +19,13 @@ def run_cmd(
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    print(f"Running: {' '.join(args)}")
+    print_args = []
+    for arg in args:
+        if len(arg) > 100:
+            print_args.append(arg[:100] + "...")
+        else:
+            print_args.append(arg)
+    print(f"Running: {' '.join(print_args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
@@ -125,10 +131,10 @@ def main():
     is_temp_dir = False
     repo_dir = os.getenv("HOLON_REPO_DIR")
     if not repo_dir:
-        repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
-        is_temp_dir = True
-    else:
-        os.makedirs(repo_dir, exist_ok=True)
+        repo_dir = os.path.expanduser("~/repo")
+        if os.path.exists(repo_dir):
+            shutil.rmtree(repo_dir)
+    os.makedirs(repo_dir, exist_ok=True)
 
     try:
         repo_url = get_repo_url()
@@ -302,7 +308,10 @@ def main():
                 ef.write(json.dumps(exec_entry) + "\n")
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
-            run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
+            if exec_status == "success":
+                run_cmd(["git", "add", "-A"], cwd=repo_dir)
+            else:
+                run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
 
         run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
         run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
