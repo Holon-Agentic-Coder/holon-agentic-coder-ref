@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
@@ -136,7 +137,8 @@ def main():
     repo_dir = os.getenv("HOLON_REPO_DIR")
     is_default_repo = False
     if not repo_dir:
-        repo_dir = os.path.expanduser("~/repo")
+        in_sandbox = bool(os.getenv("HOLON_ROLE") or os.path.exists("/.dockerenv") or os.environ.get("USER") == "holon")
+        repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
         if os.path.exists(repo_dir):
             shutil.rmtree(repo_dir, ignore_errors=True)
@@ -329,8 +331,6 @@ def main():
         print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
 
     except Exception as e:
-        import traceback
-
         print(f"Execution failed: {e}")
         traceback.print_exc()
         sys.exit(1)
