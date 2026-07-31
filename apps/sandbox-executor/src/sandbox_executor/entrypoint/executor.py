@@ -14,8 +14,6 @@ from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
 def redact_args(args: list[str]) -> list[str]:
-    import re
-
     redacted = []
     for arg in args:
         masked = re.sub(r"(https?://[^:]+:)[^@]+(@)", r"\1*******\2", str(arg))
