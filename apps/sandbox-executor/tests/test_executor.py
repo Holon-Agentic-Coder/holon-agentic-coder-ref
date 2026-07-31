@@ -11,9 +11,15 @@ from sandbox_executor.entrypoint import executor
 class TestExecutor(unittest.TestCase):
     def test_redact_args(self):
         from sandbox_executor.entrypoint.executor import redact_args
-        args = ["git", "clone", "https://token:secret@github.com/repo.git"]
+        args = [
+            "git", 
+            "clone", 
+            "https://token:secret@github.com/repo.git",
+            "https://single_token@github.com/repo.git"
+        ]
         redacted = redact_args(args)
-        self.assertEqual(redacted[2], "https://token:*******@github.com/repo.git")
+        self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
+        self.assertEqual(redacted[3], "https://*******@github.com/repo.git")
 
 
     def test_should_decompose_high_entropy(self):

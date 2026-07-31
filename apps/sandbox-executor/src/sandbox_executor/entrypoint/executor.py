@@ -17,7 +17,7 @@ from sandbox_executor.agent_runner import get_repo_url, get_runner
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     for arg in args:
-        masked = re.sub(r"(https?://[^:]+:)[^@]+(@)", r"\1*******\2", str(arg))
+        masked = re.sub(r"(https?://)[^@/]+@", r"\1*******@", str(arg))
         redacted.append(masked)
     return redacted
 
@@ -37,7 +37,7 @@ def run_cmd(
         print(f"Full args: {' '.join(redacted_args)}")
         print(f"Stdout:\n{result.stdout}")
         print(f"Stderr:\n{result.stderr}")
-        raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
+        raise subprocess.CalledProcessError(result.returncode, redacted_args, output=result.stdout, stderr=result.stderr)
     return result
 
 
@@ -137,14 +137,22 @@ def main():
     repo_dir = os.getenv("HOLON_REPO_DIR")
     is_default_repo = False
     if not repo_dir:
-        in_sandbox = bool(os.getenv("HOLON_ROLE") or os.path.exists("/.dockerenv") or os.environ.get("USER") == "holon")
+        in_sandbox = bool(
+            os.getenv("HOLON_ROLE")
+            or os.path.exists("/.dockerenv")
+            or os.environ.get("USER") == "holon"
+            or os.environ.get("USERNAME") == "holon"
+        )
         repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
         if os.path.exists(repo_dir):
-            try:
-                shutil.rmtree(repo_dir)
-            except Exception as e:
-                print(f"Warning: Failed to clean up existing repo dir {repo_dir}: {e}")
+            if os.path.ismount(repo_dir):
+                print(f"Warning: {repo_dir} is a mount point. Skipping cleanup.")
+            else:
+                try:
+                    shutil.rmtree(repo_dir)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up existing repo dir {repo_dir}: {e}")
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
@@ -324,7 +332,7 @@ def main():
             
             # Log staged changes to provide visibility
             status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir)
-            print("Staged changes:")
+            print("Current git repository status:")
             print(status_output.stdout)
 
         run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
@@ -344,4 +352,5 @@ def main():
         sys.exit(1)
     finally:
         if is_default_repo and os.path.exists(repo_dir):
-            shutil.rmtree(repo_dir, ignore_errors=True)
+            if not os.path.ismount(repo_dir):
+                shutil.rmtree(repo_dir, ignore_errors=True)
