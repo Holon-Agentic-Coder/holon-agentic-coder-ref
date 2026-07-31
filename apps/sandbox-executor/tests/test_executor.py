@@ -204,7 +204,6 @@ class TestExecutor(unittest.TestCase):
 
             self.assertTrue(os.path.exists(custom_dir))
 
-
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
@@ -224,12 +223,12 @@ class TestExecutor(unittest.TestCase):
             default_dir = os.path.join(tmp_dir, "repo")
             mock_expanduser.return_value = default_dir
             os.makedirs(default_dir, exist_ok=True)
-            
+
             env = os.environ.copy()
             if "HOLON_REPO_DIR" in env:
                 del env["HOLON_REPO_DIR"]
             env["HOLON_SKIP_PUSH"] = "1"
-            
+
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
