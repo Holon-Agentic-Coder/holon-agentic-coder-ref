@@ -9,6 +9,13 @@ from sandbox_executor.entrypoint import executor
 
 
 class TestExecutor(unittest.TestCase):
+    def test_redact_args(self):
+        from sandbox_executor.entrypoint.executor import redact_args
+        args = ["git", "clone", "https://token:secret@github.com/repo.git"]
+        redacted = redact_args(args)
+        self.assertEqual(redacted[2], "https://token:*******@github.com/repo.git")
+
+
     def test_should_decompose_high_entropy(self):
         plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
         plan_content = "# Plan\nSome plan"
@@ -236,7 +243,9 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            mock_rmtree.assert_called_with(default_dir, ignore_errors=True)
+            self.assertEqual(mock_rmtree.call_count, 2)
+            mock_rmtree.assert_any_call(default_dir)
+            mock_rmtree.assert_any_call(default_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

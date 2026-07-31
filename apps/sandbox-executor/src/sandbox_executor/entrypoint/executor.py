@@ -141,7 +141,10 @@ def main():
         repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
         if os.path.exists(repo_dir):
-            shutil.rmtree(repo_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(repo_dir)
+            except Exception as e:
+                print(f"Warning: Failed to clean up existing repo dir {repo_dir}: {e}")
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
@@ -318,6 +321,11 @@ def main():
             run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
             if exec_status == "success":
                 run_cmd(["git", "add", "-A"], cwd=repo_dir)
+            
+            # Log staged changes to provide visibility
+            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir)
+            print("Staged changes:")
+            print(status_output.stdout)
 
         run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
         run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
