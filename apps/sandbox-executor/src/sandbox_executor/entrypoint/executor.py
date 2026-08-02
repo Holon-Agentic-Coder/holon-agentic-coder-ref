@@ -95,6 +95,10 @@ def redact_text(text: str | None) -> str | None:
         text = str(text)
     if not text:
         return text
+    # Guard against abnormally large inputs to prevent regex performance degradation on
+    # pathological strings. 10 000 chars is well above any realistic log line length.
+    if len(text) > 10000:
+        return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     pattern = (
         r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|api_key|secret_key|private_key|signing_key|encryption_key))\1'
@@ -133,7 +137,7 @@ def redact_args(args: list[str]) -> list[str]:
                 redacted.append(f"{parts[0]}=*******")
             else:
                 redacted.append(s_arg)
-                mask_next = True
+                mask_next = True  # If trailing (no next arg), the dangling flag is safe — no secret to miss.
         else:
             masked = redact_text(s_arg)
             redacted.append(masked if masked is not None else "")
@@ -271,8 +275,10 @@ def main():
         in_sandbox = bool(
             os.getenv("HOLON_ROLE")
             or os.path.exists("/.dockerenv")
-            or os.getenv("USER") == "holon"
-            or os.getenv("USERNAME") == "holon"
+            or os.getenv("USER")
+            == "holon"  # Fallback heuristic: sandbox containers without HOLON_ROLE or /.dockerenv (Linux/macOS)
+            or os.getenv("USERNAME")
+            == "holon"  # Fallback heuristic: Windows sandbox; use HOLON_REPO_DIR to override in ambiguous environments
         )
         repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True

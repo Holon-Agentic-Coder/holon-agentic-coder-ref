@@ -88,6 +88,10 @@ class TestExecutor(unittest.TestCase):
         secret_dash = redact_args(["--token", "-secret-value"])
         self.assertEqual(secret_dash, ["--token", "*******"])
 
+        # Single-character non-flag value after a secret flag should be masked
+        single_char = redact_args(["cmd", "--password", "s"])
+        self.assertEqual(single_char, ["cmd", "--password", "*******"])
+
     def test_redact_args_trailing_secret_flag(self):
         from sandbox_executor.entrypoint.executor import redact_args
 
