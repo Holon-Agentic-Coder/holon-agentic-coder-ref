@@ -14,6 +14,37 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
+SECRET_FLAGS = {
+    "--token",
+    "--access-token",
+    "--secret",
+    "--password",
+    "-p",
+    "--api-key",
+    "--api_key",
+    "--auth",
+    "--auth-token",
+    "--bearer",
+    "--pat",
+    "--key",
+}
+
+
+def _clear_dir_contents(path: str) -> None:
+    """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
+    if not os.path.exists(path):
+        return
+    for item in os.listdir(path):
+        item_path = os.path.join(path, item)
+        try:
+            if os.path.islink(item_path) or not os.path.isdir(item_path):
+                os.unlink(item_path)
+            else:
+                shutil.rmtree(item_path)
+        except Exception as e:
+            print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
+
+
 def redact_text(text: str | None) -> str | None:
     if text is None:
         return None
@@ -22,15 +53,48 @@ def redact_text(text: str | None) -> str | None:
     if not text:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
-    s = re.sub(r"(token|access_token|secret|password)=[^&\s]+", r"\1=*******", s, flags=re.IGNORECASE)
+    s = re.sub(
+        r"(token|access_token|secret|password|api_key|auth|bearer|pat|key)(:\s*|=)[^&\s]+",
+        r"\1\2*******",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"(Bearer\s+)[^\s]+", r"\1*******", s, flags=re.IGNORECASE)
     return s
 
 
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
+    mask_next = False
     for arg in args:
-        masked = redact_text(str(arg))
-        redacted.append(masked if masked is not None else "")
+        s_arg = str(arg)
+        if mask_next:
+            redacted.append("*******")
+            mask_next = False
+        else:
+            masked = redact_text(s_arg)
+            redacted.append(masked if masked is not None else "")
+
+        lowered = s_arg.lower()
+        if (
+            lowered in SECRET_FLAGS
+            or any(
+                lowered.startswith(flag)
+                for flag in (
+                    "--token",
+                    "--access-token",
+                    "--secret",
+                    "--password",
+                    "--api-key",
+                    "--api_key",
+                    "--auth",
+                    "--bearer",
+                    "--pat",
+                )
+            )
+        ) and "=" not in lowered:
+            mask_next = True
+
     return redacted
 
 
@@ -46,7 +110,7 @@ def run_cmd(
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
-        print(f"Full args: {' '.join(print_args)}", file=sys.stderr)
+        print(f"Command args: {' '.join(print_args)}", file=sys.stderr)
         print(f"Stdout:\n{redact_text(result.stdout)}", file=sys.stderr)
         print(f"Stderr:\n{redact_text(result.stderr)}", file=sys.stderr)
         raise subprocess.CalledProcessError(
@@ -161,7 +225,7 @@ def main():
         is_default_repo = True
         if os.path.lexists(repo_dir):
             if os.path.ismount(repo_dir):
-                print(f"Warning: {repo_dir} is a mount point. Skipping cleanup.")
+                _clear_dir_contents(repo_dir)
             elif os.path.islink(repo_dir):
                 os.unlink(repo_dir)
             else:
@@ -368,9 +432,11 @@ def main():
         raise
     finally:
         keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
-        if is_default_repo and not keep_workspace and os.path.lexists(repo_dir) and not os.path.ismount(repo_dir):
+        if is_default_repo and not keep_workspace and os.path.lexists(repo_dir):
             try:
-                if os.path.islink(repo_dir):
+                if os.path.ismount(repo_dir):
+                    _clear_dir_contents(repo_dir)
+                elif os.path.islink(repo_dir):
                     os.unlink(repo_dir)
                 else:
                     shutil.rmtree(repo_dir)
@@ -382,4 +448,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
+        traceback.print_exc()
         sys.exit(1)

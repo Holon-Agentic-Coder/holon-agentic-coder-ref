@@ -19,12 +19,32 @@ class TestExecutor(unittest.TestCase):
             "https://single_token@github.com/repo.git",
             "https://github.com/repo.git?token=secret123&password=mypass",
             "not-a-url",
+            "--token",
+            "secret_token_123",
+            "--access-token",
+            "access_123",
+            "-p",
+            "my_pass",
+            "--secret",
+            "top_secret",
+            "--api-key",
+            "key_abc",
         ]
         redacted = redact_args(args)
         self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
         self.assertEqual(redacted[3], "https://*******@github.com/repo.git")
         self.assertEqual(redacted[4], "https://github.com/repo.git?token=*******&password=*******")
         self.assertEqual(redacted[5], "not-a-url")
+        self.assertEqual(redacted[6], "--token")
+        self.assertEqual(redacted[7], "*******")
+        self.assertEqual(redacted[8], "--access-token")
+        self.assertEqual(redacted[9], "*******")
+        self.assertEqual(redacted[10], "-p")
+        self.assertEqual(redacted[11], "*******")
+        self.assertEqual(redacted[12], "--secret")
+        self.assertEqual(redacted[13], "*******")
+        self.assertEqual(redacted[14], "--api-key")
+        self.assertEqual(redacted[15], "*******")
 
     def test_redact_text(self):
         from sandbox_executor.entrypoint.executor import redact_text
@@ -32,7 +52,14 @@ class TestExecutor(unittest.TestCase):
         text = "This is a log with a secret URL: https://token:secret@github.com/repo.git and token=secret123 parameter"
         redacted = redact_text(text)
         self.assertEqual(redacted, "This is a log with a secret URL: https://*******@github.com/repo.git and token=******* parameter")
-        
+
+        extended_text = "api_key=secret_123 auth=abc bearer=def pat=ghi key=jkl Bearer my_jwt_token Authorization: Bearer token_xyz"
+        redacted_ext = redact_text(extended_text)
+        self.assertEqual(
+            redacted_ext,
+            "api_key=******* auth=******* bearer=******* pat=******* key=******* Bearer ******* Authorization: Bearer *******",
+        )
+
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")
 
@@ -307,6 +334,88 @@ class TestExecutor(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 executor.main()
             self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
+
+    def test_clear_dir_contents(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sub_dir = os.path.join(tmp_dir, "subdir")
+            file_path = os.path.join(tmp_dir, "test.txt")
+            os.makedirs(sub_dir, exist_ok=True)
+            with open(file_path, "w") as f:
+                f.write("hello")
+
+            executor._clear_dir_contents(tmp_dir)
+            self.assertTrue(os.path.exists(tmp_dir))
+            self.assertEqual(os.listdir(tmp_dir), [])
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
+    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
+    def test_main_keep_workspace(
+        self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_get_runner.return_value = mock_runner
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_run_cmd.return_value = mock_result
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            default_dir = os.path.join(tmp_dir, "repo")
+            mock_expanduser.return_value = default_dir
+
+            env = os.environ.copy()
+            if "HOLON_REPO_DIR" in env:
+                del env["HOLON_REPO_DIR"]
+            env["HOLON_SKIP_PUSH"] = "1"
+            env["HOLON_KEEP_WORKSPACE"] = "true"
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            ):
+                executor.main()
+
+            mock_rmtree.assert_not_called()
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
+    @patch("sandbox_executor.entrypoint.executor._clear_dir_contents")
+    @patch("sandbox_executor.entrypoint.executor.os.path.ismount", return_value=True)
+    def test_main_mount_point_clears_contents(
+        self, mock_ismount, mock_clear_dir_contents, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_get_runner.return_value = mock_runner
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_run_cmd.return_value = mock_result
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            default_dir = os.path.join(tmp_dir, "repo")
+            mock_expanduser.return_value = default_dir
+            os.makedirs(default_dir, exist_ok=True)
+
+            env = os.environ.copy()
+            if "HOLON_REPO_DIR" in env:
+                del env["HOLON_REPO_DIR"]
+            env["HOLON_SKIP_PUSH"] = "1"
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            ):
+                executor.main()
+
+            self.assertTrue(mock_clear_dir_contents.called)
+            mock_clear_dir_contents.assert_any_call(default_dir)
 
 
 if __name__ == "__main__":
