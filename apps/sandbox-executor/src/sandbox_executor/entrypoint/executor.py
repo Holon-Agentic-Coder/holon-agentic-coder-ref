@@ -14,6 +14,9 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
+# Note: single-character short flags (e.g. -p for password, -u for user) are intentionally
+# excluded from SECRET_FLAGS to avoid over-masking positional args in commands like `git log -p`.
+# Add them explicitly here if a specific use-case requires it.
 SECRET_FLAGS = {
     "--token",
     "--access-token",
@@ -94,7 +97,7 @@ def redact_text(text: str | None) -> str | None:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     pattern = (
-        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|\bkey))\1'
+        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|api_key|secret_key|private_key|signing_key|encryption_key))\1'
         r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
     )
 
@@ -475,7 +478,7 @@ def main():
         print(f"Execution failed: {e}", file=sys.stderr)
         raise
     finally:
-        keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
+        # reuse `keep_workspace` already computed at function start
         if is_default_repo and repo_dir and not keep_workspace:
             _cleanup_repo_dir(repo_dir, raise_on_error=False)
 

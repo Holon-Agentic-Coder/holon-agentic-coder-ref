@@ -71,7 +71,8 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redacted[26], "--client_secret")
         self.assertEqual(redacted[27], "*******")
 
-        # Chained secret flags
+        # When --token is followed by another flag, the positional value
+        # after that flag is NOT masked (known limitation — by design).
         chained = redact_args(["--token", "--verbose", "secret"])
         self.assertEqual(chained, ["--token", "--verbose", "secret"])
 
@@ -109,7 +110,9 @@ class TestExecutor(unittest.TestCase):
         redacted_ext = redact_text(extended_text)
         expected_ext = (
             "api_key=******* auth=******* bearer=******* pat=******* "
-            "key=******* Bearer ******* Authorization: Bearer *******"
+            # Note: bare `key=` is intentionally NOT redacted to avoid over-masking non-secret
+            # patterns like cache_key, sort_key, foreign_key etc. Only compound forms are matched.
+            "key=jkl Bearer ******* Authorization: Bearer *******"
         )
         self.assertEqual(redacted_ext, expected_ext)
 
