@@ -35,6 +35,12 @@ class TestExecutor(unittest.TestCase):
             "alice",
             "--path",
             "/tmp/test",
+            "--auth_token",
+            "at_123",
+            "--client-secret",
+            "cs_123",
+            "--client_secret",
+            "cs_456",
         ]
         redacted = redact_args(args)
         self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
@@ -57,6 +63,19 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redacted[19], "alice")
         self.assertEqual(redacted[20], "--path")
         self.assertEqual(redacted[21], "/tmp/test")
+        self.assertEqual(redacted[22], "--auth_token")
+        self.assertEqual(redacted[23], "*******")
+        self.assertEqual(redacted[24], "--client-secret")
+        self.assertEqual(redacted[25], "*******")
+        self.assertEqual(redacted[26], "--client_secret")
+        self.assertEqual(redacted[27], "*******")
+
+    def test_redact_args_trailing_secret_flag(self):
+        from sandbox_executor.entrypoint.executor import redact_args
+
+        args = ["git", "clone", "--token"]
+        redacted = redact_args(args)
+        self.assertEqual(redacted, ["git", "clone", "--token"])
 
     def test_redact_text(self):
         from sandbox_executor.entrypoint.executor import redact_text
@@ -83,8 +102,11 @@ class TestExecutor(unittest.TestCase):
         expected_quoted = 'token="*******" github_token=\'*******\' {"api_key": "*******"} "auth_key": \'*******\''
         self.assertEqual(redacted_quoted, expected_quoted)
 
-        benign_text = "--pattern=*.py --author=alice --path=/tmp/test git log -p"
-        self.assertEqual(redact_text(benign_text), "--pattern=*.py --author=alice --path=/tmp/test git log -p")
+        benign_text = "--pattern=*.py --author=alice --path=/tmp/test git log -p monkey=banana donkey=kong"
+        self.assertEqual(
+            redact_text(benign_text),
+            "--pattern=*.py --author=alice --path=/tmp/test git log -p monkey=banana donkey=kong",
+        )
 
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")

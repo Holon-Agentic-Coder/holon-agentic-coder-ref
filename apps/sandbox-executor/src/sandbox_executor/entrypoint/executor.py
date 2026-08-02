@@ -22,9 +22,12 @@ SECRET_FLAGS = {
     "--api_key",
     "--auth",
     "--auth-token",
+    "--auth_token",
     "--bearer",
     "--pat",
     "--key",
+    "--client-secret",
+    "--client_secret",
 }
 
 
@@ -43,6 +46,23 @@ def _clear_dir_contents(path: str) -> None:
             print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
 
 
+def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
+    """Clean up existing repo directory (clearing contents if mount, unlinking if symlink, rmtree otherwise)."""
+    if not os.path.lexists(repo_dir):
+        return
+    try:
+        if os.path.ismount(repo_dir):
+            _clear_dir_contents(repo_dir)
+        elif os.path.islink(repo_dir):
+            os.unlink(repo_dir)
+        else:
+            shutil.rmtree(repo_dir)
+    except Exception as e:
+        if raise_on_error:
+            raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
+        print(f"Warning: Failed to clean up repo dir {repo_dir}: {e}", file=sys.stderr)
+
+
 def redact_text(text: str | None) -> str | None:
     if text is None:
         return None
@@ -52,7 +72,7 @@ def redact_text(text: str | None) -> str | None:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     pattern = (
-        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|pat|key))\1'
+        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|pat|_key|-key|\bkey))\1'
         r'\s*(:\s*|=)\s*(["\']?)[^&\s\'"]+\4'
     )
     s = re.sub(pattern, r"\1\2\1\3\4*******\4", s, flags=re.IGNORECASE)
@@ -205,21 +225,12 @@ def main():
         in_sandbox = bool(
             os.getenv("HOLON_ROLE")
             or os.path.exists("/.dockerenv")
-            or os.environ.get("USER") == "holon"
-            or os.environ.get("USERNAME") == "holon"
+            or os.getenv("USER") == "holon"
+            or os.getenv("USERNAME") == "holon"
         )
         repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
-        if os.path.lexists(repo_dir):
-            if os.path.ismount(repo_dir):
-                _clear_dir_contents(repo_dir)
-            elif os.path.islink(repo_dir):
-                os.unlink(repo_dir)
-            else:
-                try:
-                    shutil.rmtree(repo_dir)
-                except Exception as e:
-                    raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
+        _cleanup_repo_dir(repo_dir, raise_on_error=True)
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
@@ -418,16 +429,8 @@ def main():
         raise
     finally:
         keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
-        if is_default_repo and not keep_workspace and os.path.lexists(repo_dir):
-            try:
-                if os.path.ismount(repo_dir):
-                    _clear_dir_contents(repo_dir)
-                elif os.path.islink(repo_dir):
-                    os.unlink(repo_dir)
-                else:
-                    shutil.rmtree(repo_dir)
-            except Exception as e:
-                print(f"Warning: Failed to clean up repo dir {repo_dir} in finally block: {e}", file=sys.stderr)
+        if is_default_repo and not keep_workspace:
+            _cleanup_repo_dir(repo_dir, raise_on_error=False)
 
 
 if __name__ == "__main__":
