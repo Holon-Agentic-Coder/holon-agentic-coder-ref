@@ -26,6 +26,16 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redacted[4], "https://github.com/repo.git")
         self.assertEqual(redacted[5], "not-a-url")
 
+    def test_redact_text(self):
+        from sandbox_executor.entrypoint.executor import redact_text
+
+        text = "This is a log with a secret URL: https://token:secret@github.com/repo.git and another https://user:pass@example.com/path"
+        redacted = redact_text(text)
+        self.assertEqual(redacted, "This is a log with a secret URL: https://*******@github.com/repo.git and another https://*******@example.com/path")
+        
+        self.assertEqual(redact_text(None), None)
+        self.assertEqual(redact_text(""), "")
+
     def test_should_decompose_high_entropy(self):
         plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
         plan_content = "# Plan\nSome plan"
@@ -143,6 +153,7 @@ class TestExecutor(unittest.TestCase):
 
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = ""
 
         def side_effect(args, cwd=None, **kwargs):
             if "clone" in args:
@@ -208,6 +219,7 @@ class TestExecutor(unittest.TestCase):
         mock_get_runner.return_value = mock_runner
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = ""
         mock_run_cmd.return_value = mock_result
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -234,6 +246,7 @@ class TestExecutor(unittest.TestCase):
         mock_get_runner.return_value = mock_runner
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = ""
         mock_run_cmd.return_value = mock_result
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -253,8 +266,8 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            self.assertEqual(mock_rmtree.call_count, 1)
-            mock_rmtree.assert_called_once_with(default_dir)
+            self.assertEqual(mock_rmtree.call_count, 2)
+            mock_rmtree.assert_any_call(default_dir)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))

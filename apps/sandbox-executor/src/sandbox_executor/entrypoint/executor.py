@@ -23,7 +23,7 @@ def redact_text(text: str) -> str:
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     for arg in args:
-        masked = re.sub(r"(https?://)[^@/]+@", r"\1*******@", arg)
+        masked = re.sub(r"(https?://)[^@/]+@", r"\1*******@", str(arg))
         redacted.append(masked)
     return redacted
 
@@ -39,10 +39,10 @@ def run_cmd(
     print(f"Running: {' '.join(print_args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
-        print(f"Command failed with code {result.returncode}")
-        print(f"Full args: {' '.join(redacted_args)}")
-        print(f"Stdout:\n{redact_text(result.stdout)}")
-        print(f"Stderr:\n{redact_text(result.stderr)}")
+        print(f"Command failed with code {result.returncode}", file=sys.stderr)
+        print(f"Full args: {' '.join(redacted_args)}", file=sys.stderr)
+        print(f"Stdout:\n{redact_text(result.stdout)}", file=sys.stderr)
+        print(f"Stderr:\n{redact_text(result.stderr)}", file=sys.stderr)
         raise subprocess.CalledProcessError(
             result.returncode, redacted_args, output=redact_text(result.stdout), stderr=redact_text(result.stderr)
         )
@@ -143,6 +143,7 @@ def main():
         plan_branch_prefix = plan_branch_prefix[:-2]
 
     repo_dir = os.getenv("HOLON_REPO_DIR")
+    is_default_repo = False
     if not repo_dir:
         in_sandbox = bool(
             os.getenv("HOLON_ROLE")
@@ -151,7 +152,8 @@ def main():
             or os.environ.get("USERNAME") == "holon"
         )
         repo_dir = os.path.expanduser("~/holon-repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
-        if os.path.exists(repo_dir):
+        is_default_repo = True
+        if os.path.lexists(repo_dir):
             if os.path.ismount(repo_dir):
                 print(f"Warning: {repo_dir} is a mount point. Skipping cleanup.")
             elif os.path.islink(repo_dir):
@@ -339,9 +341,9 @@ def main():
                 run_cmd(["git", "add", "-A"], cwd=repo_dir)
 
             # Log staged changes to provide visibility
-            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir)
+            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
             print("Current git repository status:")
-            print(status_output.stdout)
+            print(redact_text(status_output.stdout))
 
         run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
         run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
@@ -359,4 +361,12 @@ def main():
         traceback.print_exc()
         sys.exit(1)
     finally:
-        pass
+        keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
+        if is_default_repo and not keep_workspace and os.path.lexists(repo_dir) and not os.path.ismount(repo_dir):
+            try:
+                if os.path.islink(repo_dir):
+                    os.unlink(repo_dir)
+                else:
+                    shutil.rmtree(repo_dir)
+            except Exception as e:
+                print(f"Warning: Failed to clean up repo dir {repo_dir} in finally block: {e}")
