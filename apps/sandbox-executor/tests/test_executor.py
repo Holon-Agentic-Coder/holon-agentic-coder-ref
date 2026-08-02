@@ -11,16 +11,20 @@ from sandbox_executor.entrypoint import executor
 class TestExecutor(unittest.TestCase):
     def test_redact_args(self):
         from sandbox_executor.entrypoint.executor import redact_args
+
         args = [
-            "git", 
-            "clone", 
+            "git",
+            "clone",
             "https://token:secret@github.com/repo.git",
-            "https://single_token@github.com/repo.git"
+            "https://single_token@github.com/repo.git",
+            "https://github.com/repo.git",
+            "not-a-url",
         ]
         redacted = redact_args(args)
         self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
         self.assertEqual(redacted[3], "https://*******@github.com/repo.git")
-
+        self.assertEqual(redacted[4], "https://github.com/repo.git")
+        self.assertEqual(redacted[5], "not-a-url")
 
     def test_should_decompose_high_entropy(self):
         plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
@@ -249,9 +253,12 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            self.assertEqual(mock_rmtree.call_count, 2)
-            mock_rmtree.assert_any_call(default_dir)
-            mock_rmtree.assert_any_call(default_dir, ignore_errors=True)
+            self.assertEqual(mock_rmtree.call_count, 1)
+            mock_rmtree.assert_called_once_with(default_dir)
+
+            mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
+            self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
+            self.assertTrue(any("status" in cmd for cmd in mock_run_cmd_args))
 
 
 if __name__ == "__main__":

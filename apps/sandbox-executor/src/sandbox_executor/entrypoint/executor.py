@@ -14,10 +14,16 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
+def redact_text(text: str) -> str:
+    if not text:
+        return text
+    return re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
+
+
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     for arg in args:
-        masked = re.sub(r"(https?://)[^@/]+@", r"\1*******@", str(arg))
+        masked = re.sub(r"(https?://)[^@/]+@", r"\1*******@", arg)
         redacted.append(masked)
     return redacted
 
@@ -35,9 +41,11 @@ def run_cmd(
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
         print(f"Full args: {' '.join(redacted_args)}")
-        print(f"Stdout:\n{result.stdout}")
-        print(f"Stderr:\n{result.stderr}")
-        raise subprocess.CalledProcessError(result.returncode, redacted_args, output=result.stdout, stderr=result.stderr)
+        print(f"Stdout:\n{redact_text(result.stdout)}")
+        print(f"Stderr:\n{redact_text(result.stderr)}")
+        raise subprocess.CalledProcessError(
+            result.returncode, redacted_args, output=redact_text(result.stdout), stderr=redact_text(result.stderr)
+        )
     return result
 
 
@@ -135,7 +143,6 @@ def main():
         plan_branch_prefix = plan_branch_prefix[:-2]
 
     repo_dir = os.getenv("HOLON_REPO_DIR")
-    is_default_repo = False
     if not repo_dir:
         in_sandbox = bool(
             os.getenv("HOLON_ROLE")
@@ -143,11 +150,12 @@ def main():
             or os.environ.get("USER") == "holon"
             or os.environ.get("USERNAME") == "holon"
         )
-        repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
-        is_default_repo = True
+        repo_dir = os.path.expanduser("~/holon-repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         if os.path.exists(repo_dir):
             if os.path.ismount(repo_dir):
                 print(f"Warning: {repo_dir} is a mount point. Skipping cleanup.")
+            elif os.path.islink(repo_dir):
+                os.unlink(repo_dir)
             else:
                 try:
                     shutil.rmtree(repo_dir)
@@ -329,7 +337,7 @@ def main():
             run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
             if exec_status == "success":
                 run_cmd(["git", "add", "-A"], cwd=repo_dir)
-            
+
             # Log staged changes to provide visibility
             status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir)
             print("Current git repository status:")
@@ -351,6 +359,4 @@ def main():
         traceback.print_exc()
         sys.exit(1)
     finally:
-        if is_default_repo and os.path.exists(repo_dir):
-            if not os.path.ismount(repo_dir):
-                shutil.rmtree(repo_dir, ignore_errors=True)
+        pass
