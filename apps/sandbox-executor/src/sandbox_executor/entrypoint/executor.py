@@ -31,7 +31,7 @@ SECRET_FLAGS = {
 }
 
 
-def _clear_dir_contents(path: str) -> None:
+def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
     """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
     if not os.path.isdir(path):
         return
@@ -43,6 +43,8 @@ def _clear_dir_contents(path: str) -> None:
             else:
                 shutil.rmtree(item_path)
         except Exception as e:
+            if raise_on_error:
+                raise
             print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
 
 
@@ -52,7 +54,7 @@ def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
         return
     try:
         if os.path.ismount(repo_dir):
-            _clear_dir_contents(repo_dir)
+            _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
         elif os.path.islink(repo_dir):
             os.unlink(repo_dir)
         else:
@@ -73,9 +75,17 @@ def redact_text(text: str | None) -> str | None:
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     pattern = (
         r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|pat|_key|-key|\bkey))\1'
-        r'\s*(:\s*|=)\s*(["\']?)[^&\s\'"]+\4'
+        r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
     )
-    s = re.sub(pattern, r"\1\2\1\3\4*******\4", s, flags=re.IGNORECASE)
+
+    def _replace_secret(match: re.Match) -> str:
+        q_key = match.group(1) or ""
+        key = match.group(2)
+        sep = match.group(3)
+        q_val = match.group(4) or ""
+        return f"{q_key}{key}{q_key}{sep}{q_val}*******{q_val}"
+
+    s = re.sub(pattern, _replace_secret, s, flags=re.IGNORECASE)
     s = re.sub(r"(Bearer\s+)[^\s]+", r"\1*******", s, flags=re.IGNORECASE)
     return s
 
@@ -86,15 +96,25 @@ def redact_args(args: list[str]) -> list[str]:
     for arg in args:
         s_arg = str(arg)
         if mask_next:
-            redacted.append("*******")
-            mask_next = False
+            if s_arg.startswith("-"):
+                mask_next = False
+            else:
+                redacted.append("*******")
+                mask_next = False
+                continue
+
+        parts = s_arg.split("=", 1)
+        flag_lowered = parts[0].lower()
+        if flag_lowered in SECRET_FLAGS:
+            if len(parts) == 2:
+                redacted.append(f"{parts[0]}=*******")
+            else:
+                masked = redact_text(s_arg)
+                redacted.append(masked if masked is not None else "")
+                mask_next = True
         else:
             masked = redact_text(s_arg)
             redacted.append(masked if masked is not None else "")
-
-        lowered = s_arg.lower()
-        if lowered in SECRET_FLAGS:
-            mask_next = True
 
     return redacted
 

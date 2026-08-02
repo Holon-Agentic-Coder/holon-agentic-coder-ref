@@ -70,6 +70,18 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redacted[26], "--client_secret")
         self.assertEqual(redacted[27], "*******")
 
+        # Chained secret flags
+        chained = redact_args(["--token", "--verbose", "secret"])
+        self.assertEqual(chained, ["--token", "--verbose", "secret"])
+
+        # Equal-sign formatted secret flags
+        equal_fmt = redact_args(["--token=secret123", "--password=mypass", "--author=alice"])
+        self.assertEqual(equal_fmt, ["--token=*******", "--password=*******", "--author=alice"])
+
+        # Trailing secret flags at the end of args
+        trailing = redact_args(["git", "clone", "--token"])
+        self.assertEqual(trailing, ["git", "clone", "--token"])
+
     def test_redact_args_trailing_secret_flag(self):
         from sandbox_executor.entrypoint.executor import redact_args
 
@@ -101,6 +113,14 @@ class TestExecutor(unittest.TestCase):
         redacted_quoted = redact_text(quoted_text)
         expected_quoted = 'token="*******" github_token=\'*******\' {"api_key": "*******"} "auth_key": \'*******\''
         self.assertEqual(redacted_quoted, expected_quoted)
+
+        # Quoted secret values with spaces
+        quoted_spaces = (
+            'token="secret with spaces" api_key=\'my secret key\' {"auth_token": "bearer token with spaces"}'
+        )
+        redacted_spaces = redact_text(quoted_spaces)
+        expected_spaces = 'token="*******" api_key=\'*******\' {"auth_token": "*******"}'
+        self.assertEqual(redacted_spaces, expected_spaces)
 
         benign_text = "--pattern=*.py --author=alice --path=/tmp/test git log -p monkey=banana donkey=kong"
         self.assertEqual(
@@ -401,6 +421,18 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents(file_path)
             self.assertTrue(os.path.exists(file_path))
 
+    def test_clear_dir_contents_raise_on_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sub_file = os.path.join(tmp_dir, "test.txt")
+            with open(sub_file, "w") as f:
+                f.write("test")
+            with patch("os.unlink", side_effect=PermissionError("Permission denied")):
+                # Default raise_on_error=False swallows error
+                executor._clear_dir_contents(tmp_dir, raise_on_error=False)
+                # raise_on_error=True propagates error
+                with self.assertRaises(PermissionError):
+                    executor._clear_dir_contents(tmp_dir, raise_on_error=True)
+
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
@@ -467,7 +499,7 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_clear_dir_contents.called)
-            mock_clear_dir_contents.assert_any_call(default_dir)
+            mock_clear_dir_contents.assert_any_call(default_dir, raise_on_error=True)
 
 
 if __name__ == "__main__":
