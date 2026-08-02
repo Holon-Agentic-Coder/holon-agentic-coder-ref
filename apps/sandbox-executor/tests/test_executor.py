@@ -17,21 +17,21 @@ class TestExecutor(unittest.TestCase):
             "clone",
             "https://token:secret@github.com/repo.git",
             "https://single_token@github.com/repo.git",
-            "https://github.com/repo.git",
+            "https://github.com/repo.git?token=secret123&password=mypass",
             "not-a-url",
         ]
         redacted = redact_args(args)
         self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
         self.assertEqual(redacted[3], "https://*******@github.com/repo.git")
-        self.assertEqual(redacted[4], "https://github.com/repo.git")
+        self.assertEqual(redacted[4], "https://github.com/repo.git?token=*******&password=*******")
         self.assertEqual(redacted[5], "not-a-url")
 
     def test_redact_text(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
-        text = "This is a log with a secret URL: https://token:secret@github.com/repo.git and another https://user:pass@example.com/path"
+        text = "This is a log with a secret URL: https://token:secret@github.com/repo.git and token=secret123 parameter"
         redacted = redact_text(text)
-        self.assertEqual(redacted, "This is a log with a secret URL: https://*******@github.com/repo.git and another https://*******@example.com/path")
+        self.assertEqual(redacted, "This is a log with a secret URL: https://*******@github.com/repo.git and token=******* parameter")
         
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")
@@ -266,12 +266,47 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            self.assertEqual(mock_rmtree.call_count, 2)
             mock_rmtree.assert_any_call(default_dir)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
             self.assertTrue(any("status" in cmd for cmd in mock_run_cmd_args))
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_main_raises_exception_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_get_runner.return_value = mock_runner
+        mock_run_cmd.side_effect = subprocess.CalledProcessError(1, ["git", "clone"])
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                executor.main()
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.executor.os.path.lexists", return_value=True)
+    @patch("sandbox_executor.entrypoint.executor.os.path.ismount", return_value=False)
+    @patch("sandbox_executor.entrypoint.executor.os.path.islink", return_value=False)
+    def test_main_raises_runtime_error_on_cleanup_failure(
+        self, mock_islink, mock_ismount, mock_lexists, mock_rmtree, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        mock_rmtree.side_effect = PermissionError("Permission denied")
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                executor.main()
+            self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -14,17 +14,23 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 
-def redact_text(text: str) -> str:
+def redact_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
     if not text:
         return text
-    return re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
+    s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
+    s = re.sub(r"(token|access_token|secret|password)=[^&\s]+", r"\1=*******", s, flags=re.IGNORECASE)
+    return s
 
 
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     for arg in args:
-        masked = re.sub(r"(https?://)[^@/]+@", r"\1*******@", str(arg))
-        redacted.append(masked)
+        masked = redact_text(str(arg))
+        redacted.append(masked if masked is not None else "")
     return redacted
 
 
@@ -40,7 +46,7 @@ def run_cmd(
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
-        print(f"Full args: {' '.join(redacted_args)}", file=sys.stderr)
+        print(f"Full args: {' '.join(print_args)}", file=sys.stderr)
         print(f"Stdout:\n{redact_text(result.stdout)}", file=sys.stderr)
         print(f"Stderr:\n{redact_text(result.stderr)}", file=sys.stderr)
         raise subprocess.CalledProcessError(
@@ -151,7 +157,7 @@ def main():
             or os.environ.get("USER") == "holon"
             or os.environ.get("USERNAME") == "holon"
         )
-        repo_dir = os.path.expanduser("~/holon-repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
+        repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
         if os.path.lexists(repo_dir):
             if os.path.ismount(repo_dir):
@@ -162,7 +168,7 @@ def main():
                 try:
                     shutil.rmtree(repo_dir)
                 except Exception as e:
-                    print(f"Warning: Failed to clean up existing repo dir {repo_dir}: {e}")
+                    raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
@@ -359,7 +365,7 @@ def main():
     except Exception as e:
         print(f"Execution failed: {e}")
         traceback.print_exc()
-        sys.exit(1)
+        raise
     finally:
         keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
         if is_default_repo and not keep_workspace and os.path.lexists(repo_dir) and not os.path.ismount(repo_dir):
@@ -370,3 +376,10 @@ def main():
                     shutil.rmtree(repo_dir)
             except Exception as e:
                 print(f"Warning: Failed to clean up repo dir {repo_dir} in finally block: {e}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.exit(1)
