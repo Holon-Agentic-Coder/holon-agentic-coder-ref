@@ -51,12 +51,11 @@ def redact_text(text: str | None) -> str | None:
     if not text:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
-    s = re.sub(
-        r"\b(token|access_token|secret|password|api_key|auth|bearer|pat|key)(:\s*|=)[^&\s'\"]+",
-        r"\1\2*******",
-        s,
-        flags=re.IGNORECASE,
+    pattern = (
+        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|pat|key))\1'
+        r'\s*(:\s*|=)\s*(["\']?)[^&\s\'"]+\4'
     )
+    s = re.sub(pattern, r"\1\2\1\3\4*******\4", s, flags=re.IGNORECASE)
     s = re.sub(r"(Bearer\s+)[^\s]+", r"\1*******", s, flags=re.IGNORECASE)
     return s
 
@@ -93,8 +92,14 @@ def run_cmd(
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         print(f"Command args: {' '.join(print_args)}", file=sys.stderr)
-        print(f"Stdout:\n{redact_text(result.stdout)}", file=sys.stderr)
-        print(f"Stderr:\n{redact_text(result.stderr)}", file=sys.stderr)
+        out = redact_text(result.stdout) or ""
+        err = redact_text(result.stderr) or ""
+        if len(out) > 5000:
+            out = out[:5000] + "... (truncated)"
+        if len(err) > 5000:
+            err = err[:5000] + "... (truncated)"
+        print(f"Stdout:\n{out}", file=sys.stderr)
+        print(f"Stderr:\n{err}", file=sys.stderr)
         raise subprocess.CalledProcessError(
             result.returncode, redacted_args, output=redact_text(result.stdout), stderr=redact_text(result.stderr)
         )

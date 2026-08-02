@@ -77,6 +77,12 @@ class TestExecutor(unittest.TestCase):
         )
         self.assertEqual(redacted_ext, expected_ext)
 
+        # Quoted secrets and JSON key redaction tests
+        quoted_text = 'token="secret" github_token=\'secret_abc\' {"api_key": "secret"} "auth_key": \'secret\''
+        redacted_quoted = redact_text(quoted_text)
+        expected_quoted = 'token="*******" github_token=\'*******\' {"api_key": "*******"} "auth_key": \'*******\''
+        self.assertEqual(redacted_quoted, expected_quoted)
+
         benign_text = "--pattern=*.py --author=alice --path=/tmp/test git log -p"
         self.assertEqual(redact_text(benign_text), "--pattern=*.py --author=alice --path=/tmp/test git log -p")
 
