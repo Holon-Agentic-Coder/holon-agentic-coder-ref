@@ -1,7 +1,7 @@
+import io
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -382,12 +382,7 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            rmtree_kwargs = (
-                {"onexc": executor._handle_remove_readonly}
-                if sys.version_info >= (3, 12)
-                else {"onerror": executor._handle_remove_readonly}
-            )
-            mock_rmtree.assert_any_call(default_dir, **rmtree_kwargs)
+            mock_rmtree.assert_any_call(default_dir, onexc=executor._handle_remove_readonly)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
@@ -406,9 +401,11 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
             patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
-            self.assertRaises(subprocess.CalledProcessError),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
         ):
-            executor.main()
+            with self.assertRaises(subprocess.CalledProcessError):
+                executor.main()
+            self.assertIn("Execution failed:", mock_stderr.getvalue())
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")

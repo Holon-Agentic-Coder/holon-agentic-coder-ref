@@ -45,11 +45,8 @@ def _handle_remove_readonly(func, path, *args):
 
 
 def _rmtree(path: str) -> None:
-    """Helper to call shutil.rmtree with appropriate error handler depending on Python version."""
-    if sys.version_info >= (3, 12):  # noqa: UP036
-        shutil.rmtree(path, onexc=_handle_remove_readonly)
-    else:
-        shutil.rmtree(path, onerror=_handle_remove_readonly)
+    """Helper to call shutil.rmtree with the onexc error handler."""
+    shutil.rmtree(path, onexc=_handle_remove_readonly)
 
 
 def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
@@ -105,6 +102,13 @@ def redact_text(text: str | None) -> str | None:
     if len(text) > _MAX_REDACT_INPUT_LEN:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
+    # Redact sensitive URL query parameters including auth_code and code
+    s = re.sub(
+        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code)[^=]*=)[^\s&]+",
+        r"\1*******",
+        s,
+        flags=re.IGNORECASE,
+    )
     pattern = (
         r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|secret_key|private_key|signing_key|encryption_key))\1'
         r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
@@ -278,14 +282,21 @@ def main():
     repo_dir = os.getenv("HOLON_REPO_DIR")
     is_default_repo = False
     if not repo_dir:
-        in_sandbox = bool(
-            os.getenv("HOLON_ROLE")
-            or os.path.exists("/.dockerenv")
-            or os.getenv("USER")
+        in_sandbox_explicit = bool(
+            os.getenv("HOLON_IN_SANDBOX") or os.getenv("HOLON_ROLE") or os.path.exists("/.dockerenv")
+        )
+        in_sandbox_heuristic = (
+            os.getenv("USER")
             == "holon"  # Fallback heuristic: sandbox containers without HOLON_ROLE or /.dockerenv (Linux/macOS)
             or os.getenv("USERNAME")
             == "holon"  # Fallback heuristic: Windows sandbox; use HOLON_REPO_DIR to override in ambiguous environments
         )
+        if in_sandbox_heuristic and not in_sandbox_explicit:
+            print(
+                "Warning: using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.",
+                file=sys.stderr,
+            )
+        in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
         repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
         if not keep_workspace:
@@ -470,7 +481,7 @@ def main():
             # Log staged changes to provide visibility
             status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
             print("Current git repository status:")
-            print(redact_text(status_output.stdout))
+            print(redact_text(status_output.stdout or ""))
 
         staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
         if staged_check.returncode != 0:
