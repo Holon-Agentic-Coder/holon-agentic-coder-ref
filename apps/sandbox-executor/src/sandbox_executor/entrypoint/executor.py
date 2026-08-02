@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from sandbox_executor.agent_runner import get_repo_url, get_runner
 SECRET_FLAGS = {
     "--token",
     "--access-token",
+    "--access_token",
     "--secret",
     "--password",
     "--api-key",
@@ -31,6 +33,12 @@ SECRET_FLAGS = {
 }
 
 
+def _handle_remove_readonly(func, path, exc_info):
+    """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
     """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
     if not os.path.isdir(path):
@@ -39,9 +47,13 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
         item_path = os.path.join(path, item)
         try:
             if os.path.islink(item_path) or not os.path.isdir(item_path):
-                os.unlink(item_path)
+                try:
+                    os.unlink(item_path)
+                except PermissionError:
+                    os.chmod(item_path, stat.S_IWRITE)
+                    os.unlink(item_path)
             else:
-                shutil.rmtree(item_path)
+                shutil.rmtree(item_path, onerror=_handle_remove_readonly)
         except Exception as e:
             if raise_on_error:
                 raise
@@ -58,7 +70,7 @@ def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
         elif os.path.islink(repo_dir):
             os.unlink(repo_dir)
         else:
-            shutil.rmtree(repo_dir)
+            shutil.rmtree(repo_dir, onerror=_handle_remove_readonly)
     except Exception as e:
         if raise_on_error:
             raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
@@ -74,7 +86,7 @@ def redact_text(text: str | None) -> str | None:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     pattern = (
-        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|pat|_key|-key|\bkey))\1'
+        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|\bkey))\1'
         r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
     )
 
@@ -96,7 +108,7 @@ def redact_args(args: list[str]) -> list[str]:
     for arg in args:
         s_arg = str(arg)
         if mask_next:
-            if s_arg.startswith("-"):
+            if re.match(r"^--?[a-zA-Z]", s_arg):
                 mask_next = False
             else:
                 redacted.append("*******")
@@ -224,6 +236,9 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
 
 
 def main():
+    is_default_repo = False
+    repo_dir = None
+
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
         sys.exit(1)
@@ -239,6 +254,7 @@ def main():
     if plan_branch_prefix.endswith("/_"):
         plan_branch_prefix = plan_branch_prefix[:-2]
 
+    keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
     repo_dir = os.getenv("HOLON_REPO_DIR")
     is_default_repo = False
     if not repo_dir:
@@ -250,7 +266,8 @@ def main():
         )
         repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
         is_default_repo = True
-        _cleanup_repo_dir(repo_dir, raise_on_error=True)
+        if not keep_workspace:
+            _cleanup_repo_dir(repo_dir, raise_on_error=True)
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
@@ -433,23 +450,26 @@ def main():
             print("Current git repository status:")
             print(redact_text(status_output.stdout))
 
-        run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
-        run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
-        run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
-        skip_push = os.getenv("HOLON_SKIP_PUSH")
-        if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-            run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+        staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+        if staged_check.returncode != 0:
+            run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
+            run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
+            run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+            skip_push = os.getenv("HOLON_SKIP_PUSH")
+            if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
+                run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+            else:
+                print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
+            print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
         else:
-            print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
-
-        print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
+            print("No staged changes to commit.")
 
     except Exception as e:
         print(f"Execution failed: {e}", file=sys.stderr)
         raise
     finally:
         keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
-        if is_default_repo and not keep_workspace:
+        if is_default_repo and repo_dir and not keep_workspace:
             _cleanup_repo_dir(repo_dir, raise_on_error=False)
 
 

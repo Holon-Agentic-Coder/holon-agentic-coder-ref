@@ -122,11 +122,11 @@ class TestExecutor(unittest.TestCase):
         expected_spaces = 'token="*******" api_key=\'*******\' {"auth_token": "*******"}'
         self.assertEqual(redacted_spaces, expected_spaces)
 
-        benign_text = "--pattern=*.py --author=alice --path=/tmp/test git log -p monkey=banana donkey=kong"
-        self.assertEqual(
-            redact_text(benign_text),
-            "--pattern=*.py --author=alice --path=/tmp/test git log -p monkey=banana donkey=kong",
+        benign_text = (
+            "--pattern=*.py --author=alice --path=/tmp/test git log -p "
+            "monkey=banana donkey=kong compat=1.0.0 compact=true impact=high"
         )
+        self.assertEqual(redact_text(benign_text), benign_text)
 
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")
@@ -361,7 +361,7 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            mock_rmtree.assert_any_call(default_dir)
+            mock_rmtree.assert_any_call(default_dir, onerror=executor._handle_remove_readonly)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
@@ -433,12 +433,23 @@ class TestExecutor(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     executor._clear_dir_contents(tmp_dir, raise_on_error=True)
 
+    def test_cleanup_repo_dir_readonly(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_dir = os.path.join(tmp_dir, "readonly_repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            readonly_file = os.path.join(repo_dir, "readonly.txt")
+            with open(readonly_file, "w") as f:
+                f.write("content")
+            os.chmod(readonly_file, 0o444)
+            executor._cleanup_repo_dir(repo_dir, raise_on_error=True)
+            self.assertFalse(os.path.exists(repo_dir))
+
+    @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    def test_main_keep_workspace(self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    def test_main_keep_workspace(self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_get_runner.return_value = mock_runner
@@ -450,6 +461,7 @@ class TestExecutor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             default_dir = os.path.join(tmp_dir, "repo")
             mock_expanduser.return_value = default_dir
+            os.makedirs(default_dir, exist_ok=True)
 
             env = os.environ.copy()
             if "HOLON_REPO_DIR" in env:
@@ -463,7 +475,7 @@ class TestExecutor(unittest.TestCase):
             ):
                 executor.main()
 
-            mock_rmtree.assert_not_called()
+            mock_cleanup.assert_not_called()
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
