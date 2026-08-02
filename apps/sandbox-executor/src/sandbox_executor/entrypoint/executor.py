@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
+_MAX_REDACT_INPUT_LEN = 10_000
+
 # Note: single-character short flags (e.g. -p for password, -u for user) are intentionally
 # excluded from SECRET_FLAGS to avoid over-masking positional args in commands like `git log -p`.
 # Add them explicitly here if a specific use-case requires it.
@@ -96,12 +98,15 @@ def redact_text(text: str | None) -> str | None:
     if not text:
         return text
     # Guard against abnormally large inputs to prevent regex performance degradation on
-    # pathological strings. 10 000 chars is well above any realistic log line length.
-    if len(text) > 10000:
+    # pathological strings (ReDoS prevention). 10 000 chars is well above any realistic log
+    # line length. Inputs exceeding this limit are returned unredacted intentionally — the
+    # assumption is that such large inputs come from trusted internal subprocess outputs, not
+    # external user data.
+    if len(text) > _MAX_REDACT_INPUT_LEN:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     pattern = (
-        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|api_key|secret_key|private_key|signing_key|encryption_key))\1'
+        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|secret_key|private_key|signing_key|encryption_key))\1'
         r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
     )
 
@@ -252,6 +257,7 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
 def main():
     is_default_repo = False
     repo_dir = None
+    keep_workspace = False
 
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name]")

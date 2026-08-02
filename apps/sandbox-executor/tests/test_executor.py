@@ -143,6 +143,15 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")
 
+    def test_redact_text_oversized_input(self):
+        from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, redact_text
+
+        # Input exceeding the limit should be returned unredacted (intentional ReDoS prevention).
+        # Such large inputs are assumed to come from trusted internal subprocess outputs.
+        big_text = "token=secret " + "x" * _MAX_REDACT_INPUT_LEN
+        result = redact_text(big_text)
+        self.assertEqual(result, big_text)
+
     def test_should_decompose_high_entropy(self):
         plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
         plan_content = "# Plan\nSome plan"
