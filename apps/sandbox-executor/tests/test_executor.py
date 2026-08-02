@@ -29,6 +29,12 @@ class TestExecutor(unittest.TestCase):
             "top_secret",
             "--api-key",
             "key_abc",
+            "--pattern",
+            "*.py",
+            "--author",
+            "alice",
+            "--path",
+            "/tmp/test",
         ]
         redacted = redact_args(args)
         self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
@@ -40,25 +46,39 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redacted[8], "--access-token")
         self.assertEqual(redacted[9], "*******")
         self.assertEqual(redacted[10], "-p")
-        self.assertEqual(redacted[11], "*******")
+        self.assertEqual(redacted[11], "my_pass")
         self.assertEqual(redacted[12], "--secret")
         self.assertEqual(redacted[13], "*******")
         self.assertEqual(redacted[14], "--api-key")
         self.assertEqual(redacted[15], "*******")
+        self.assertEqual(redacted[16], "--pattern")
+        self.assertEqual(redacted[17], "*.py")
+        self.assertEqual(redacted[18], "--author")
+        self.assertEqual(redacted[19], "alice")
+        self.assertEqual(redacted[20], "--path")
+        self.assertEqual(redacted[21], "/tmp/test")
 
     def test_redact_text(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
         text = "This is a log with a secret URL: https://token:secret@github.com/repo.git and token=secret123 parameter"
         redacted = redact_text(text)
-        self.assertEqual(redacted, "This is a log with a secret URL: https://*******@github.com/repo.git and token=******* parameter")
-
-        extended_text = "api_key=secret_123 auth=abc bearer=def pat=ghi key=jkl Bearer my_jwt_token Authorization: Bearer token_xyz"
-        redacted_ext = redact_text(extended_text)
         self.assertEqual(
-            redacted_ext,
-            "api_key=******* auth=******* bearer=******* pat=******* key=******* Bearer ******* Authorization: Bearer *******",
+            redacted, "This is a log with a secret URL: https://*******@github.com/repo.git and token=******* parameter"
         )
+
+        extended_text = (
+            "api_key=secret_123 auth=abc bearer=def pat=ghi key=jkl Bearer my_jwt_token Authorization: Bearer token_xyz"
+        )
+        redacted_ext = redact_text(extended_text)
+        expected_ext = (
+            "api_key=******* auth=******* bearer=******* pat=******* "
+            "key=******* Bearer ******* Authorization: Bearer *******"
+        )
+        self.assertEqual(redacted_ext, expected_ext)
+
+        benign_text = "--pattern=*.py --author=alice --path=/tmp/test git log -p"
+        self.assertEqual(redact_text(benign_text), "--pattern=*.py --author=alice --path=/tmp/test git log -p")
 
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")
@@ -312,9 +332,9 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
             patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            self.assertRaises(subprocess.CalledProcessError),
         ):
-            with self.assertRaises(subprocess.CalledProcessError):
-                executor.main()
+            executor.main()
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -347,14 +367,18 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(os.path.exists(tmp_dir))
             self.assertEqual(os.listdir(tmp_dir), [])
 
+            # Test guard clause when path is a file, not a directory
+            with open(file_path, "w") as f:
+                f.write("hello")
+            executor._clear_dir_contents(file_path)
+            self.assertTrue(os.path.exists(file_path))
+
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
     @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    def test_main_keep_workspace(
-        self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
-    ):
+    def test_main_keep_workspace(self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_get_runner.return_value = mock_runner

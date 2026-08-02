@@ -13,13 +13,11 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
-
 SECRET_FLAGS = {
     "--token",
     "--access-token",
     "--secret",
     "--password",
-    "-p",
     "--api-key",
     "--api_key",
     "--auth",
@@ -32,7 +30,7 @@ SECRET_FLAGS = {
 
 def _clear_dir_contents(path: str) -> None:
     """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
-    if not os.path.exists(path):
+    if not os.path.isdir(path):
         return
     for item in os.listdir(path):
         item_path = os.path.join(path, item)
@@ -54,7 +52,7 @@ def redact_text(text: str | None) -> str | None:
         return text
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     s = re.sub(
-        r"(token|access_token|secret|password|api_key|auth|bearer|pat|key)(:\s*|=)[^&\s]+",
+        r"\b(token|access_token|secret|password|api_key|auth|bearer|pat|key)(:\s*|=)[^&\s'\"]+",
         r"\1\2*******",
         s,
         flags=re.IGNORECASE,
@@ -76,23 +74,7 @@ def redact_args(args: list[str]) -> list[str]:
             redacted.append(masked if masked is not None else "")
 
         lowered = s_arg.lower()
-        if (
-            lowered in SECRET_FLAGS
-            or any(
-                lowered.startswith(flag)
-                for flag in (
-                    "--token",
-                    "--access-token",
-                    "--secret",
-                    "--password",
-                    "--api-key",
-                    "--api_key",
-                    "--auth",
-                    "--bearer",
-                    "--pat",
-                )
-            )
-        ) and "=" not in lowered:
+        if lowered in SECRET_FLAGS:
             mask_next = True
 
     return redacted
@@ -266,7 +248,7 @@ def main():
                             plan_data = data
                             break
                     except Exception as e:
-                        print(f"Warning: skipping line {line_no} in plans.jsonl: {e}")
+                        print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
 
         if not plan_data:
             plan_data = {
@@ -302,7 +284,7 @@ def main():
                             break
                     except Exception as e:
                         # Ignore invalid or corrupted lines in intents ledger
-                        print(f"Warning: skipping unparseable line in intents.jsonl: {e}")
+                        print(f"Warning: skipping unparseable line in intents.jsonl: {e}", file=sys.stderr)
 
         if not intent_data:
             intent_data = {"branch": plan_data.get("intent_branch", "I-unknown")}
@@ -427,8 +409,7 @@ def main():
         print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
 
     except Exception as e:
-        print(f"Execution failed: {e}")
-        traceback.print_exc()
+        print(f"Execution failed: {e}", file=sys.stderr)
         raise
     finally:
         keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
@@ -441,7 +422,7 @@ def main():
                 else:
                     shutil.rmtree(repo_dir)
             except Exception as e:
-                print(f"Warning: Failed to clean up repo dir {repo_dir} in finally block: {e}")
+                print(f"Warning: Failed to clean up repo dir {repo_dir} in finally block: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
