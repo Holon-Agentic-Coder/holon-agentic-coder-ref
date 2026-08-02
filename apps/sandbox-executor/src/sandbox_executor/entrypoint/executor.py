@@ -33,10 +33,18 @@ SECRET_FLAGS = {
 }
 
 
-def _handle_remove_readonly(func, path, exc_info):
+def _handle_remove_readonly(func, path, *args):
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
-    os.chmod(path, stat.S_IWRITE)
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
     func(path)
+
+
+def _rmtree(path: str) -> None:
+    """Helper to call shutil.rmtree with appropriate error handler depending on Python version."""
+    if sys.version_info >= (3, 12):  # noqa: UP036
+        shutil.rmtree(path, onexc=_handle_remove_readonly)
+    else:
+        shutil.rmtree(path, onerror=_handle_remove_readonly)
 
 
 def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
@@ -50,10 +58,10 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
                 try:
                     os.unlink(item_path)
                 except PermissionError:
-                    os.chmod(item_path, stat.S_IWRITE)
+                    os.chmod(item_path, stat.S_IWRITE | stat.S_IREAD)
                     os.unlink(item_path)
             else:
-                shutil.rmtree(item_path, onerror=_handle_remove_readonly)
+                _rmtree(item_path)
         except Exception as e:
             if raise_on_error:
                 raise
@@ -70,7 +78,7 @@ def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
         elif os.path.islink(repo_dir):
             os.unlink(repo_dir)
         else:
-            shutil.rmtree(repo_dir, onerror=_handle_remove_readonly)
+            _rmtree(repo_dir)
     except Exception as e:
         if raise_on_error:
             raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
@@ -108,7 +116,7 @@ def redact_args(args: list[str]) -> list[str]:
     for arg in args:
         s_arg = str(arg)
         if mask_next:
-            if re.match(r"^--?[a-zA-Z]", s_arg):
+            if s_arg.lower() in SECRET_FLAGS or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
                 redacted.append("*******")
@@ -121,8 +129,7 @@ def redact_args(args: list[str]) -> list[str]:
             if len(parts) == 2:
                 redacted.append(f"{parts[0]}=*******")
             else:
-                masked = redact_text(s_arg)
-                redacted.append(masked if masked is not None else "")
+                redacted.append(s_arg)
                 mask_next = True
         else:
             masked = redact_text(s_arg)

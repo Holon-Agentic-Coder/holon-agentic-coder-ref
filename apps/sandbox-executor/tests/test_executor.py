@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -81,6 +82,10 @@ class TestExecutor(unittest.TestCase):
         # Trailing secret flags at the end of args
         trailing = redact_args(["git", "clone", "--token"])
         self.assertEqual(trailing, ["git", "clone", "--token"])
+
+        # Secret values starting with - or --
+        secret_dash = redact_args(["--token", "-secret-value"])
+        self.assertEqual(secret_dash, ["--token", "*******"])
 
     def test_redact_args_trailing_secret_flag(self):
         from sandbox_executor.entrypoint.executor import redact_args
@@ -361,7 +366,12 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertTrue(mock_rmtree.called)
-            mock_rmtree.assert_any_call(default_dir, onerror=executor._handle_remove_readonly)
+            rmtree_kwargs = (
+                {"onexc": executor._handle_remove_readonly}
+                if sys.version_info >= (3, 12)
+                else {"onerror": executor._handle_remove_readonly}
+            )
+            mock_rmtree.assert_any_call(default_dir, **rmtree_kwargs)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
