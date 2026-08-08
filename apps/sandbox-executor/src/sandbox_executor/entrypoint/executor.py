@@ -37,6 +37,20 @@ SECRET_FLAGS = {
     "--client_secret",
 }
 
+FORBIDDEN_ROOTS = {
+    "/",
+    "/root",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/proc",
+    "/sys",
+    "/usr",
+    "/var",
+}
+
 
 def _handle_remove_readonly(func, path, exc_info=None):
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
@@ -55,9 +69,8 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
         return
 
     abs_path = os.path.abspath(path)
-    parts = [p for p in abs_path.split(os.sep) if p]
-    if len(parts) < 2:
-        msg = f"Refusing to clear root-level directory: {abs_path}"
+    if abs_path in FORBIDDEN_ROOTS:
+        msg = f"Refusing to clear system root-level directory: {abs_path}"
         if raise_on_error:
             raise RuntimeError(msg)
         print(f"Warning: {msg}", file=sys.stderr)
@@ -187,7 +200,7 @@ def run_cmd(
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
-        print(f"Command args: {' '.join(print_args)}", file=sys.stderr)
+        print(f"Command args: {cmd_str}", file=sys.stderr)
         out = redact_text(result.stdout) or ""
         err = redact_text(result.stderr) or ""
         if len(out) > 5000:
@@ -329,10 +342,13 @@ def main():
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
-        run_cmd(
-            ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
-            cwd=repo_dir,
-        )
+        if not os.path.exists(os.path.join(repo_dir, ".git")):
+            run_cmd(
+                ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
+                cwd=repo_dir,
+            )
+        else:
+            run_cmd(["git", "fetch", "origin"], cwd=repo_dir)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)

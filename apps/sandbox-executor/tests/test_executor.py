@@ -454,6 +454,11 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents(file_path)
             self.assertTrue(os.path.exists(file_path))
 
+    def test_clear_dir_contents_forbidden_roots(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            executor._clear_dir_contents("/etc", raise_on_error=True)
+        self.assertIn("Refusing to clear system root-level directory", str(ctx.exception))
+
     def test_clear_dir_contents_raise_on_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_file = os.path.join(tmp_dir, "test.txt")
@@ -509,6 +514,45 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             mock_cleanup.assert_not_called()
+
+    @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
+    def test_main_keep_workspace_existing_git(
+        self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup
+    ):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_get_runner.return_value = mock_runner
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_run_cmd.return_value = mock_result
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            default_dir = os.path.join(tmp_dir, "repo")
+            git_dir = os.path.join(default_dir, ".git")
+            mock_expanduser.return_value = default_dir
+            os.makedirs(git_dir, exist_ok=True)
+
+            env = os.environ.copy()
+            if "HOLON_REPO_DIR" in env:
+                del env["HOLON_REPO_DIR"]
+            env["HOLON_SKIP_PUSH"] = "1"
+            env["HOLON_KEEP_WORKSPACE"] = "true"
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            ):
+                executor.main()
+
+            mock_cleanup.assert_not_called()
+            called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
+            self.assertTrue(any(cmd == ["git", "fetch", "origin"] for cmd in called_cmds))
+            self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
