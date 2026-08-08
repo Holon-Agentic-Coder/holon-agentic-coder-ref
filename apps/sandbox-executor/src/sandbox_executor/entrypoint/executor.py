@@ -133,8 +133,7 @@ def redact_args(args: list[str]) -> list[str]:
             is_secret = s_arg.lower() in SECRET_FLAGS or (
                 s_arg.lower().startswith("-")
                 and any(
-                    s_arg.lower().endswith(sfx)
-                    for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key")
+                    s_arg.lower().endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key")
                 )
             )
             if is_secret or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
