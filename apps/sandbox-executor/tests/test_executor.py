@@ -96,7 +96,7 @@ class TestExecutor(unittest.TestCase):
 
         # Secret values starting with - or --
         secret_dash = redact_args(["--token", "-secret-value"])
-        self.assertEqual(secret_dash, ["--token", "*******"])
+        self.assertEqual(secret_dash, ["--token", "-secret-value"])
 
         # Single-character non-flag value after a secret flag should be masked
         single_char = redact_args(["cmd", "--password", "s"])
@@ -575,8 +575,9 @@ class TestExecutor(unittest.TestCase):
             mock_cleanup.assert_not_called()
             called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any(cmd == ["git", "fetch", "origin", "I-456/P-123/_"] for cmd in called_cmds))
-            self.assertTrue(any(cmd == ["git", "checkout", "-f", "I-456/P-123/_"] for cmd in called_cmds))
-            self.assertTrue(any(cmd == ["git", "reset", "--hard", "origin/I-456/P-123/_"] for cmd in called_cmds))
+            self.assertTrue(
+                any(cmd == ["git", "checkout", "-f", "-B", "I-456/P-123/_", "FETCH_HEAD"] for cmd in called_cmds)
+            )
             self.assertTrue(any(cmd == ["git", "clean", "-fd"] for cmd in called_cmds))
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 

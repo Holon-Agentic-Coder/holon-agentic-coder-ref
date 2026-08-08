@@ -45,7 +45,9 @@ FORBIDDEN_ROOTS = {
     "/boot",
     "/dev",
     "/etc",
+    "/home",
     "/lib",
+    "/opt",
     "/proc",
     "/sys",
     "/usr",
@@ -175,7 +177,7 @@ def redact_args(args: list[str]) -> list[str]:
         s_arg = str(arg)
         if mask_next:
             is_secret = _is_secret_flag(s_arg)
-            if is_secret or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
+            if is_secret or re.match(r"^-{1,2}[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
                 redacted.append("*******")
@@ -363,8 +365,7 @@ def main():
             )
         else:
             run_cmd(["git", "fetch", "origin", plan_branch], cwd=repo_dir)
-            run_cmd(["git", "checkout", "-f", plan_branch], cwd=repo_dir)
-            run_cmd(["git", "reset", "--hard", f"origin/{plan_branch}"], cwd=repo_dir)
+            run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
             run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
 
         exec_seq = int(time.time())
