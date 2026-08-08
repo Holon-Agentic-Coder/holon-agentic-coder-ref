@@ -209,17 +209,17 @@ def run_cmd(
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         print(f"Command args: {cmd_str}", file=sys.stderr)
-        out = redact_text(result.stdout) or ""
-        err = redact_text(result.stderr) or ""
+        full_out = redact_text(result.stdout) or ""
+        full_err = redact_text(result.stderr) or ""
+        out = full_out
+        err = full_err
         if len(out) > 5000:
             out = out[:5000] + "... (truncated)"
         if len(err) > 5000:
             err = err[:5000] + "... (truncated)"
         print(f"Stdout:\n{out}", file=sys.stderr)
         print(f"Stderr:\n{err}", file=sys.stderr)
-        raise subprocess.CalledProcessError(
-            result.returncode, redacted_args, output=redact_text(result.stdout), stderr=redact_text(result.stderr)
-        )
+        raise subprocess.CalledProcessError(result.returncode, redacted_args, output=full_out, stderr=full_err)
     return result
 
 
@@ -356,7 +356,9 @@ def main():
                 cwd=repo_dir,
             )
         else:
-            run_cmd(["git", "fetch", "origin"], cwd=repo_dir)
+            run_cmd(["git", "fetch", "origin", plan_branch], cwd=repo_dir)
+            run_cmd(["git", "checkout", "-f", plan_branch], cwd=repo_dir)
+            run_cmd(["git", "reset", "--hard", f"origin/{plan_branch}"], cwd=repo_dir)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)

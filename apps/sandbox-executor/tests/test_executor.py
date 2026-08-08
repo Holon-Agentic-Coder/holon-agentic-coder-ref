@@ -551,7 +551,9 @@ class TestExecutor(unittest.TestCase):
 
             mock_cleanup.assert_not_called()
             called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            self.assertTrue(any(cmd == ["git", "fetch", "origin"] for cmd in called_cmds))
+            self.assertTrue(any(cmd == ["git", "fetch", "origin", "I-456/P-123/_"] for cmd in called_cmds))
+            self.assertTrue(any(cmd == ["git", "checkout", "-f", "I-456/P-123/_"] for cmd in called_cmds))
+            self.assertTrue(any(cmd == ["git", "reset", "--hard", "origin/I-456/P-123/_"] for cmd in called_cmds))
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
