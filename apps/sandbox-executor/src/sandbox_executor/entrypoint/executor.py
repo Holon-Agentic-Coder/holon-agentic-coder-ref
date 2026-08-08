@@ -130,7 +130,14 @@ def redact_args(args: list[str]) -> list[str]:
     for arg in args:
         s_arg = str(arg)
         if mask_next:
-            if s_arg.lower() in SECRET_FLAGS or (s_arg.lower().startswith("-") and any(s_arg.lower().endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))) or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
+            is_secret = s_arg.lower() in SECRET_FLAGS or (
+                s_arg.lower().startswith("-")
+                and any(
+                    s_arg.lower().endswith(sfx)
+                    for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key")
+                )
+            )
+            if is_secret or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
                 redacted.append("*******")
@@ -139,7 +146,11 @@ def redact_args(args: list[str]) -> list[str]:
 
         parts = s_arg.split("=", 1)
         flag_lowered = parts[0].lower()
-        if flag_lowered in SECRET_FLAGS or (flag_lowered.startswith("-") and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))):
+        is_secret_flag = flag_lowered in SECRET_FLAGS or (
+            flag_lowered.startswith("-")
+            and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))
+        )
+        if is_secret_flag:
             if len(parts) == 2:
                 redacted.append(f"{parts[0]}=*******")
             else:

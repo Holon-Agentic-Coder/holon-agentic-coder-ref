@@ -86,7 +86,9 @@ class TestExecutor(unittest.TestCase):
 
         # Equal-sign formatted secret flags
         equal_fmt = redact_args(["--token=secret123", "--password=mypass", "--author=alice", "--github-token=gh123"])
-        self.assertEqual(equal_fmt, ["--token=*******", "--password=*******", "--author=alice", "--github-token=*******"])
+        self.assertEqual(
+            equal_fmt, ["--token=*******", "--password=*******", "--author=alice", "--github-token=*******"]
+        )
 
         # Trailing secret flags at the end of args
         trailing = redact_args(["git", "clone", "--token"])
