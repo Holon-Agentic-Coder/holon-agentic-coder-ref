@@ -53,6 +53,16 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
     """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
     if not os.path.isdir(path):
         return
+
+    abs_path = os.path.abspath(path)
+    parts = [p for p in abs_path.split(os.sep) if p]
+    if len(parts) < 2:
+        msg = f"Refusing to clear root-level directory: {abs_path}"
+        if raise_on_error:
+            raise RuntimeError(msg)
+        print(f"Warning: {msg}", file=sys.stderr)
+        return
+
     for item in os.listdir(path):
         item_path = os.path.join(path, item)
         try:
@@ -170,7 +180,10 @@ def run_cmd(
 ) -> subprocess.CompletedProcess[str]:
     redacted_args = redact_args(args)
     print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
-    print(f"Running: {' '.join(print_args)}")
+    cmd_str = " ".join(print_args)
+    if len(cmd_str) > 5000:
+        cmd_str = cmd_str[:4997] + "..."
+    print(f"Running: {cmd_str}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
@@ -307,7 +320,9 @@ def main():
                 file=sys.stderr,
             )
         in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
-        repo_dir = os.path.expanduser("~/repo") if in_sandbox else os.path.expanduser("~/.holon/repo")
+        repo_dir = (
+            os.path.expanduser("~/.holon-sandbox/workspace") if in_sandbox else os.path.expanduser("~/.holon/repo")
+        )
         is_default_repo = True
         if not keep_workspace:
             _cleanup_repo_dir(repo_dir, raise_on_error=True)
