@@ -70,9 +70,10 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
         return
 
     abs_path = os.path.abspath(path)
-    if abs_path in FORBIDDEN_ROOTS or any(
-        abs_path.startswith(root if root.endswith("/") else root + "/") for root in FORBIDDEN_ROOTS
-    ):
+    is_forbidden = abs_path in FORBIDDEN_ROOTS or any(
+        abs_path.startswith(root.rstrip("/") + "/") for root in FORBIDDEN_ROOTS if root != "/"
+    )
+    if is_forbidden:
         msg = f"Refusing to clear system root-level directory: {abs_path}"
         if raise_on_error:
             raise RuntimeError(msg)
@@ -159,18 +160,21 @@ def redact_text(text: str | None) -> str | None:
     return s
 
 
+def _is_secret_flag(flag: str) -> bool:
+    flag_lowered = flag.lower()
+    return flag_lowered in SECRET_FLAGS or (
+        flag_lowered.startswith("-")
+        and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))
+    )
+
+
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     mask_next = False
     for arg in args:
         s_arg = str(arg)
         if mask_next:
-            is_secret = s_arg.lower() in SECRET_FLAGS or (
-                s_arg.lower().startswith("-")
-                and any(
-                    s_arg.lower().endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key")
-                )
-            )
+            is_secret = _is_secret_flag(s_arg)
             if is_secret or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
@@ -179,11 +183,7 @@ def redact_args(args: list[str]) -> list[str]:
                 continue
 
         parts = s_arg.split("=", 1)
-        flag_lowered = parts[0].lower()
-        is_secret_flag = flag_lowered in SECRET_FLAGS or (
-            flag_lowered.startswith("-")
-            and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))
-        )
+        is_secret_flag = _is_secret_flag(parts[0])
         if is_secret_flag:
             if len(parts) == 2:
                 redacted.append(f"{parts[0]}=*******")
