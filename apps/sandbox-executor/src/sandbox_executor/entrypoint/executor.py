@@ -47,19 +47,28 @@ FORBIDDEN_ROOTS = {
     "/dev",
     "/etc",
     "/lib",
-    "/opt",
     "/proc",
     "/sys",
     "/usr",
     "/var",
+    "/opt",
+}
+SYSTEM_SUBTREES = {
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/proc",
+    "/sys",
+    "/usr",
+    "/root",
 }
 
 
 def _check_forbidden_root(path: str) -> None:
     abs_path = os.path.abspath(path)
-    if abs_path in FORBIDDEN_ROOTS or any(
-        abs_path.startswith(root.rstrip("/") + "/") for root in FORBIDDEN_ROOTS if root != "/"
-    ):
+    if abs_path in FORBIDDEN_ROOTS or any(abs_path.startswith(root + "/") for root in SYSTEM_SUBTREES):
         msg = f"Refusing to perform operation on system root-level directory: {abs_path}"
         raise RuntimeError(msg)
 
