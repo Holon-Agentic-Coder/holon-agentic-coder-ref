@@ -216,9 +216,11 @@ def run_cmd(
         out = full_out
         err = full_err
         if len(out) > _MAX_PRINT_LEN:
-            out = out[:_MAX_PRINT_LEN] + "... (truncated)"
+            half_print = _MAX_PRINT_LEN // 2
+            out = out[:half_print] + "\n... (truncated) ...\n" + out[-half_print:]
         if len(err) > _MAX_PRINT_LEN:
-            err = err[:_MAX_PRINT_LEN] + "... (truncated)"
+            half_print = _MAX_PRINT_LEN // 2
+            err = err[:half_print] + "\n... (truncated) ...\n" + err[-half_print:]
         print(f"Stdout:\n{out}", file=sys.stderr)
         print(f"Stderr:\n{err}", file=sys.stderr)
         raise subprocess.CalledProcessError(result.returncode, redacted_args, output=full_out, stderr=full_err)
