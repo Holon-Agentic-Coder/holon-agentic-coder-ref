@@ -161,16 +161,16 @@ class TestExecutor(unittest.TestCase):
         result = redact_text(big_text)
 
         half_len = _MAX_REDACT_INPUT_LEN // 2
-        
+
         # The head is truncated before redaction, so it takes the first half_len chars of big_text.
         # "token=secret " is 13 chars, so the head has 5000 - 13 = 4987 "x"s.
         # Then redaction changes "secret" (6) to "*******" (7), making it 14 + 4987 = 5001 chars.
         expected_head = "token=******* " + "x" * (half_len - len("token=secret "))
-        
+
         # The tail takes the last half_len chars of big_text.
         # " tail end" is 9 chars, so the tail has 5000 - 9 = 4991 "x"s.
         expected_tail = "x" * (half_len - len(" tail end")) + " tail end"
-        
+
         expected = expected_head + "\n... (truncated) ...\n" + expected_tail
         self.assertEqual(result, expected)
 
