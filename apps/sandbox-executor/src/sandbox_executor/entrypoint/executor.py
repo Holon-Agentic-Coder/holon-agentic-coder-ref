@@ -72,7 +72,10 @@ SYSTEM_SUBTREES = {
     "/usr",
     "/root",
     "/private/etc",
-    "/private/var",
+    "/private/var/db",
+    "/private/var/log",
+    "/private/var/run",
+    "/private/var/root",
 }
 
 
@@ -87,10 +90,13 @@ def _check_forbidden_root(path: str) -> None:
 
 def _handle_remove_readonly(func: Callable, path: str, exc_info: tuple) -> None:
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
-    if os.path.isdir(path):
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-    else:
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    try:
+        if os.path.isdir(path):
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
+        else:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD, follow_symlinks=False)
+    except (OSError, NotImplementedError):
+        pass
     func(path)
 
 

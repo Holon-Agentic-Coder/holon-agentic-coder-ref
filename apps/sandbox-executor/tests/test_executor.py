@@ -374,8 +374,6 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
-    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
     @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
     def test_main_default_workspace_deleted(
@@ -450,8 +448,6 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
             self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
 
-    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
-    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     def test_clear_dir_contents(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_dir = os.path.join(tmp_dir, "subdir")
@@ -510,6 +506,10 @@ class TestExecutor(unittest.TestCase):
             executor._check_forbidden_root("/etc/apt")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
 
+    def test_check_forbidden_root_mac_var_folders_allowed(self):
+        # Should not raise any error
+        executor._check_forbidden_root("/private/var/folders/xx/yyyy/T/workspace")
+
     @patch("sandbox_executor.entrypoint.executor.os.path.realpath")
     def test_check_forbidden_root_symlinks(self, mock_realpath):
         # Even if abs_path is allowed, realpath being forbidden should trigger rejection
@@ -525,8 +525,6 @@ class TestExecutor(unittest.TestCase):
         executor._clear_dir_contents("/home/user/workspace/repo", raise_on_error=True)
         mock_listdir.assert_called_once_with("/home/user/workspace/repo")
 
-    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
-    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     def test_clear_dir_contents_raise_on_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_file = os.path.join(tmp_dir, "test.txt")
@@ -551,7 +549,7 @@ class TestExecutor(unittest.TestCase):
         # Test for directory
         mock_isdir.return_value = True
         _handle_remove_readonly(mock_func, "/fake/dir", None)
-        mock_chmod.assert_called_with("/fake/dir", stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        mock_chmod.assert_called_with("/fake/dir", stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
         mock_func.assert_called_with("/fake/dir")
 
         mock_chmod.reset_mock()
@@ -560,7 +558,7 @@ class TestExecutor(unittest.TestCase):
         # Test for file
         mock_isdir.return_value = False
         _handle_remove_readonly(mock_func, "/fake/file.txt", None)
-        mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWRITE | stat.S_IREAD)
+        mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWRITE | stat.S_IREAD, follow_symlinks=False)
         mock_func.assert_called_with("/fake/file.txt")
 
     @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
@@ -639,8 +637,6 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(any(cmd == ["git", "clean", "-fd"] for cmd in called_cmds))
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
-    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
-    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
