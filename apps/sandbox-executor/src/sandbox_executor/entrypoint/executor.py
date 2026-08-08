@@ -76,7 +76,15 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
         print(f"Warning: {msg}", file=sys.stderr)
         return
 
-    for item in os.listdir(path):
+    try:
+        items = os.listdir(path)
+    except PermissionError as e:
+        if raise_on_error:
+            raise
+        print(f"Warning: Failed to list directory {path}: {e}", file=sys.stderr)
+        return
+
+    for item in items:
         item_path = os.path.join(path, item)
         try:
             if os.path.islink(item_path) or not os.path.isdir(item_path):
