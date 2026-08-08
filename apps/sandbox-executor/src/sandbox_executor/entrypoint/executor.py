@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
-_MAX_REDACT_INPUT_LEN = 10_000
+_MAX_REDACT_INPUT_LEN = 100_000
 _MAX_PRINT_LEN = 5000
 
 # Note: single-character short flags (e.g. -p for password, -u for user) are intentionally
@@ -52,6 +52,14 @@ FORBIDDEN_ROOTS = {
     "/usr",
     "/var",
     "/opt",
+    "/home",
+    "/Users",
+    "/private",
+    "/private/etc",
+    "/private/var",
+    "/private/tmp",
+    "/tmp",
+    "/var/tmp",
 }
 SYSTEM_SUBTREES = {
     "/bin",
@@ -63,14 +71,18 @@ SYSTEM_SUBTREES = {
     "/sys",
     "/usr",
     "/root",
+    "/private/etc",
+    "/private/var",
 }
 
 
 def _check_forbidden_root(path: str) -> None:
     abs_path = os.path.abspath(path)
-    if abs_path in FORBIDDEN_ROOTS or any(abs_path.startswith(root + "/") for root in SYSTEM_SUBTREES):
-        msg = f"Refusing to perform operation on system root-level directory: {abs_path}"
-        raise RuntimeError(msg)
+    real_path = os.path.realpath(path)
+    for p in (abs_path, real_path):
+        if p in FORBIDDEN_ROOTS or any(p.startswith(root + "/") for root in SYSTEM_SUBTREES):
+            msg = f"Refusing to perform operation on system root-level directory: {path}"
+            raise RuntimeError(msg)
 
 
 def _handle_remove_readonly(func: Callable, path: str, exc_info: tuple) -> None:

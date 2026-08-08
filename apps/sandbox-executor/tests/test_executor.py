@@ -163,12 +163,12 @@ class TestExecutor(unittest.TestCase):
         half_len = _MAX_REDACT_INPUT_LEN // 2
 
         # The head is truncated before redaction, so it takes the first half_len chars of big_text.
-        # "token=secret " is 13 chars, so the head has 5000 - 13 = 4987 "x"s.
-        # Then redaction changes "secret" (6) to "*******" (7), making it 14 + 4987 = 5001 chars.
+        # "token=secret " is 13 chars, so the head has half_len - 13 "x"s.
+        # Then redaction changes "secret" (6) to "*******" (7), making it 14 + (half_len - 13) chars.
         expected_head = "token=******* " + "x" * (half_len - len("token=secret "))
 
         # The tail takes the last half_len chars of big_text.
-        # " tail end" is 9 chars, so the tail has 5000 - 9 = 4991 "x"s.
+        # " tail end" is 9 chars, so the tail has half_len - 9 "x"s.
         expected_tail = "x" * (half_len - len(" tail end")) + " tail end"
 
         expected = expected_head + "\n... (truncated) ...\n" + expected_tail
@@ -375,6 +375,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
+    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
     @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
     def test_main_default_workspace_deleted(
@@ -450,6 +451,7 @@ class TestExecutor(unittest.TestCase):
             self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
 
     @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
+    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     def test_clear_dir_contents(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_dir = os.path.join(tmp_dir, "subdir")
@@ -496,9 +498,8 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents("/usr/bin", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
-    def test_check_forbidden_root_var_tmp_allowed(self):
+    def test_check_forbidden_root_opt_allowed(self):
         # Should not raise any error
-        executor._check_forbidden_root("/var/tmp/workspace")
         executor._check_forbidden_root("/opt/workspace")
 
         with self.assertRaises(RuntimeError) as ctx:
@@ -509,6 +510,14 @@ class TestExecutor(unittest.TestCase):
             executor._check_forbidden_root("/etc/apt")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
 
+    @patch("sandbox_executor.entrypoint.executor.os.path.realpath")
+    def test_check_forbidden_root_symlinks(self, mock_realpath):
+        # Even if abs_path is allowed, realpath being forbidden should trigger rejection
+        mock_realpath.return_value = "/private/etc"
+        with self.assertRaises(RuntimeError) as ctx:
+            executor._check_forbidden_root("/var/folders/etc_symlink")
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
+
     @patch("sandbox_executor.entrypoint.executor.os.listdir", return_value=[])
     @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
     def test_clear_dir_contents_allowed_roots(self, mock_isdir, mock_listdir):
@@ -517,6 +526,7 @@ class TestExecutor(unittest.TestCase):
         mock_listdir.assert_called_once_with("/home/user/workspace/repo")
 
     @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
+    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     def test_clear_dir_contents_raise_on_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_file = os.path.join(tmp_dir, "test.txt")
@@ -630,6 +640,7 @@ class TestExecutor(unittest.TestCase):
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
     @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
+    @patch("sandbox_executor.entrypoint.executor.SYSTEM_SUBTREES", new={"/fake_system"})
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
