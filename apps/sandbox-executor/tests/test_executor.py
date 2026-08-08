@@ -448,6 +448,7 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
             self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
 
+    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
     def test_clear_dir_contents(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_dir = os.path.join(tmp_dir, "subdir")
@@ -466,11 +467,21 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents(file_path)
             self.assertTrue(os.path.exists(file_path))
 
-    def test_clear_dir_contents_forbidden_roots(self):
+    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
+    def test_clear_dir_contents_forbidden_roots(self, mock_isdir):
         with self.assertRaises(RuntimeError) as ctx:
             executor._clear_dir_contents("/etc", raise_on_error=True)
         self.assertIn("Refusing to clear system root-level directory", str(ctx.exception))
 
+        with self.assertRaises(RuntimeError) as ctx2:
+            executor._clear_dir_contents("/etc/apt", raise_on_error=True)
+        self.assertIn("Refusing to clear system root-level directory", str(ctx2.exception))
+
+        with self.assertRaises(RuntimeError) as ctx3:
+            executor._clear_dir_contents("/usr/bin", raise_on_error=True)
+        self.assertIn("Refusing to clear system root-level directory", str(ctx3.exception))
+
+    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
     def test_clear_dir_contents_raise_on_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sub_file = os.path.join(tmp_dir, "test.txt")
@@ -566,6 +577,7 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(any(cmd == ["git", "fetch", "origin", "I-456/P-123/_"] for cmd in called_cmds))
             self.assertTrue(any(cmd == ["git", "checkout", "-f", "I-456/P-123/_"] for cmd in called_cmds))
             self.assertTrue(any(cmd == ["git", "reset", "--hard", "origin/I-456/P-123/_"] for cmd in called_cmds))
+            self.assertTrue(any(cmd == ["git", "clean", "-fd"] for cmd in called_cmds))
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")

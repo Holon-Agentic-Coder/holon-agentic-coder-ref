@@ -70,7 +70,9 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
         return
 
     abs_path = os.path.abspath(path)
-    if abs_path in FORBIDDEN_ROOTS:
+    if abs_path in FORBIDDEN_ROOTS or any(
+        abs_path.startswith(root if root.endswith("/") else root + "/") for root in FORBIDDEN_ROOTS
+    ):
         msg = f"Refusing to clear system root-level directory: {abs_path}"
         if raise_on_error:
             raise RuntimeError(msg)
@@ -363,6 +365,7 @@ def main():
             run_cmd(["git", "fetch", "origin", plan_branch], cwd=repo_dir)
             run_cmd(["git", "checkout", "-f", plan_branch], cwd=repo_dir)
             run_cmd(["git", "reset", "--hard", f"origin/{plan_branch}"], cwd=repo_dir)
+            run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
