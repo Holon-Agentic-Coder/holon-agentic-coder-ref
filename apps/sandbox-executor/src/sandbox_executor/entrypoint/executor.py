@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
 _MAX_REDACT_INPUT_LEN = 10_000
+_MAX_PRINT_LEN = 5000
 
 # Note: single-character short flags (e.g. -p for password, -u for user) are intentionally
 # excluded from SECRET_FLAGS to avoid over-masking positional args in commands like `git log -p`.
@@ -129,7 +130,8 @@ def redact_text(text: str | None) -> str | None:
     # pathological strings (ReDoS prevention). 10 000 chars is well above any realistic log
     # line length. Inputs exceeding this limit are truncated before applying redaction.
     if len(text) > _MAX_REDACT_INPUT_LEN:
-        text = text[:_MAX_REDACT_INPUT_LEN] + "... (truncated)"
+        half_len = _MAX_REDACT_INPUT_LEN // 2
+        text = text[:half_len] + "\n... (truncated) ...\n" + text[-half_len:]
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
@@ -202,8 +204,8 @@ def run_cmd(
     redacted_args = redact_args(args)
     print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
     cmd_str = " ".join(print_args)
-    if len(cmd_str) > 5000:
-        cmd_str = cmd_str[:4997] + "..."
+    if len(cmd_str) > _MAX_PRINT_LEN:
+        cmd_str = cmd_str[: _MAX_PRINT_LEN - 3] + "..."
     print(f"Running: {cmd_str}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
@@ -213,10 +215,10 @@ def run_cmd(
         full_err = redact_text(result.stderr) or ""
         out = full_out
         err = full_err
-        if len(out) > 5000:
-            out = out[:5000] + "... (truncated)"
-        if len(err) > 5000:
-            err = err[:5000] + "... (truncated)"
+        if len(out) > _MAX_PRINT_LEN:
+            out = out[:_MAX_PRINT_LEN] + "... (truncated)"
+        if len(err) > _MAX_PRINT_LEN:
+            err = err[:_MAX_PRINT_LEN] + "... (truncated)"
         print(f"Stdout:\n{out}", file=sys.stderr)
         print(f"Stderr:\n{err}", file=sys.stderr)
         raise subprocess.CalledProcessError(result.returncode, redacted_args, output=full_out, stderr=full_err)
