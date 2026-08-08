@@ -45,7 +45,6 @@ FORBIDDEN_ROOTS = {
     "/boot",
     "/dev",
     "/etc",
-    "/home",
     "/lib",
     "/opt",
     "/proc",

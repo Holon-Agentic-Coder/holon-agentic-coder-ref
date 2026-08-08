@@ -481,6 +481,13 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents("/usr/bin", raise_on_error=True)
         self.assertIn("Refusing to clear system root-level directory", str(ctx3.exception))
 
+    @patch("sandbox_executor.entrypoint.executor.os.listdir", return_value=[])
+    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
+    def test_clear_dir_contents_allowed_roots(self, mock_isdir, mock_listdir):
+        # Should not raise any error
+        executor._clear_dir_contents("/home/user/workspace/repo", raise_on_error=True)
+        mock_listdir.assert_called_once_with("/home/user/workspace/repo")
+
     @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
     def test_clear_dir_contents_raise_on_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
