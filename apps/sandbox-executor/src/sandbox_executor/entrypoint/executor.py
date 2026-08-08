@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import traceback
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
@@ -54,9 +55,12 @@ FORBIDDEN_ROOTS = {
 }
 
 
-def _handle_remove_readonly(func, path, exc_info=None):
+def _handle_remove_readonly(func: Callable, path: str, exc_info: tuple) -> None:
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
-    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    if os.path.isdir(path):
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+    else:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
     func(path)
 
 

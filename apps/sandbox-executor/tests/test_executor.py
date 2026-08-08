@@ -501,16 +501,29 @@ class TestExecutor(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     executor._clear_dir_contents(tmp_dir, raise_on_error=True)
 
-    def test_cleanup_repo_dir_readonly(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_dir = os.path.join(tmp_dir, "readonly_repo")
-            os.makedirs(repo_dir, exist_ok=True)
-            readonly_file = os.path.join(repo_dir, "readonly.txt")
-            with open(readonly_file, "w") as f:
-                f.write("content")
-            os.chmod(readonly_file, 0o444)
-            executor._cleanup_repo_dir(repo_dir, raise_on_error=True)
-            self.assertFalse(os.path.exists(repo_dir))
+    @patch("sandbox_executor.entrypoint.executor.os.chmod")
+    @patch("sandbox_executor.entrypoint.executor.os.path.isdir")
+    def test_handle_remove_readonly(self, mock_isdir, mock_chmod):
+        import stat
+
+        from sandbox_executor.entrypoint.executor import _handle_remove_readonly
+
+        mock_func = MagicMock()
+
+        # Test for directory
+        mock_isdir.return_value = True
+        _handle_remove_readonly(mock_func, "/fake/dir", None)
+        mock_chmod.assert_called_with("/fake/dir", stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        mock_func.assert_called_with("/fake/dir")
+
+        mock_chmod.reset_mock()
+        mock_func.reset_mock()
+
+        # Test for file
+        mock_isdir.return_value = False
+        _handle_remove_readonly(mock_func, "/fake/file.txt", None)
+        mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWRITE | stat.S_IREAD)
+        mock_func.assert_called_with("/fake/file.txt")
 
     @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
