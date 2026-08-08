@@ -374,6 +374,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
     @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
     def test_main_default_workspace_deleted(
@@ -467,19 +468,33 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents(file_path)
             self.assertTrue(os.path.exists(file_path))
 
+    @patch("sandbox_executor.entrypoint.executor.os.path.lexists", return_value=True)
+    def test_cleanup_repo_dir_forbidden_root(self, mock_lexists):
+        with self.assertRaises(RuntimeError) as ctx:
+            executor._cleanup_repo_dir("/etc", raise_on_error=True)
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
+
+        with self.assertRaises(RuntimeError) as ctx2:
+            executor._cleanup_repo_dir("/etc/apt", raise_on_error=True)
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
+
+        with self.assertRaises(RuntimeError) as ctx3:
+            executor._cleanup_repo_dir("/usr/bin", raise_on_error=True)
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
+
     @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
     def test_clear_dir_contents_forbidden_roots(self, mock_isdir):
         with self.assertRaises(RuntimeError) as ctx:
             executor._clear_dir_contents("/etc", raise_on_error=True)
-        self.assertIn("Refusing to clear system root-level directory", str(ctx.exception))
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
         with self.assertRaises(RuntimeError) as ctx2:
             executor._clear_dir_contents("/etc/apt", raise_on_error=True)
-        self.assertIn("Refusing to clear system root-level directory", str(ctx2.exception))
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
 
         with self.assertRaises(RuntimeError) as ctx3:
             executor._clear_dir_contents("/usr/bin", raise_on_error=True)
-        self.assertIn("Refusing to clear system root-level directory", str(ctx3.exception))
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
     @patch("sandbox_executor.entrypoint.executor.os.listdir", return_value=[])
     @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
@@ -594,13 +609,14 @@ class TestExecutor(unittest.TestCase):
 
             mock_cleanup.assert_not_called()
             called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            self.assertTrue(any(cmd == ["git", "fetch", "origin", "I-456/P-123/_"] for cmd in called_cmds))
+            self.assertTrue(any(cmd == ["git", "fetch", "/mock/repo", "I-456/P-123/_"] for cmd in called_cmds))
             self.assertTrue(
                 any(cmd == ["git", "checkout", "-f", "-B", "I-456/P-123/_", "FETCH_HEAD"] for cmd in called_cmds)
             )
             self.assertTrue(any(cmd == ["git", "clean", "-fd"] for cmd in called_cmds))
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
+    @patch("sandbox_executor.entrypoint.executor.FORBIDDEN_ROOTS", new={"/fake_forbidden"})
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")

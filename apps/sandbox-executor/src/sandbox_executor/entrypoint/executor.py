@@ -55,6 +55,15 @@ FORBIDDEN_ROOTS = {
 }
 
 
+def _check_forbidden_root(path: str) -> None:
+    abs_path = os.path.abspath(path)
+    if abs_path in FORBIDDEN_ROOTS or any(
+        abs_path.startswith(root.rstrip("/") + "/") for root in FORBIDDEN_ROOTS if root != "/"
+    ):
+        msg = f"Refusing to perform operation on system root-level directory: {abs_path}"
+        raise RuntimeError(msg)
+
+
 def _handle_remove_readonly(func: Callable, path: str, exc_info: tuple) -> None:
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
     if os.path.isdir(path):
@@ -74,15 +83,12 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
     if not os.path.isdir(path):
         return
 
-    abs_path = os.path.abspath(path)
-    is_forbidden = abs_path in FORBIDDEN_ROOTS or any(
-        abs_path.startswith(root.rstrip("/") + "/") for root in FORBIDDEN_ROOTS if root != "/"
-    )
-    if is_forbidden:
-        msg = f"Refusing to clear system root-level directory: {abs_path}"
+    try:
+        _check_forbidden_root(path)
+    except RuntimeError as e:
         if raise_on_error:
-            raise RuntimeError(msg)
-        print(f"Warning: {msg}", file=sys.stderr)
+            raise
+        print(f"Warning: {e}", file=sys.stderr)
         return
 
     try:
@@ -115,6 +121,7 @@ def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
     if not os.path.lexists(repo_dir):
         return
     try:
+        _check_forbidden_root(repo_dir)
         if os.path.ismount(repo_dir):
             _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
         elif os.path.islink(repo_dir):
@@ -367,7 +374,7 @@ def main():
                 cwd=repo_dir,
             )
         else:
-            run_cmd(["git", "fetch", "origin", plan_branch], cwd=repo_dir)
+            run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
             run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
             run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
 
