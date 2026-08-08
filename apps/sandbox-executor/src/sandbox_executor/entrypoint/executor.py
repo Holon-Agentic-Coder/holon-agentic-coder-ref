@@ -38,7 +38,7 @@ SECRET_FLAGS = {
 }
 
 
-def _handle_remove_readonly(func, path, *args):
+def _handle_remove_readonly(func, path, exc_info=None):
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
     os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
     func(path)
@@ -96,11 +96,9 @@ def redact_text(text: str | None) -> str | None:
         return text
     # Guard against abnormally large inputs to prevent regex performance degradation on
     # pathological strings (ReDoS prevention). 10 000 chars is well above any realistic log
-    # line length. Inputs exceeding this limit are returned unredacted intentionally — the
-    # assumption is that such large inputs come from trusted internal subprocess outputs, not
-    # external user data.
+    # line length. Inputs exceeding this limit are truncated before applying redaction.
     if len(text) > _MAX_REDACT_INPUT_LEN:
-        return text
+        text = text[:_MAX_REDACT_INPUT_LEN] + "... (truncated)"
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
@@ -132,7 +130,7 @@ def redact_args(args: list[str]) -> list[str]:
     for arg in args:
         s_arg = str(arg)
         if mask_next:
-            if s_arg.lower() in SECRET_FLAGS or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
+            if s_arg.lower() in SECRET_FLAGS or (s_arg.lower().startswith("-") and any(s_arg.lower().endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))) or re.match(r"^--[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
                 redacted.append("*******")
@@ -141,7 +139,7 @@ def redact_args(args: list[str]) -> list[str]:
 
         parts = s_arg.split("=", 1)
         flag_lowered = parts[0].lower()
-        if flag_lowered in SECRET_FLAGS:
+        if flag_lowered in SECRET_FLAGS or (flag_lowered.startswith("-") and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))):
             if len(parts) == 2:
                 redacted.append(f"{parts[0]}=*******")
             else:
@@ -282,8 +280,10 @@ def main():
     repo_dir = os.getenv("HOLON_REPO_DIR")
     is_default_repo = False
     if not repo_dir:
-        in_sandbox_explicit = bool(
-            os.getenv("HOLON_IN_SANDBOX") or os.getenv("HOLON_ROLE") or os.path.exists("/.dockerenv")
+        in_sandbox_explicit = (
+            str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")
+            or bool(os.getenv("HOLON_ROLE"))
+            or os.path.exists("/.dockerenv")
         )
         in_sandbox_heuristic = (
             os.getenv("USER")

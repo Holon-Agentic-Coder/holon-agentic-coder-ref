@@ -42,6 +42,10 @@ class TestExecutor(unittest.TestCase):
             "cs_123",
             "--client_secret",
             "cs_456",
+            "--github-token",
+            "gh_token_123",
+            "--private-key",
+            "priv_key_456",
         ]
         redacted = redact_args(args)
         self.assertEqual(redacted[2], "https://*******@github.com/repo.git")
@@ -70,6 +74,10 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redacted[25], "*******")
         self.assertEqual(redacted[26], "--client_secret")
         self.assertEqual(redacted[27], "*******")
+        self.assertEqual(redacted[28], "--github-token")
+        self.assertEqual(redacted[29], "*******")
+        self.assertEqual(redacted[30], "--private-key")
+        self.assertEqual(redacted[31], "*******")
 
         # When --token is followed by another flag, the positional value
         # after that flag is NOT masked (known limitation — by design).
@@ -77,8 +85,8 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(chained, ["--token", "--verbose", "secret"])
 
         # Equal-sign formatted secret flags
-        equal_fmt = redact_args(["--token=secret123", "--password=mypass", "--author=alice"])
-        self.assertEqual(equal_fmt, ["--token=*******", "--password=*******", "--author=alice"])
+        equal_fmt = redact_args(["--token=secret123", "--password=mypass", "--author=alice", "--github-token=gh123"])
+        self.assertEqual(equal_fmt, ["--token=*******", "--password=*******", "--author=alice", "--github-token=*******"])
 
         # Trailing secret flags at the end of args
         trailing = redact_args(["git", "clone", "--token"])
@@ -146,11 +154,11 @@ class TestExecutor(unittest.TestCase):
     def test_redact_text_oversized_input(self):
         from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, redact_text
 
-        # Input exceeding the limit should be returned unredacted (intentional ReDoS prevention).
-        # Such large inputs are assumed to come from trusted internal subprocess outputs.
+        # Input exceeding the limit should be truncated and redacted.
         big_text = "token=secret " + "x" * _MAX_REDACT_INPUT_LEN
         result = redact_text(big_text)
-        self.assertEqual(result, big_text)
+        expected = "token=******* " + "x" * (_MAX_REDACT_INPUT_LEN - len("token=secret ")) + "... (truncated)"
+        self.assertEqual(result, expected)
 
     def test_should_decompose_high_entropy(self):
         plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
