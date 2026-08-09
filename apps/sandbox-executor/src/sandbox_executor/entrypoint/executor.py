@@ -188,11 +188,14 @@ def redact_text(text: str | None) -> str | None:
     # line length. Inputs exceeding this limit are truncated before applying redaction.
     if len(text) > _MAX_REDACT_INPUT_LEN:
         half_len = _MAX_REDACT_INPUT_LEN // 2
-        # Align truncation split to line boundary to avoid severing tokens/secrets
+        # Align truncation split to line boundary if a newline exists close to the split point
+        # to avoid severing tokens/secrets. Otherwise, truncate exactly at half_len.
         head_end = text.rfind("\n", 0, half_len)
+        head = text[:half_len] if head_end == -1 or (half_len - head_end) > 1000 else text[:head_end]
         tail_start = text.find("\n", len(text) - half_len)
-        head = text[:head_end] if head_end != -1 else text[:half_len]
-        tail = text[tail_start:] if tail_start != -1 else text[-half_len:]
+        tail = (
+            text[-half_len:] if tail_start == -1 or (tail_start - (len(text) - half_len)) > 1000 else text[tail_start:]
+        )
         text = head + "\n... (truncated) ...\n" + tail
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     # Redact sensitive URL query parameters including auth_code and code
@@ -430,6 +433,8 @@ def main():
                 cwd=repo_dir,
             )
         else:
+            # If the directory already contains a .git repository (e.g. workspace is preserved
+            # via HOLON_KEEP_WORKSPACE=1), reuse the workspace with git fetch and force checkout.
             run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
             run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
             run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
