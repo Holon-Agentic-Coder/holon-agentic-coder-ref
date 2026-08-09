@@ -480,6 +480,10 @@ class TestExecutor(unittest.TestCase):
             executor._cleanup_repo_dir("/usr/bin", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
+        with self.assertRaises(RuntimeError) as ctx_sys:
+            executor._cleanup_repo_dir("/private/var/log", raise_on_error=True)
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
+
     @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
     def test_clear_dir_contents_forbidden_roots(self, mock_isdir):
         with self.assertRaises(RuntimeError) as ctx:
@@ -493,6 +497,10 @@ class TestExecutor(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx3:
             executor._clear_dir_contents("/usr/bin", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
+
+        with self.assertRaises(RuntimeError) as ctx_sys:
+            executor._clear_dir_contents("/private/var/log", raise_on_error=True)
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
 
     def test_check_forbidden_root_opt_allowed(self):
         # Should not raise any error

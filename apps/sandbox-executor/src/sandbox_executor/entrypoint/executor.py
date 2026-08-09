@@ -89,7 +89,7 @@ def _check_forbidden_root(path: str) -> None:
     abs_path = os.path.abspath(path)
     real_path = os.path.realpath(path)
     for p in (abs_path, real_path):
-        if p in FORBIDDEN_ROOTS or any(p.startswith(root + "/") for root in SYSTEM_SUBTREES):
+        if p in FORBIDDEN_ROOTS or p in SYSTEM_SUBTREES or any(p.startswith(root + "/") for root in SYSTEM_SUBTREES):
             msg = f"Refusing to perform operation on system root-level directory: {path}"
             raise RuntimeError(msg)
 
@@ -186,7 +186,12 @@ def redact_text(text: str | None) -> str | None:
     # line length. Inputs exceeding this limit are truncated before applying redaction.
     if len(text) > _MAX_REDACT_INPUT_LEN:
         half_len = _MAX_REDACT_INPUT_LEN // 2
-        text = text[:half_len] + "\n... (truncated) ...\n" + text[-half_len:]
+        # Align truncation split to line boundary to avoid severing tokens/secrets
+        head_end = text.rfind("\n", 0, half_len)
+        tail_start = text.find("\n", len(text) - half_len)
+        head = text[:head_end] if head_end != -1 else text[:half_len]
+        tail = text[tail_start:] if tail_start != -1 else text[-half_len:]
+        text = head + "\n... (truncated) ...\n" + tail
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
@@ -407,6 +412,12 @@ def main():
         )
         is_default_repo = True
         if not keep_workspace:
+            if not in_sandbox:
+                print(
+                    f"Warning: Cleaning default local repository directory at {repo_dir}.\n"
+                    "Set HOLON_KEEP_WORKSPACE=1 to retain.",
+                    file=sys.stderr,
+                )
             _cleanup_repo_dir(repo_dir, raise_on_error=True)
     os.makedirs(repo_dir, exist_ok=True)
     try:
