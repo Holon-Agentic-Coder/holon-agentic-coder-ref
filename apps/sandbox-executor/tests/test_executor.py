@@ -518,6 +518,14 @@ class TestExecutor(unittest.TestCase):
         # Should not raise any error
         executor._check_forbidden_root("/private/var/folders/xx/yyyy/T/workspace")
 
+    def test_check_forbidden_root_linux_var_allowed(self):
+        # Should not raise any error
+        executor._check_forbidden_root("/var/tmp/workspace")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            executor._check_forbidden_root("/var/log")
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
+
     @patch("sandbox_executor.entrypoint.executor.os.path.realpath")
     def test_check_forbidden_root_symlinks(self, mock_realpath):
         # Even if abs_path is allowed, realpath being forbidden should trigger rejection

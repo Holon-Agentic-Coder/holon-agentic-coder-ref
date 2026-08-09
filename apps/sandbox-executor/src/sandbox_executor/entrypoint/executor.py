@@ -77,6 +77,8 @@ SYSTEM_SUBTREES = {
     "/sys",
     "/usr",
     "/root",
+    "/var/log",
+    "/var/run",
     "/private/etc",
     "/private/var/db",
     "/private/var/log",
@@ -614,9 +616,10 @@ def main():
             skip_push = os.getenv("HOLON_SKIP_PUSH")
             if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
                 run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+                print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
             else:
                 print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
-            print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
+                print(f"Execution branch '{exec_branch}' successfully committed locally.")
         else:
             print("No staged changes to commit.")
 
