@@ -40,6 +40,9 @@ SECRET_FLAGS = {
     "--client_secret",
 }
 
+# /home, /Users, /opt are blocked at the exact root level to prevent accidentally
+# wiping the entire users/opt directory, but their subdirectories are intentionally
+# allowed (e.g., /home/user/workspace is a valid repo location).
 FORBIDDEN_ROOTS = {
     "/",
     "/root",
@@ -62,6 +65,8 @@ FORBIDDEN_ROOTS = {
     "/tmp",
     "/var/tmp",
 }
+# System subtrees: directories AND their children are forbidden from being cleared.
+# Contrast with FORBIDDEN_ROOTS above where only the exact path is blocked.
 SYSTEM_SUBTREES = {
     "/bin",
     "/boot",
@@ -145,7 +150,14 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
 
 
 def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
-    """Clean up existing repo directory (clearing contents if mount, unlinking if symlink, rmtree otherwise)."""
+    """Clean up existing repo directory.
+
+    Clears contents if mount, unlinks if symlink, otherwise removes the tree.
+
+    Args:
+        repo_dir: Path to the repository directory.
+        raise_on_error: If True, propagates exceptions. If False, prints a warning and continues.
+    """
     if not os.path.lexists(repo_dir):
         return
     try:
@@ -215,6 +227,9 @@ def redact_args(args: list[str]) -> list[str]:
         s_arg = str(arg)
         if mask_next:
             is_secret = _is_secret_flag(s_arg)
+            # LIMITATION: If a secret value happens to look like a flag (starts with -),
+            # it will NOT be masked. This is a deliberate trade-off to avoid over-masking
+            # when a flag like --verbose follows --token in the args list.
             if is_secret or re.match(r"^-{1,2}[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
@@ -350,7 +365,7 @@ def main():
     is_default_repo = False
     repo_dir = None
     keep_workspace = False
-    commit_msg: str | None = None
+    commit_msg = ""
 
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
@@ -369,7 +384,6 @@ def main():
 
     keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
     repo_dir = os.getenv("HOLON_REPO_DIR")
-    is_default_repo = False
     if not repo_dir:
         in_sandbox_explicit = (
             str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")

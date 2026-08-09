@@ -673,6 +673,54 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(mock_clear_dir_contents.called)
             mock_clear_dir_contents.assert_any_call(default_dir, raise_on_error=True)
 
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_main_git_add_not_called_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = "Failure stdout"
+                mock_res.stderr = "Failure stderr"
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+        ):
+            with patch("sys.argv", ["executor.py", "I-456/P-123/_"]):
+                executor.main()
+
+            mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
+            self.assertFalse(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
+
 
 if __name__ == "__main__":
     unittest.main()
