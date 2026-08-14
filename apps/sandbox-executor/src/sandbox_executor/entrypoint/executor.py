@@ -29,6 +29,17 @@ SECRET_FLAGS = {
     "--auth",
 }
 
+FORBIDDEN_ROOTS = {
+    "/",
+    "/etc",
+    "/bin",
+    "/usr",
+    "/var",
+    "/sbin",
+    "/lib",
+    "/private",
+}
+
 # Safelist of parent directories whose subdirectories are allowed to be modified/deleted.
 # Any path not nested strictly inside one of these directories is blocked by default.
 ALLOWED_PARENTS = {
@@ -38,16 +49,25 @@ ALLOWED_PARENTS = {
     "/var/tmp",
     "/private/var/folders",
     "/var/folders",
-    os.path.expanduser("~"),
-    tempfile.gettempdir(),
 }
+
+_home = os.path.expanduser("~")
+if _home not in FORBIDDEN_ROOTS:
+    ALLOWED_PARENTS.add(_home)
+
+_temp = tempfile.gettempdir()
+if _temp not in FORBIDDEN_ROOTS:
+    ALLOWED_PARENTS.add(_temp)
 
 # Explicit safelist of exact paths (or current working directory) that are allowed.
 ALLOWED_EXACT = {
     "/workspace",
     "/repo",
-    os.getcwd(),
 }
+
+_cwd = os.getcwd()
+if _cwd not in FORBIDDEN_ROOTS:
+    ALLOWED_EXACT.add(_cwd)
 
 # Pre-resolve allowed parent and exact paths once at module load time.
 # This prevents test mocks (e.g. patching os.path.realpath) from polluting the allowed sets at runtime.
@@ -60,6 +80,9 @@ def _check_forbidden_root(path: str) -> None:
     real_path = os.path.realpath(path)
 
     for p in (abs_path, real_path):
+        if p in FORBIDDEN_ROOTS:
+            raise RuntimeError(f"Refusing to perform operation on system root-level directory: {path}")
+
         p_allowed = False
         # 1. Check if the path matches an allowed exact path
         if p in ALLOWED_EXACT_RESOLVED:
@@ -363,13 +386,13 @@ def main() -> None:
     repo_dir = None
     keep_workspace = False
 
-    if len(sys.argv) < 4:
-        print("Usage: executor.py <plan_branch> <agent_name> <model_name>")
+    if len(sys.argv) < 2:
+        print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
         sys.exit(1)
 
     plan_branch = sys.argv[1]
-    agent_name = sys.argv[2]
-    model_name = sys.argv[3]
+    agent_name = sys.argv[2] if len(sys.argv) > 2 else "antigravity-agent"
+    model_name = sys.argv[3] if len(sys.argv) > 3 else "gemini-3.5-flash"
 
     runner = get_runner(agent_name)
     runner.validate()
@@ -429,7 +452,12 @@ def main() -> None:
                     file=sys.stderr,
                 )
             run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
-            run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
+            if in_sandbox or repo_dir == os.path.expanduser("~/.holon-sandbox/workspace"):
+                run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
+            else:
+                print(
+                    f"Warning: Skipping 'git clean -fd' as we are in a local workspace at {repo_dir}.", file=sys.stderr
+                )
             run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
 
         exec_seq = int(time.time())
