@@ -483,6 +483,15 @@ class TestExecutor(unittest.TestCase):
             executor._cleanup_repo_dir("/private/var/log", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
 
+    @patch("sandbox_executor.entrypoint.executor.os.remove")
+    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=False)
+    @patch("sandbox_executor.entrypoint.executor.os.path.islink", return_value=False)
+    @patch("sandbox_executor.entrypoint.executor.os.path.ismount", return_value=False)
+    @patch("sandbox_executor.entrypoint.executor.os.path.lexists", return_value=True)
+    def test_cleanup_repo_dir_regular_file(self, mock_lexists, mock_ismount, mock_islink, mock_isdir, mock_remove):
+        executor._cleanup_repo_dir("/tmp/repo_file.txt", raise_on_error=True)
+        mock_remove.assert_called_once_with("/tmp/repo_file.txt")
+
     @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
     def test_clear_dir_contents_forbidden_roots(self, mock_isdir):
         with self.assertRaises(RuntimeError) as ctx:
@@ -528,8 +537,10 @@ class TestExecutor(unittest.TestCase):
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
     @patch("sandbox_executor.entrypoint.executor.os.path.realpath")
-    def test_check_forbidden_root_symlinks(self, mock_realpath):
+    @patch("sandbox_executor.entrypoint.executor.os.path.abspath")
+    def test_check_forbidden_root_symlinks(self, mock_abspath, mock_realpath):
         # Even if abs_path is allowed, realpath being forbidden should trigger rejection
+        mock_abspath.return_value = "/var/folders/etc_symlink"
         mock_realpath.return_value = "/private/etc"
         with self.assertRaises(RuntimeError) as ctx:
             executor._check_forbidden_root("/var/folders/etc_symlink")
@@ -553,6 +564,17 @@ class TestExecutor(unittest.TestCase):
                 # raise_on_error=True propagates error
                 with self.assertRaises(PermissionError):
                     executor._clear_dir_contents(tmp_dir, raise_on_error=True)
+
+    @patch("sandbox_executor.entrypoint.executor.os.chmod")
+    @patch("sandbox_executor.entrypoint.executor.os.unlink", side_effect=PermissionError("Permission denied"))
+    @patch("sandbox_executor.entrypoint.executor.os.path.islink", return_value=True)
+    @patch("sandbox_executor.entrypoint.executor.os.listdir", return_value=["symlink_item"])
+    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
+    def test_clear_dir_contents_symlink_permission_error(
+        self, mock_isdir, mock_listdir, mock_islink, mock_unlink, mock_chmod
+    ):
+        executor._clear_dir_contents("/tmp/workspace_dir")
+        mock_chmod.assert_not_called()
 
     @patch("sandbox_executor.entrypoint.executor.os.chmod")
     @patch("sandbox_executor.entrypoint.executor.os.path.isdir")
@@ -642,16 +664,23 @@ class TestExecutor(unittest.TestCase):
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
             ):
                 executor.main()
+                self.assertIn("Warning: Reusing workspace at", mock_stderr.getvalue())
 
             mock_cleanup.assert_not_called()
             called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            self.assertTrue(any(cmd == ["git", "fetch", "/mock/repo", "I-456/P-123/_"] for cmd in called_cmds))
-            self.assertTrue(
-                any(cmd == ["git", "checkout", "-f", "-B", "I-456/P-123/_", "FETCH_HEAD"] for cmd in called_cmds)
+            fetch_idx = next(
+                i for i, cmd in enumerate(called_cmds) if cmd == ["git", "fetch", "/mock/repo", "I-456/P-123/_"]
             )
-            self.assertTrue(any(cmd == ["git", "clean", "-fd"] for cmd in called_cmds))
+            clean_idx = next(i for i, cmd in enumerate(called_cmds) if cmd == ["git", "clean", "-fd"])
+            checkout_idx = next(
+                i
+                for i, cmd in enumerate(called_cmds)
+                if cmd == ["git", "checkout", "-f", "-B", "I-456/P-123/_", "FETCH_HEAD"]
+            )
+            self.assertTrue(fetch_idx < clean_idx < checkout_idx)
             self.assertFalse(any("clone" in cmd for cmd in called_cmds))
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")

@@ -121,7 +121,8 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
                 try:
                     os.unlink(item_path)
                 except PermissionError:
-                    os.chmod(item_path, stat.S_IWRITE | stat.S_IREAD)
+                    if not os.path.islink(item_path):
+                        os.chmod(item_path, stat.S_IWRITE | stat.S_IREAD)
                     os.unlink(item_path)
             else:
                 _rmtree(item_path)
@@ -148,8 +149,10 @@ def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
             _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
         elif os.path.islink(repo_dir):
             os.unlink(repo_dir)
-        else:
+        elif os.path.isdir(repo_dir):
             _rmtree(repo_dir)
+        else:
+            os.remove(repo_dir)
     except Exception as e:
         if raise_on_error:
             raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
@@ -243,6 +246,11 @@ def run_cmd(
     cwd: str | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    """Runs a command and returns the CompletedProcess.
+
+    NOTE: The returned CompletedProcess contains raw, unredacted stdout/stderr.
+    Callers must apply `redact_text` before printing or logging these fields.
+    """
     redacted_args = redact_args(args)
     print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
     cmd_str = " ".join(print_args)
@@ -367,25 +375,26 @@ def main() -> None:
         plan_branch_prefix = plan_branch_prefix[:-2]
 
     keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
+    in_sandbox_explicit = (
+        str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")
+        or bool(os.getenv("HOLON_ROLE"))
+        or os.path.exists("/.dockerenv")
+    )
+    in_sandbox_heuristic = (
+        os.getenv("USER")
+        == "holon"  # Fallback heuristic: sandbox containers without HOLON_ROLE or /.dockerenv (Linux/macOS)
+        or os.getenv("USERNAME")
+        == "holon"  # Fallback heuristic: Windows sandbox; use HOLON_REPO_DIR to override in ambiguous environments
+    )
+    if in_sandbox_heuristic and not in_sandbox_explicit:
+        print(
+            "Warning: using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.",
+            file=sys.stderr,
+        )
+    in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
+
     repo_dir = os.getenv("HOLON_REPO_DIR")
     if not repo_dir:
-        in_sandbox_explicit = (
-            str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")
-            or bool(os.getenv("HOLON_ROLE"))
-            or os.path.exists("/.dockerenv")
-        )
-        in_sandbox_heuristic = (
-            os.getenv("USER")
-            == "holon"  # Fallback heuristic: sandbox containers without HOLON_ROLE or /.dockerenv (Linux/macOS)
-            or os.getenv("USERNAME")
-            == "holon"  # Fallback heuristic: Windows sandbox; use HOLON_REPO_DIR to override in ambiguous environments
-        )
-        if in_sandbox_heuristic and not in_sandbox_explicit:
-            print(
-                "Warning: using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.",
-                file=sys.stderr,
-            )
-        in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
         repo_dir = (
             os.path.expanduser("~/.holon-sandbox/workspace") if in_sandbox else os.path.expanduser("~/.holon/repo")
         )
@@ -409,9 +418,15 @@ def main() -> None:
         else:
             # If the directory already contains a .git repository (e.g. workspace is preserved
             # via HOLON_KEEP_WORKSPACE=1), reuse the workspace with git fetch and force checkout.
+            if not in_sandbox:
+                print(
+                    f"Warning: Reusing workspace at {repo_dir}.\n"
+                    "Uncommitted changes and untracked files will be discarded.",
+                    file=sys.stderr,
+                )
             run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
-            run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
             run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
+            run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
