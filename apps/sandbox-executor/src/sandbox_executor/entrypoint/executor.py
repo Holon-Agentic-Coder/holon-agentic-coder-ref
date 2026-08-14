@@ -12,6 +12,7 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
@@ -268,7 +269,7 @@ def run_cmd(
     return result
 
 
-def _safe_float(val, default: float = 0.0) -> float:
+def _safe_float(val: Any, default: float = 0.0) -> float:
     if val is None:
         return default
     try:
@@ -286,7 +287,7 @@ def _sanitize_string(name: str) -> str:
     return s or "unknown"
 
 
-def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dict]]:
+def should_decompose(plan_data: dict[str, Any], plan_content: str) -> tuple[bool, list[dict[str, Any]]]:
     """Determine if a plan should be decomposed into sub-intents.
 
     Returns (should_decompose_bool, list_of_sub_intents).
@@ -345,7 +346,7 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
     return False, []
 
 
-def main():
+def main() -> None:
     is_default_repo = False
     repo_dir = None
     keep_workspace = False
@@ -584,7 +585,7 @@ def main():
             # Log staged changes to provide visibility
             status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
             print("Current git repository status:")
-            print(redact_text(status_output.stdout or ""))
+            print(redact_text(status_output.stdout))
 
         staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
         if staged_check.returncode != 0:
