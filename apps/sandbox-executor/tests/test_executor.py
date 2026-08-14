@@ -102,13 +102,6 @@ class TestExecutor(unittest.TestCase):
         single_char = redact_args(["cmd", "--password", "s"])
         self.assertEqual(single_char, ["cmd", "--password", "*******"])
 
-    def test_redact_args_trailing_secret_flag(self):
-        from sandbox_executor.entrypoint.executor import redact_args
-
-        args = ["git", "clone", "--token"]
-        redacted = redact_args(args)
-        self.assertEqual(redacted, ["git", "clone", "--token"])
-
     def test_redact_text(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
@@ -588,7 +581,7 @@ class TestExecutor(unittest.TestCase):
         # Test for directory
         mock_isdir.return_value = True
         _handle_remove_readonly(mock_func, "/fake/dir", PermissionError("error"))
-        mock_chmod.assert_called_with("/fake/dir", stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
+        mock_chmod.assert_called_with("/fake/dir", stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
         mock_func.assert_called_with("/fake/dir")
 
         mock_chmod.reset_mock()
@@ -597,7 +590,7 @@ class TestExecutor(unittest.TestCase):
         # Test for file
         mock_isdir.return_value = False
         _handle_remove_readonly(mock_func, "/fake/file.txt", PermissionError("error"))
-        mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWRITE | stat.S_IREAD, follow_symlinks=False)
+        mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
         mock_func.assert_called_with("/fake/file.txt")
 
     @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")

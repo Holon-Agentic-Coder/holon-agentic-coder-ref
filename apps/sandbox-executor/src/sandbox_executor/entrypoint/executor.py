@@ -16,8 +16,8 @@ from typing import Any
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
-_MAX_REDACT_INPUT_LEN = 100_000
-_MAX_PRINT_LEN = 5000
+_MAX_REDACT_INPUT_LEN: int = 100_000
+_MAX_PRINT_LEN: int = 5000
 
 # Explicit list of flags whose next argument must be masked.
 # Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
@@ -76,14 +76,15 @@ def _check_forbidden_root(path: str) -> None:
             raise RuntimeError(msg)
 
 
-def _handle_remove_readonly(func: Callable, path: str, _exc_info: BaseException) -> None:
+def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
     try:
         if os.path.isdir(path):
-            os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
+            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
         else:
-            os.chmod(path, stat.S_IWRITE | stat.S_IREAD, follow_symlinks=False)
+            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
     except (OSError, NotImplementedError):
+        # Ignore permission errors on chmod attempt; rmtree/unlink will report any fatal failure.
         pass
     func(path)
 
@@ -122,7 +123,7 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
                     os.unlink(item_path)
                 except PermissionError:
                     if not os.path.islink(item_path):
-                        os.chmod(item_path, stat.S_IWRITE | stat.S_IREAD)
+                        os.chmod(item_path, stat.S_IWUSR | stat.S_IRUSR)
                     os.unlink(item_path)
             else:
                 _rmtree(item_path)
