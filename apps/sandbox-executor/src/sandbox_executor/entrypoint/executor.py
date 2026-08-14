@@ -240,7 +240,6 @@ def redact_args(args: list[str]) -> list[str]:
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
-    env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     redacted_args = redact_args(args)
@@ -249,7 +248,7 @@ def run_cmd(
     if len(cmd_str) > _MAX_PRINT_LEN:
         cmd_str = cmd_str[: _MAX_PRINT_LEN - 3] + "..."
     print(f"Running: {cmd_str}")
-    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         print(f"Command args: {cmd_str}", file=sys.stderr)
