@@ -566,7 +566,7 @@ class TestExecutor(unittest.TestCase):
 
         # Test for directory
         mock_isdir.return_value = True
-        _handle_remove_readonly(mock_func, "/fake/dir", None)
+        _handle_remove_readonly(mock_func, "/fake/dir", PermissionError("error"))
         mock_chmod.assert_called_with("/fake/dir", stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
         mock_func.assert_called_with("/fake/dir")
 
@@ -575,7 +575,7 @@ class TestExecutor(unittest.TestCase):
 
         # Test for file
         mock_isdir.return_value = False
-        _handle_remove_readonly(mock_func, "/fake/file.txt", None)
+        _handle_remove_readonly(mock_func, "/fake/file.txt", PermissionError("error"))
         mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWRITE | stat.S_IREAD, follow_symlinks=False)
         mock_func.assert_called_with("/fake/file.txt")
 

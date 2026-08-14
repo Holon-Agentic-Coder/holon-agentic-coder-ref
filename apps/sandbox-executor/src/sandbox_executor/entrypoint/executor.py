@@ -12,7 +12,6 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
 
@@ -76,7 +75,7 @@ def _check_forbidden_root(path: str) -> None:
             raise RuntimeError(msg)
 
 
-def _handle_remove_readonly(func: Callable, path: str, exc_info: tuple[Any, ...] | BaseException) -> None:
+def _handle_remove_readonly(func: Callable, path: str, _exc_info: BaseException) -> None:
     """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
     try:
         if os.path.isdir(path):
