@@ -2,7 +2,6 @@ import io
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -368,7 +367,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.executor._rmtree")
     def test_main_default_workspace_deleted(
         self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
@@ -396,10 +395,7 @@ class TestExecutor(unittest.TestCase):
             ):
                 executor.main()
 
-            if sys.version_info >= (3, 12):  # noqa: UP036
-                mock_rmtree.assert_any_call(default_dir, onexc=executor._handle_remove_readonly)
-            else:
-                mock_rmtree.assert_any_call(default_dir, onerror=executor._handle_remove_readonly)
+            mock_rmtree.assert_any_call(default_dir)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
@@ -554,7 +550,10 @@ class TestExecutor(unittest.TestCase):
             sub_file = os.path.join(tmp_dir, "test.txt")
             with open(sub_file, "w") as f:
                 f.write("test")
-            with patch("os.unlink", side_effect=PermissionError("Permission denied")):
+            unlink_patch = patch(
+                "sandbox_executor.entrypoint.executor.os.unlink", side_effect=PermissionError("Permission denied")
+            )
+            with unlink_patch:
                 # Default raise_on_error=False swallows error
                 executor._clear_dir_contents(tmp_dir, raise_on_error=False)
                 # raise_on_error=True propagates error
@@ -640,10 +639,15 @@ class TestExecutor(unittest.TestCase):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_get_runner.return_value = mock_runner
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_run_cmd.return_value = mock_result
+
+        def _run_cmd_side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            mock_res.returncode = 0
+            # Return the correct remote URL so the workspace reuse path is followed.
+            mock_res.stdout = "/mock/repo" if args == ["git", "remote", "get-url", "origin"] else ""
+            return mock_res
+
+        mock_run_cmd.side_effect = _run_cmd_side_effect
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             default_dir = os.path.join(tmp_dir, "repo")

@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+"""Sandbox executor entrypoint for Holon Agentic Coder.
+
+Clones or reuses a workspace repository, runs the configured agent, captures
+execution results into the ledger, and commits/pushes the execution branch.
+
+Key environment variables:
+    HOLON_REPO_DIR: Override the default workspace directory.
+    HOLON_KEEP_WORKSPACE: Set to '1' to skip cleanup and reuse the existing workspace.
+    HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
+    HOLON_SKIP_PUSH: Set to '1' to skip the git push step.
+    HOLON_ROLE: When set, implies sandbox context.
+
+Known limitations:
+    - redact_args: Secret values starting with '-' are not masked to avoid
+      over-masking legitimate flags that immediately follow a secret flag.
+      See _is_secret_flag and the LIMITATION comment in redact_args for details.
+"""
+
 import contextlib
 import json
 import os
@@ -407,12 +425,9 @@ def main() -> None:
         or bool(os.getenv("HOLON_ROLE"))
         or os.path.exists("/.dockerenv")
     )
-    in_sandbox_heuristic = (
-        os.getenv("USER")
-        == "holon"  # Fallback heuristic: sandbox containers without HOLON_ROLE or /.dockerenv (Linux/macOS)
-        or os.getenv("USERNAME")
-        == "holon"  # Fallback heuristic: Windows sandbox; use HOLON_REPO_DIR to override in ambiguous environments
-    )
+    # Heuristic fallback: sandbox containers without HOLON_ROLE or /.dockerenv.
+    # Use HOLON_REPO_DIR to override in ambiguous environments (Linux/macOS/Windows).
+    in_sandbox_heuristic = os.getenv("USER") == "holon" or os.getenv("USERNAME") == "holon"
     if in_sandbox_heuristic and not in_sandbox_explicit:
         print(
             "Warning: using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.",
@@ -451,14 +466,38 @@ def main() -> None:
                     "Uncommitted changes and untracked files will be discarded.",
                     file=sys.stderr,
                 )
-            run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
-            if in_sandbox or repo_dir == os.path.expanduser("~/.holon-sandbox/workspace"):
-                run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
-            else:
+            # Validate that the existing .git dir belongs to the expected remote before reusing.
+            # A stale .git from a different repository would otherwise silently trigger the
+            # reuse path (git fetch <new_url>) instead of a clean clone, producing confusing failures.
+            remote_result = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
+            if remote_result.returncode != 0 or remote_result.stdout.strip() != repo_url:
                 print(
-                    f"Warning: Skipping 'git clean -fd' as we are in a local workspace at {repo_dir}.", file=sys.stderr
+                    f"Warning: Remote URL mismatch or unreadable at {repo_dir}. "
+                    "Discarding stale workspace and re-cloning.",
+                    file=sys.stderr,
                 )
-            run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
+                _cleanup_repo_dir(repo_dir, raise_on_error=True)
+                os.makedirs(repo_dir, exist_ok=True)
+                run_cmd(
+                    ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
+                    cwd=repo_dir,
+                )
+            else:
+                run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
+                if in_sandbox or repo_dir == os.path.expanduser("~/.holon-sandbox/workspace"):
+                    run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
+                else:
+                    # Deliberate trade-off: preserve local developer files (e.g. .env, local configs)
+                    # when HOLON_KEEP_WORKSPACE=1 is used outside the sandbox. Untracked files from
+                    # the previous run will NOT be removed. Set HOLON_KEEP_WORKSPACE=0 (the default)
+                    # to ensure a clean workspace on every run.
+                    print(
+                        f"Warning: Skipping 'git clean -fd' as we are in a local workspace at {repo_dir}.\n"
+                        "Untracked files from the previous run are preserved. "
+                        "Unset HOLON_KEEP_WORKSPACE to ensure a clean workspace.",
+                        file=sys.stderr,
+                    )
+                run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
