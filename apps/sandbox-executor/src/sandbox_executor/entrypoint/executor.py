@@ -351,13 +351,13 @@ def main():
     keep_workspace = False
     commit_msg = ""
 
-    if len(sys.argv) < 2:
-        print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
+    if len(sys.argv) < 4:
+        print("Usage: executor.py <plan_branch> <agent_name> <model_name>")
         sys.exit(1)
 
     plan_branch = sys.argv[1]
-    agent_name = sys.argv[2] if len(sys.argv) > 2 else "antigravity-agent"
-    model_name = sys.argv[3] if len(sys.argv) > 3 else "gemini-3.5-flash"
+    agent_name = sys.argv[2]
+    model_name = sys.argv[3]
 
     runner = get_runner(agent_name)
     runner.validate()

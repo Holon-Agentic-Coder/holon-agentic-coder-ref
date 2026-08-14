@@ -364,7 +364,7 @@ class TestExecutor(unittest.TestCase):
             os.makedirs(custom_dir, exist_ok=True)
             with (
                 patch.dict(os.environ, {"HOLON_REPO_DIR": custom_dir, "HOLON_SKIP_PUSH": "1"}),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
 
@@ -398,7 +398,7 @@ class TestExecutor(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
 
@@ -421,7 +421,7 @@ class TestExecutor(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
         ):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -441,7 +441,7 @@ class TestExecutor(unittest.TestCase):
         mock_rmtree.side_effect = PermissionError("Permission denied")
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 executor.main()
@@ -605,7 +605,7 @@ class TestExecutor(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
 
@@ -641,7 +641,7 @@ class TestExecutor(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
 
@@ -683,7 +683,7 @@ class TestExecutor(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_"]),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
 
@@ -732,7 +732,7 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
-            with patch("sys.argv", ["executor.py", "I-456/P-123/_"]):
+            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
                 executor.main()
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
