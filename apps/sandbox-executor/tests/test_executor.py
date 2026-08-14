@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -395,8 +396,10 @@ class TestExecutor(unittest.TestCase):
             ):
                 executor.main()
 
-            self.assertTrue(mock_rmtree.called)
-            mock_rmtree.assert_any_call(default_dir, onexc=executor._handle_remove_readonly)
+            if sys.version_info >= (3, 12):  # noqa: UP036
+                mock_rmtree.assert_any_call(default_dir, onexc=executor._handle_remove_readonly)
+            else:
+                mock_rmtree.assert_any_call(default_dir, onerror=executor._handle_remove_readonly)
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))

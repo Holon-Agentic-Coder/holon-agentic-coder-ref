@@ -91,7 +91,10 @@ def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
 
 def _rmtree(path: str) -> None:
     """Helper to call shutil.rmtree with the onexc error handler."""
-    shutil.rmtree(path, onexc=_handle_remove_readonly)
+    if sys.version_info >= (3, 12):  # noqa: UP036
+        shutil.rmtree(path, onexc=_handle_remove_readonly)
+    else:
+        shutil.rmtree(path, onerror=_handle_remove_readonly)
 
 
 def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
