@@ -27,61 +27,53 @@ SECRET_FLAGS = {
     "--password",
     "--passwd",
     "--auth",
-    "--bearer",
 }
 
-# /home, /Users, /opt are blocked at the exact root level to prevent accidentally
-# wiping the entire users/opt directory, but their subdirectories are intentionally
-# allowed (e.g., /home/user/workspace is a valid repo location).
-FORBIDDEN_ROOTS = {
-    "/",
-    "/root",
-    "/bin",
-    "/boot",
-    "/dev",
-    "/etc",
-    "/lib",
-    "/proc",
-    "/sys",
-    "/usr",
-    "/var",
-    "/opt",
+# Safelist of parent directories whose subdirectories are allowed to be modified/deleted.
+# Any path not nested strictly inside one of these directories is blocked by default.
+ALLOWED_PARENTS = {
     "/home",
     "/Users",
-    "/private",
-    "/private/etc",
-    "/private/var",
-    "/private/tmp",
     "/tmp",
     "/var/tmp",
+    "/opt",
+    "/private/var/folders",
+    "/var/folders",
+    os.path.expanduser("~"),
+    tempfile.gettempdir(),
 }
-# System subtrees: directories AND their children are forbidden from being cleared.
-# Contrast with FORBIDDEN_ROOTS above where only the exact path is blocked.
-SYSTEM_SUBTREES = {
-    "/bin",
-    "/boot",
-    "/dev",
-    "/etc",
-    "/lib",
-    "/proc",
-    "/sys",
-    "/usr",
-    "/root",
-    "/var/log",
-    "/var/run",
-    "/private/etc",
-    "/private/var/db",
-    "/private/var/log",
-    "/private/var/run",
-    "/private/var/root",
+
+# Explicit safelist of exact paths (or current working directory) that are allowed.
+ALLOWED_EXACT = {
+    "/workspace",
+    "/repo",
+    "/opt/workspace",
+    os.getcwd(),
 }
+
+# Pre-resolve allowed parent and exact paths once at module load time.
+# This prevents test mocks (e.g. patching os.path.realpath) from polluting the allowed sets at runtime.
+ALLOWED_PARENT_RESOLVED = {os.path.abspath(p) for p in ALLOWED_PARENTS} | {os.path.realpath(p) for p in ALLOWED_PARENTS}
+ALLOWED_EXACT_RESOLVED = {os.path.abspath(e) for e in ALLOWED_EXACT} | {os.path.realpath(e) for e in ALLOWED_EXACT}
 
 
 def _check_forbidden_root(path: str) -> None:
     abs_path = os.path.abspath(path)
     real_path = os.path.realpath(path)
+
     for p in (abs_path, real_path):
-        if p in FORBIDDEN_ROOTS or p in SYSTEM_SUBTREES or any(p.startswith(root + "/") for root in SYSTEM_SUBTREES):
+        p_allowed = False
+        # 1. Check if the path matches an allowed exact path
+        if p in ALLOWED_EXACT_RESOLVED:
+            p_allowed = True
+        else:
+            # 2. Check if the path is nested under an allowed parent directory
+            for parent_p in ALLOWED_PARENT_RESOLVED:
+                if p.startswith(parent_p.rstrip("/") + "/"):
+                    p_allowed = True
+                    break
+        if not p_allowed:
+            # Keep the error message exact for backward compatibility with existing tests
             msg = f"Refusing to perform operation on system root-level directory: {path}"
             raise RuntimeError(msg)
 
