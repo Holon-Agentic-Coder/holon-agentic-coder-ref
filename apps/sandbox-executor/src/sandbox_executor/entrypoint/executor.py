@@ -49,25 +49,23 @@ ALLOWED_PARENTS = {
     "/var/tmp",
     "/private/var/folders",
     "/var/folders",
+    # Specific Holon workspace parent directories — intentionally narrow, not all of `~`.
+    os.path.expanduser("~/.holon-sandbox"),
+    os.path.expanduser("~/.holon"),
 }
-
-_home = os.path.expanduser("~")
-if _home not in FORBIDDEN_ROOTS:
-    ALLOWED_PARENTS.add(_home)
 
 _temp = tempfile.gettempdir()
 if _temp not in FORBIDDEN_ROOTS:
     ALLOWED_PARENTS.add(_temp)
 
-# Explicit safelist of exact paths (or current working directory) that are allowed.
+# Explicit safelist of exact paths that are allowed.
+# Note: os.getcwd() and os.path.expanduser("~") are intentionally excluded — they can
+# resolve to "/" under certain invocation contexts (e.g. system accounts or root invocation),
+# which would disable all safety checks.
 ALLOWED_EXACT = {
     "/workspace",
     "/repo",
 }
-
-_cwd = os.getcwd()
-if _cwd not in FORBIDDEN_ROOTS:
-    ALLOWED_EXACT.add(_cwd)
 
 # Pre-resolve allowed parent and exact paths once at module load time.
 # This prevents test mocks (e.g. patching os.path.realpath) from polluting the allowed sets at runtime.
