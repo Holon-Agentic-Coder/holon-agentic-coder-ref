@@ -19,25 +19,15 @@ from sandbox_executor.agent_runner import get_repo_url, get_runner
 _MAX_REDACT_INPUT_LEN = 100_000
 _MAX_PRINT_LEN = 5000
 
-# Note: single-character short flags (e.g. -p for password, -u for user) are intentionally
-# excluded from SECRET_FLAGS to avoid over-masking positional args in commands like `git log -p`.
-# Add them explicitly here if a specific use-case requires it.
+# Explicit list of flags whose next argument must be masked.
+# Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
+# are checked dynamically in _is_secret_flag.
+# Any custom command line parameter that needs redaction must be added to this list.
 SECRET_FLAGS = {
-    "--token",
-    "--access-token",
-    "--access_token",
-    "--secret",
     "--password",
-    "--api-key",
-    "--api_key",
+    "--passwd",
     "--auth",
-    "--auth-token",
-    "--auth_token",
     "--bearer",
-    "--pat",
-    "--key",
-    "--client-secret",
-    "--client_secret",
 }
 
 # /home, /Users, /opt are blocked at the exact root level to prevent accidentally
