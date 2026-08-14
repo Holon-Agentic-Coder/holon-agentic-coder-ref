@@ -150,7 +150,6 @@ class TestExecutor(unittest.TestCase):
         )
         self.assertEqual(redact_text(benign_text), benign_text)
 
-        self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(""), "")
 
     def test_redact_text_oversized_input(self):

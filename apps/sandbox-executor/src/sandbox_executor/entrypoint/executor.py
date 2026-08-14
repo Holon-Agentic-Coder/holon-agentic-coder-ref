@@ -155,11 +155,7 @@ def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
         print(f"Warning: Failed to clean up repo dir {repo_dir}: {e}", file=sys.stderr)
 
 
-def redact_text(text: str | None) -> str | None:
-    if text is None:
-        return None
-    if not isinstance(text, str):
-        text = str(text)
+def redact_text(text: str) -> str:
     if not text:
         return text
     # Guard against abnormally large inputs to prevent regex performance degradation on
@@ -257,8 +253,8 @@ def run_cmd(
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         print(f"Command args: {cmd_str}", file=sys.stderr)
-        full_out = redact_text(result.stdout) or ""
-        full_err = redact_text(result.stderr) or ""
+        full_out = redact_text(result.stdout)
+        full_err = redact_text(result.stderr)
         out = full_out
         err = full_err
         if len(out) > _MAX_PRINT_LEN:
