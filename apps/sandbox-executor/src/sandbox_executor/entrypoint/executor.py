@@ -349,7 +349,6 @@ def main():
     is_default_repo = False
     repo_dir = None
     keep_workspace = False
-    commit_msg = ""
 
     if len(sys.argv) < 4:
         print("Usage: executor.py <plan_branch> <agent_name> <model_name>")
