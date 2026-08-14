@@ -198,7 +198,9 @@ def redact_text(text: str) -> str:
         head = text[:half_len] if head_end == -1 or (half_len - head_end) > 1000 else text[:head_end]
         tail_start = text.find("\n", len(text) - half_len)
         tail = (
-            text[-half_len:] if tail_start == -1 or (tail_start - (len(text) - half_len)) > 1000 else text[tail_start:]
+            text[-half_len:]
+            if tail_start == -1 or (tail_start - (len(text) - half_len)) > 1000
+            else text[tail_start + 1 :]
         )
         text = head + "\n... (truncated) ...\n" + tail
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
@@ -261,7 +263,7 @@ def redact_args(args: list[str]) -> list[str]:
                 mask_next = True  # If trailing (no next arg), the dangling flag is safe — no secret to miss.
         else:
             masked = redact_text(s_arg)
-            redacted.append(masked if masked is not None else "")
+            redacted.append(masked)
 
     return redacted
 
