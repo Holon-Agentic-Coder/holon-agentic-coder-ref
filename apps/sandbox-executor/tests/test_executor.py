@@ -502,10 +502,8 @@ class TestExecutor(unittest.TestCase):
             executor._clear_dir_contents("/private/var/log", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
 
-    def test_check_forbidden_root_opt_allowed(self):
-        # Should not raise any error
-        executor._check_forbidden_root("/opt/workspace")
-
+    def test_check_forbidden_root_blocked_paths(self):
+        # Paths outside the safelist should raise RuntimeError
         with self.assertRaises(RuntimeError) as ctx:
             executor._check_forbidden_root("/var")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
@@ -513,6 +511,10 @@ class TestExecutor(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx2:
             executor._check_forbidden_root("/etc/apt")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
+
+        with self.assertRaises(RuntimeError) as ctx3:
+            executor._check_forbidden_root("/opt/workspace")
+        self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
     def test_check_forbidden_root_mac_var_folders_allowed(self):
         # Should not raise any error

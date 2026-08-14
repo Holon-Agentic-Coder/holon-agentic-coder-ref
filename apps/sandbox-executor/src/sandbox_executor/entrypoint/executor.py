@@ -36,7 +36,6 @@ ALLOWED_PARENTS = {
     "/Users",
     "/tmp",
     "/var/tmp",
-    "/opt",
     "/private/var/folders",
     "/var/folders",
     os.path.expanduser("~"),
@@ -47,7 +46,6 @@ ALLOWED_PARENTS = {
 ALLOWED_EXACT = {
     "/workspace",
     "/repo",
-    "/opt/workspace",
     os.getcwd(),
 }
 
