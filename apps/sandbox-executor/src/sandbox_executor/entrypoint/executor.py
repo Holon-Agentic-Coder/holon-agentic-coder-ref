@@ -1,35 +1,317 @@
 #!/usr/bin/env python3
+"""Sandbox executor entrypoint for Holon Agentic Coder.
+
+Clones or reuses a workspace repository, runs the configured agent, captures
+execution results into the ledger, and commits/pushes the execution branch.
+
+Key environment variables:
+    HOLON_REPO_DIR: Override the default workspace directory.
+    HOLON_KEEP_WORKSPACE: Set to '1' to skip cleanup and reuse the existing workspace.
+    HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
+    HOLON_SKIP_PUSH: Set to '1' to skip the git push step.
+    HOLON_ROLE: When set, implies sandbox context.
+
+Known limitations:
+    - redact_args: Secret values starting with '-' are not masked to avoid
+      over-masking legitimate flags that immediately follow a secret flag.
+      See _is_secret_flag and the LIMITATION comment in redact_args for details.
+"""
+
 import contextlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from sandbox_executor.agent_runner import get_repo_url, get_runner
+
+_MAX_REDACT_INPUT_LEN: int = 100_000
+_MAX_PRINT_LEN: int = 5000
+
+# Explicit list of flags whose next argument must be masked.
+# Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
+# are checked dynamically in _is_secret_flag.
+# Any custom command line parameter that needs redaction must be added to this list.
+SECRET_FLAGS = {
+    "--password",
+    "--passwd",
+    "--auth",
+}
+
+# Safelist of parent directories whose subdirectories are allowed to be modified/deleted.
+# Any path not nested strictly inside one of these directories is blocked by default.
+ALLOWED_PARENTS = {
+    "/home",
+    "/Users",
+    "/tmp",
+    "/var/tmp",
+    "/private/var/folders",
+    "/var/folders",
+    # Specific Holon workspace parent directories — intentionally narrow, not all of `~`.
+    os.path.expanduser("~/.holon-sandbox"),
+    os.path.expanduser("~/.holon"),
+}
+
+_temp = tempfile.gettempdir()
+if _temp != "/":
+    ALLOWED_PARENTS.add(_temp)
+
+# Explicit safelist of exact paths that are allowed.
+# Note: os.getcwd() and os.path.expanduser("~") are intentionally excluded — they can
+# resolve to "/" under certain invocation contexts (e.g. system accounts or root invocation),
+# which would disable all safety checks.
+ALLOWED_EXACT = {
+    "/workspace",
+    "/repo",
+}
+
+# Pre-resolve allowed parent and exact paths once at module load time.
+# This prevents test mocks (e.g. patching os.path.realpath) from polluting the allowed sets at runtime.
+ALLOWED_PARENT_RESOLVED = {os.path.abspath(p) for p in ALLOWED_PARENTS} | {os.path.realpath(p) for p in ALLOWED_PARENTS}
+ALLOWED_EXACT_RESOLVED = {os.path.abspath(e) for e in ALLOWED_EXACT} | {os.path.realpath(e) for e in ALLOWED_EXACT}
+
+
+def _check_forbidden_root(path: str) -> None:
+    abs_path = os.path.abspath(path)
+    real_path = os.path.realpath(path)
+
+    for p in (abs_path, real_path):
+        if p == "/":
+            raise RuntimeError(f"Refusing to perform operation on system root-level directory: {path}")
+
+        p_allowed = False
+        # 1. Check if the path matches an allowed exact path
+        if p in ALLOWED_EXACT_RESOLVED:
+            p_allowed = True
+        else:
+            # 2. Check if the path is nested under an allowed parent directory
+            for parent_p in ALLOWED_PARENT_RESOLVED:
+                if p.startswith(parent_p.rstrip("/") + "/"):
+                    p_allowed = True
+                    break
+        if not p_allowed:
+            # Keep the error message exact for backward compatibility with existing tests
+            msg = f"Refusing to perform operation on system root-level directory: {path}"
+            raise RuntimeError(msg)
+
+
+def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
+    """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
+    try:
+        if os.path.isdir(path):
+            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
+        else:
+            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
+    except (OSError, NotImplementedError):
+        # Ignore permission errors on chmod attempt; rmtree/unlink will report any fatal failure.
+        pass
+    func(path)
+
+
+def _rmtree(path: str) -> None:
+    """Helper to call shutil.rmtree with the onexc error handler."""
+    if sys.version_info >= (3, 12):  # noqa: UP036
+        shutil.rmtree(path, onexc=_handle_remove_readonly)
+    else:
+        shutil.rmtree(path, onerror=_handle_remove_readonly)
+
+
+def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
+    """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
+    if not os.path.isdir(path):
+        return
+
+    try:
+        _check_forbidden_root(path)
+    except RuntimeError as e:
+        if raise_on_error:
+            raise
+        print(f"Warning: {e}", file=sys.stderr)
+        return
+
+    try:
+        items = os.listdir(path)
+    except PermissionError as e:
+        if raise_on_error:
+            raise
+        print(f"Warning: Failed to list directory {path}: {e}", file=sys.stderr)
+        return
+
+    for item in items:
+        item_path = os.path.join(path, item)
+        try:
+            if os.path.islink(item_path) or not os.path.isdir(item_path):
+                try:
+                    os.unlink(item_path)
+                except PermissionError:
+                    if not os.path.islink(item_path):
+                        os.chmod(item_path, stat.S_IWUSR | stat.S_IRUSR)
+                    os.unlink(item_path)
+            else:
+                _rmtree(item_path)
+        except Exception as e:
+            if raise_on_error:
+                raise
+            print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
+
+
+def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
+    """Clean up existing repo directory.
+
+    Clears contents if mount, unlinks if symlink, otherwise removes the tree.
+
+    Args:
+        repo_dir: Path to the repository directory.
+        raise_on_error: If True, propagates exceptions. If False, prints a warning and continues.
+    """
+    if not os.path.lexists(repo_dir):
+        return
+    try:
+        _check_forbidden_root(repo_dir)
+        if os.path.ismount(repo_dir):
+            _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
+        elif os.path.islink(repo_dir):
+            os.unlink(repo_dir)
+        elif os.path.isdir(repo_dir):
+            _rmtree(repo_dir)
+        else:
+            os.remove(repo_dir)
+    except Exception as e:
+        if raise_on_error:
+            raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
+        print(f"Warning: Failed to clean up repo dir {repo_dir}: {e}", file=sys.stderr)
+
+
+def redact_text(text: str) -> str:
+    if not text:
+        return text
+    # Guard against abnormally large inputs to prevent regex performance degradation on
+    # pathological strings (ReDoS prevention). 100,000 chars is well above any realistic log
+    # line length. Inputs exceeding this limit are truncated before applying redaction.
+    if len(text) > _MAX_REDACT_INPUT_LEN:
+        half_len = _MAX_REDACT_INPUT_LEN // 2
+        # Align truncation split to line boundary if a newline exists close to the split point
+        # to avoid severing tokens/secrets. Otherwise, truncate exactly at half_len.
+        head_end = text.rfind("\n", 0, half_len)
+        head = text[:half_len] if head_end == -1 or (half_len - head_end) > 1000 else text[:head_end]
+        tail_start = text.find("\n", len(text) - half_len)
+        tail = (
+            text[-half_len:]
+            if tail_start == -1 or (tail_start - (len(text) - half_len)) > 1000
+            else text[tail_start + 1 :]
+        )
+        text = head + "\n... (truncated) ...\n" + tail
+    s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
+    # Redact sensitive URL query parameters including auth_code and code
+    s = re.sub(
+        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code)[^=]*=)[^\s&]+",
+        r"\1*******",
+        s,
+        flags=re.IGNORECASE,
+    )
+    pattern = (
+        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|secret_key|private_key|signing_key|encryption_key))\1'
+        r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
+    )
+
+    def _replace_secret(match: re.Match) -> str:
+        q_key = match.group(1) or ""
+        key = match.group(2)
+        sep = match.group(3)
+        q_val = match.group(4) or ""
+        return f"{q_key}{key}{q_key}{sep}{q_val}*******{q_val}"
+
+    s = re.sub(pattern, _replace_secret, s, flags=re.IGNORECASE)
+    s = re.sub(r"(Bearer\s+)[^\s]+", r"\1*******", s, flags=re.IGNORECASE)
+    return s
+
+
+def _is_secret_flag(flag: str) -> bool:
+    flag_lowered = flag.lower()
+    return flag_lowered in SECRET_FLAGS or (
+        flag_lowered.startswith("-")
+        and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))
+    )
+
+
+def redact_args(args: list[str]) -> list[str]:
+    redacted = []
+    mask_next = False
+    for arg in args:
+        s_arg = str(arg)
+        if mask_next:
+            is_secret = _is_secret_flag(s_arg)
+            # LIMITATION: If a secret value happens to look like a flag (starts with -),
+            # it will NOT be masked. This is a deliberate trade-off to avoid over-masking
+            # when a flag like --verbose follows --token in the args list.
+            if is_secret or re.match(r"^-{1,2}[a-zA-Z0-9_-]+$", s_arg):
+                mask_next = False
+            else:
+                redacted.append("*******")
+                mask_next = False
+                continue
+
+        parts = s_arg.split("=", 1)
+        is_secret_flag = _is_secret_flag(parts[0])
+        if is_secret_flag:
+            if len(parts) == 2:
+                redacted.append(f"{parts[0]}=*******")
+            else:
+                redacted.append(s_arg)
+                mask_next = True  # If trailing (no next arg), the dangling flag is safe — no secret to miss.
+        else:
+            masked = redact_text(s_arg)
+            redacted.append(masked)
+
+    return redacted
 
 
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
-    env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    print(f"Running: {' '.join(args)}")
-    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
+    """Runs a command and returns the CompletedProcess.
+
+    NOTE: The returned CompletedProcess contains raw, unredacted stdout/stderr.
+    Callers must apply `redact_text` before printing or logging these fields.
+    """
+    redacted_args = redact_args(args)
+    print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
+    cmd_str = " ".join(print_args)
+    if len(cmd_str) > _MAX_PRINT_LEN:
+        cmd_str = cmd_str[: _MAX_PRINT_LEN - 3] + "..."
+    print(f"Running: {cmd_str}")
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0 and check:
-        print(f"Command failed with code {result.returncode}")
-        print(f"Stdout:\n{result.stdout}")
-        print(f"Stderr:\n{result.stderr}")
-        raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
+        print(f"Command failed with code {result.returncode}", file=sys.stderr)
+        print(f"Command args: {cmd_str}", file=sys.stderr)
+        full_out = redact_text(result.stdout)
+        full_err = redact_text(result.stderr)
+        out = full_out
+        err = full_err
+        if len(out) > _MAX_PRINT_LEN:
+            half_print = _MAX_PRINT_LEN // 2
+            out = out[:half_print] + "\n... (truncated) ...\n" + out[-half_print:]
+        if len(err) > _MAX_PRINT_LEN:
+            half_print = _MAX_PRINT_LEN // 2
+            err = err[:half_print] + "\n... (truncated) ...\n" + err[-half_print:]
+        print(f"Stdout:\n{out}", file=sys.stderr)
+        print(f"Stderr:\n{err}", file=sys.stderr)
+        raise subprocess.CalledProcessError(result.returncode, redacted_args, output=full_out, stderr=full_err)
     return result
 
 
-def _safe_float(val, default: float = 0.0) -> float:
+def _safe_float(val: Any, default: float = 0.0) -> float:
     if val is None:
         return default
     try:
@@ -47,7 +329,7 @@ def _sanitize_string(name: str) -> str:
     return s or "unknown"
 
 
-def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dict]]:
+def should_decompose(plan_data: dict[str, Any], plan_content: str) -> tuple[bool, list[dict[str, Any]]]:
     """Determine if a plan should be decomposed into sub-intents.
 
     Returns (should_decompose_bool, list_of_sub_intents).
@@ -106,7 +388,11 @@ def should_decompose(plan_data: dict, plan_content: str) -> tuple[bool, list[dic
     return False, []
 
 
-def main():
+def main() -> None:
+    is_default_repo = False
+    repo_dir = None
+    keep_workspace = False
+
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
         sys.exit(1)
@@ -122,20 +408,85 @@ def main():
     if plan_branch_prefix.endswith("/_"):
         plan_branch_prefix = plan_branch_prefix[:-2]
 
-    is_temp_dir = False
+    keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
+    in_sandbox_explicit = (
+        str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")
+        or bool(os.getenv("HOLON_ROLE"))
+        or os.path.exists("/.dockerenv")
+    )
+    # Heuristic fallback: sandbox containers without HOLON_ROLE or /.dockerenv.
+    # Use HOLON_REPO_DIR to override in ambiguous environments (Linux/macOS/Windows).
+    in_sandbox_heuristic = os.getenv("USER") == "holon" or os.getenv("USERNAME") == "holon"
+    if in_sandbox_heuristic and not in_sandbox_explicit:
+        print(
+            "Warning: using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.",
+            file=sys.stderr,
+        )
+    in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
+
     repo_dir = os.getenv("HOLON_REPO_DIR")
     if not repo_dir:
-        repo_dir = tempfile.mkdtemp(prefix="sandbox_executor_")
-        is_temp_dir = True
-    else:
-        os.makedirs(repo_dir, exist_ok=True)
-
+        repo_dir = (
+            os.path.expanduser("~/.holon-sandbox/workspace") if in_sandbox else os.path.expanduser("~/.holon/repo")
+        )
+        is_default_repo = True
+        if not keep_workspace:
+            if not in_sandbox:
+                print(
+                    f"Warning: Cleaning default local repository directory at {repo_dir}.\n"
+                    "Set HOLON_KEEP_WORKSPACE=1 to retain.",
+                    file=sys.stderr,
+                )
+            _cleanup_repo_dir(repo_dir, raise_on_error=True)
+    os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
-        run_cmd(
-            ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
-            cwd=repo_dir,
-        )
+        if not os.path.exists(os.path.join(repo_dir, ".git")):
+            run_cmd(
+                ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
+                cwd=repo_dir,
+            )
+        else:
+            # If the directory already contains a .git repository (e.g. workspace is preserved
+            # via HOLON_KEEP_WORKSPACE=1), reuse the workspace with git fetch and force checkout.
+            if not in_sandbox:
+                print(
+                    f"Warning: Reusing workspace at {repo_dir}.\n"
+                    "Uncommitted changes and untracked files will be discarded.",
+                    file=sys.stderr,
+                )
+            # Validate that the existing .git dir belongs to the expected remote before reusing.
+            # A stale .git from a different repository would otherwise silently trigger the
+            # reuse path (git fetch <new_url>) instead of a clean clone, producing confusing failures.
+            remote_result = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
+            if remote_result.returncode != 0 or remote_result.stdout.strip() != repo_url:
+                print(
+                    f"Warning: Remote URL mismatch or unreadable at {repo_dir}. "
+                    "Discarding stale workspace and re-cloning.",
+                    file=sys.stderr,
+                )
+                _cleanup_repo_dir(repo_dir, raise_on_error=True)
+                os.makedirs(repo_dir, exist_ok=True)
+                run_cmd(
+                    ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
+                    cwd=repo_dir,
+                )
+            else:
+                run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
+                if in_sandbox or repo_dir == os.path.expanduser("~/.holon-sandbox/workspace"):
+                    run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
+                else:
+                    # Deliberate trade-off: preserve local developer files (e.g. .env, local configs)
+                    # when HOLON_KEEP_WORKSPACE=1 is used outside the sandbox. Untracked files from
+                    # the previous run will NOT be removed. Set HOLON_KEEP_WORKSPACE=0 (the default)
+                    # to ensure a clean workspace on every run.
+                    print(
+                        f"Warning: Skipping 'git clean -fd' as we are in a local workspace at {repo_dir}.\n"
+                        "Untracked files from the previous run are preserved. "
+                        "Unset HOLON_KEEP_WORKSPACE to ensure a clean workspace.",
+                        file=sys.stderr,
+                    )
+                run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
@@ -162,7 +513,7 @@ def main():
                             plan_data = data
                             break
                     except Exception as e:
-                        print(f"Warning: skipping line {line_no} in plans.jsonl: {e}")
+                        print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
 
         if not plan_data:
             plan_data = {
@@ -198,7 +549,7 @@ def main():
                             break
                     except Exception as e:
                         # Ignore invalid or corrupted lines in intents ledger
-                        print(f"Warning: skipping unparseable line in intents.jsonl: {e}")
+                        print(f"Warning: skipping unparseable line in intents.jsonl: {e}", file=sys.stderr)
 
         if not intent_data:
             intent_data = {"branch": plan_data.get("intent_branch", "I-unknown")}
@@ -303,20 +654,41 @@ def main():
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
             run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
+            if exec_status == "success":
+                run_cmd(["git", "add", "-A"], cwd=repo_dir)
 
-        run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
-        run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
-        run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
-        skip_push = os.getenv("HOLON_SKIP_PUSH")
-        if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-            run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+            # Log staged changes to provide visibility
+            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
+            print("Current git repository status:")
+            print(redact_text(status_output.stdout))
+
+        staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+        if staged_check.returncode != 0:
+            run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
+            run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
+            run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+            skip_push = os.getenv("HOLON_SKIP_PUSH")
+            if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
+                run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+                print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
+            else:
+                print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
+                print(f"Execution branch '{exec_branch}' successfully committed locally.")
         else:
-            print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
+            print("No staged changes to commit.")
 
-        print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
+    except Exception as e:
+        print(f"Execution failed: {e}", file=sys.stderr)
+        raise
     finally:
-        if is_temp_dir and os.path.exists(repo_dir):
-            try:
-                shutil.rmtree(repo_dir)
-            except Exception as e:
-                print(f"Warning: Failed to clean up temp repo dir {repo_dir}: {e}")
+        # reuse `keep_workspace` already computed at function start
+        if is_default_repo and repo_dir and not keep_workspace:
+            _cleanup_repo_dir(repo_dir, raise_on_error=False)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
