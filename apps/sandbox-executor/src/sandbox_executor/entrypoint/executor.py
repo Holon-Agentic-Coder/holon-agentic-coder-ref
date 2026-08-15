@@ -47,17 +47,6 @@ SECRET_FLAGS = {
     "--auth",
 }
 
-FORBIDDEN_ROOTS = {
-    "/",
-    "/etc",
-    "/bin",
-    "/usr",
-    "/var",
-    "/sbin",
-    "/lib",
-    "/private",
-}
-
 # Safelist of parent directories whose subdirectories are allowed to be modified/deleted.
 # Any path not nested strictly inside one of these directories is blocked by default.
 ALLOWED_PARENTS = {
@@ -73,7 +62,7 @@ ALLOWED_PARENTS = {
 }
 
 _temp = tempfile.gettempdir()
-if _temp not in FORBIDDEN_ROOTS:
+if _temp != "/":
     ALLOWED_PARENTS.add(_temp)
 
 # Explicit safelist of exact paths that are allowed.
@@ -96,7 +85,7 @@ def _check_forbidden_root(path: str) -> None:
     real_path = os.path.realpath(path)
 
     for p in (abs_path, real_path):
-        if p in FORBIDDEN_ROOTS:
+        if p == "/":
             raise RuntimeError(f"Refusing to perform operation on system root-level directory: {path}")
 
         p_allowed = False
