@@ -11,5 +11,5 @@ Success
 
 ## Summary
 
-Plan executed successfully. Generated post-execution plan calibration analysis under
-plans/P-1787048480-antigravity-agent-gemini-3.5-flash_calibration.md.
+Plan executed successfully in sandbox. Calibration report generated under
+plans/P-1787051525-antigravity-agent-gemini-3.5-flash_calibration.md on the calibrated branch.

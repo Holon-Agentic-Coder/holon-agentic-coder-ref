@@ -61,32 +61,31 @@ The overall plan metrics were derived as follows:
 
 ## Plan Description & Strategy
 
-This plan specifies the generation of a comprehensive post-execution plan calibration analysis under
-`plans/P-1787048480-antigravity-agent-gemini-3.5-flash_calibration.md`. It evaluates the accuracy of all predicted
-metrics against actuals and formulates tuning feedback for estimator models.
+This plan specifies the execution of the plan calibration lifecycle for intent `I-1787051498-executor-plan-calibration`.
+It documents the post-execution calibration analysis under
+`plans/P-1787051525-antigravity-agent-gemini-3.5-flash_calibration.md` on the `/calibrated` branch, evaluating the
+accuracy of all predicted metrics against actuals.
 
 ---
 
-## Step 1: Generate Plan Calibration Analysis Report
+## Step 1: Execute Sandbox Operations and Calibration Analysis
 
 **Sub‑intent recommendation:** NO **Reasoning:** Single-step documentation and analysis task with low complexity. **Step
 Type:** DOCUMENTATION **Exploration level:** EXPLOIT
 
 ### Intent & Git Integration
 
-**Step Intent:** Write `plans/P-1787048480-antigravity-agent-gemini-3.5-flash_calibration.md`. **Git branch:**
-`I-1787051498-executor-plan-calibration/P-1787051525-antigravity-agent-gemini-3.5-flash/E-write-calibration-report`
+**Step Intent:** Generate execution record and post-execution calibration report at
+`plans/P-1787051525-antigravity-agent-gemini-3.5-flash_calibration.md`. **Git branch:**
+`I-1787051498-executor-plan-calibration/P-1787051525-antigravity-agent-gemini-3.5-flash/E-1787051559-antigravity-agent-gemini-3.5-flash/calibrated`
 **Sub‑intent:** NONE
 
 ### Implementation Details (No code blocks, only logic/steps)
 
-- Parse historical predicted metrics from `plans/P-1787048480-antigravity-agent-gemini-3.5-flash.md` and
-  `holon-knowledge/ledger/plans.jsonl`.
-- Parse execution outcome and actuals from `executions/E-1787049387-antigravity-agent-gemini-3.5-flash.md` and
-  `holon-knowledge/ledger/executions.jsonl`.
-- Compute error terms for P(success), Entropy, Impact, Cost, Learning Value, and Realized EV.
-- Analyze entropy factor deviations (SSA, IRR, CL, SER, NOV).
-- Document recommendations for entropy additivity discounting in documentation-only plans.
+- Execute plan steps within sandbox.
+- Record execution results in `executions/E-1787051559-antigravity-agent-gemini-3.5-flash.md`.
+- Compute calibration errors on `/calibrated` branch comparing predicted vs actual metrics.
+- Generate calibration report at `plans/P-1787051525-antigravity-agent-gemini-3.5-flash_calibration.md`.
 
 ### Dependencies & Criticality
 
@@ -94,8 +93,8 @@ Type:** DOCUMENTATION **Exploration level:** EXPLOIT
 
 ### Success & Discard Criteria
 
-**Success:** File `plans/P-1787048480-antigravity-agent-gemini-3.5-flash_calibration.md` created, accurately formatted,
-and cross-referenced. **Discard:** Calculation discrepancies or failure to match schema.
+**Success:** Calibration report `plans/P-1787051525-antigravity-agent-gemini-3.5-flash_calibration.md` created on the
+calibrated branch with complete metric comparisons. **Discard:** Calculation discrepancies or failure to match schema.
 
 ### Metrics
 
