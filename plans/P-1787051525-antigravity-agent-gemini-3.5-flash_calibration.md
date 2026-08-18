@@ -13,14 +13,14 @@ Branch:** `I-1787051498-executor-plan-calibration/_`
 
 ## 1. Executive Calibration Summary
 
-| Metric                    | Predicted (`pred`) | Actual (`actual`) | Absolute Error (` | pred - actual     | `)                         | Accuracy Rating | Bias Direction |
-| :------------------------ | :----------------- | :---------------- | :---------------- | :---------------- | :------------------------- | --------------- | -------------- |
-| **$P(\text{success})$**   | `0.98`             | `1.00`            | `0.02`            | High ($\le 0.05$) | Slight Underconfidence     |
-| **Entropy ($\Delta S$)**  | `1.20`             | `0.40`            | `0.80`            | High ($\le 1.0$)  | Overestimated Risk         |
-| **Impact**                | `35.00`            | `35.00`           | `0.00`            | Exact             | Perfectly Calibrated       |
-| **Cost**                  | `4.00`             | `3.50`            | `0.50`            | High ($\le 1.0$)  | Highly Accurate            |
-| **Learning Value**        | `2.50`             | `2.50`            | `0.00`            | Exact             | Perfectly Calibrated       |
-| **Expected Value ($EV$)** | `31.19`            | `34.88`           | `3.69`            | High              | Conservative Underestimate |
+| Metric                    | Predicted (`pred`) | Actual (`actual`) | Absolute Error (`abs(pred - actual)`) | Accuracy Rating   | Bias Direction             |
+| :------------------------ | :----------------- | :---------------- | :------------------------------------ | :---------------- | :------------------------- |
+| **$P(\text{success})$**   | `0.98`             | `1.00`            | `0.02`                                | High ($\le 0.05$) | Slight Underconfidence     |
+| **Entropy ($\Delta S$)**  | `1.20`             | `0.40`            | `0.80`                                | High ($\le 1.0$)  | Overestimated Risk         |
+| **Impact**                | `35.00`            | `35.00`           | `0.00`                                | Exact             | Perfectly Calibrated       |
+| **Cost**                  | `4.00`             | `3.50`            | `0.50`                                | High ($\le 1.0$)  | Highly Accurate            |
+| **Learning Value**        | `2.50`             | `2.50`            | `0.00`                                | Exact             | Perfectly Calibrated       |
+| **Expected Value ($EV$)** | `31.19`            | `34.88`           | `3.69`                                | High              | Conservative Underestimate |
 
 ---
 
