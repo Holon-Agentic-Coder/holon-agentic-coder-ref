@@ -2,11 +2,13 @@
 
 This guide explains how to run the Sandbox Executor role using the Docker sandbox environment.
 
-The Executor checks out a plan branch, runs the AI coding agent to implement changes, executes validation test suites, records execution results in the ledger `holon-knowledge/ledger/executions.jsonl`, and pushes the execution branch.
+The Executor checks out a plan branch, runs the AI coding agent to implement changes, executes validation test suites,
+records execution results in the ledger `holon-knowledge/ledger/executions.jsonl`, and pushes the execution branch.
 
-For detailed design specs and configuration requirements, see:
-- [execution_architecture_specification.md](../executor/execution_architecture_specification.md) for the Executor's internals, lifecycle, and safety boundaries.
-- [agent_credentials_requirements.md](../executor/agent_credentials_requirements.md) for key management, path traversal verification, and supported agent config parameters.
+For in-depth specifications of the execution architecture and credentials mapping, refer to:
+
+- [Sandbox Executor Architecture Specification](../executor/execution_architecture_specification.md)
+- [Agent Credentials & API Key Requirements](../executor/agent_credentials_requirements.md)
 
 ---
 
@@ -19,17 +21,36 @@ For detailed design specs and configuration requirements, see:
 ./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
 ```
 
-### The 3-Tier Fallback Contract Mapping
+The `./holon` wrapper script automatically handles setting up the container and environment, mapping directly into the
+[3-Tier Fallback Contract](../executor/agent_credentials_requirements.md#the-3-tier-fallback-contract):
 
-The `./holon` wrapper CLI automatically integrates with the Sandbox Executor's **3-Tier Fallback Contract** for resolving credentials:
+### 1. Ephemeral Secret & Env Forwarding (Tier 1 & 2)
 
-- **Tier 1 (Ephemeral Secret Bundle)**: Can load or bind-mount the temporary secret bundle JSON file (such as at `/run/secrets/holon_auth.json`) depending on the orchestration context.
-- **Tier 2 (Environment variables)**: Automatically discovers and forwards relevant environment variables from your host terminal. It scans for the `GITHUB_TOKEN` (via `find_github_token()`, falling back to the `gh` CLI credentials) and any variables prefixed with `HOLON_AGENT_` (such as `HOLON_AGENT_KEY`, `HOLON_AGENT_OSS_MODE`, or `HOLON_AGENT_EFFORT`), mounting them into the container via `-e` flags.
-- **Tier 3 (Session directory mounts)**: Auto-detects active user credentials in standard host directories (e.g. `~/.gemini/antigravity-cli`, `~/.config/gcloud`, `~/.config/claude`, `~/.config/pi`, `~/.codex`) and mounts them read-only (`:ro`) into the corresponding path in the container user's home folder (`/home/holon/`). This allows OAuth profiles and locally-cached sessions to function out-of-the-box in the headless container.
+The script searches the host environment for active tokens and passes them down as Docker environment flags (`-e`):
 
-In addition, `./holon` manages:
-- Cross-platform SSH agent socket forwarding (`SSH_AUTH_SOCK`) for git push operations.
-- Automatically routing the container's operational role (`HOLON_ROLE=executor`).
+- **GitHub Token Discovery**: Auto-detects tokens using `GITHUB_TOKEN` or `GH_TOKEN` environment variables, or
+  automatically executes the host `gh auth token` command.
+- **Agent Keys & Configuration**: Forwards all environment variables starting with `HOLON_AGENT_` (such as
+  `HOLON_AGENT_KEY`, `HOLON_AGENT_OSS_MODE`, and `HOLON_AGENT_EFFORT`).
+
+### 2. Session Directory Mounts (Tier 3)
+
+The wrapper checks the host user's home folder for existing agent credentials/sessions and maps them into the container
+under `/home/holon/...` as read-only (`:ro`) mounts:
+
+- **`antigravity`**: Maps `~/.gemini/antigravity-cli` and `~/.config/antigravity`
+- **`claude`**: Maps `~/.config/claude`
+- **`codex`**: Maps `~/.codex`
+- **`pi`**: Maps `~/.config/pi`
+- **`gemini`**: Maps `~/.config/gcloud`
+
+### 3. SSH Agent Socket Forwarding
+
+To allow the containerized executor to perform git pushes to remote origins without requiring SSH keys inside the
+sandbox:
+
+- **macOS**: Mounts `/run/host-services/ssh-auth.sock` to the container and updates the `SSH_AUTH_SOCK` environment.
+- **Linux/Other**: Mounts the host's existing `SSH_AUTH_SOCK` value to `/run/ssh-agent` in the container.
 
 ---
 
