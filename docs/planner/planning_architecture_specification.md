@@ -176,5 +176,4 @@ These agents are invoked dynamically depending on the task's complexity, cost, u
 ## 10. References & Requirements
 
 For details on the API key and credential configuration required to run each supported agent in the sandbox planning
-phase, see the
-[Agent Credentials & API Key Requirements](agent_credentials_requirements.md).
+phase, see the [Agent Credentials & API Key Requirements](agent_credentials_requirements.md).
