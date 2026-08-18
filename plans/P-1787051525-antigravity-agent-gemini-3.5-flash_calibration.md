@@ -1,13 +1,12 @@
 # Plan Calibration Report: P-1787051525-antigravity-agent-gemini-3.5-flash
 
-**Plan Reference:**
-[`plans/P-1787051525-antigravity-agent-gemini-3.5-flash.md`](P-1787051525-antigravity-agent-gemini-3.5-flash.md)  
-**Execution Reference:**
-[`executions/E-1787051559-antigravity-agent-gemini-3.5-flash.md`](../executions/E-1787051559-antigravity-agent-gemini-3.5-flash.md)  
-**Intent
-Branch:** `I-1787051498-executor-plan-calibration/_`  
-**Evaluating Agent:** `antigravity-agent/gemini-3.5-flash`  
-**Evaluation Timestamp:** `2026-08-18T11:13:50.000Z`
+- **Plan Reference:**
+  [`plans/P-1787051525-antigravity-agent-gemini-3.5-flash.md`](P-1787051525-antigravity-agent-gemini-3.5-flash.md)
+- **Execution Reference:**
+  [`executions/E-1787051559-antigravity-agent-gemini-3.5-flash.md`](../executions/E-1787051559-antigravity-agent-gemini-3.5-flash.md)
+- **Intent Branch:** `I-1787051498-executor-plan-calibration/_`
+- **Evaluating Agent:** `antigravity-agent/gemini-3.5-flash`
+- **Evaluation Timestamp:** `2026-08-18T11:13:50.000Z`
 
 ---
 
@@ -20,7 +19,7 @@ Branch:** `I-1787051498-executor-plan-calibration/_`
 | **Impact**                | `35.00`            | `35.00`           | `0.00`                                | Exact             | Perfectly Calibrated       |
 | **Cost**                  | `4.00`             | `3.50`            | `0.50`                                | High ($\le 1.0$)  | Highly Accurate            |
 | **Learning Value**        | `2.50`             | `2.50`            | `0.00`                                | Exact             | Perfectly Calibrated       |
-| **Expected Value ($EV$)** | `31.19`            | `34.88`           | `3.69`                                | High              | Conservative Underestimate |
+| **Expected Value ($EV$)** | `31.19`            | `32.63`           | `1.44`                                | High              | Conservative Underestimate |
 
 ---
 
@@ -33,7 +32,7 @@ Branch:** `I-1787051498-executor-plan-calibration/_`
 - **Learning Value Error:** $|2.50 - 2.50| = 0.00$
 - **Expected Value Realization:**
   $$EV_{\text{pred}} = 0.98 \times 35.0 + 0.5 \times 2.5 - 0.3 \times 1.20 - 4.00 = 31.19$$
-  $$EV_{\text{actual}} = 1.00 \times 35.0 + 0.5 \times 2.5 - 0.3 \times 0.40 - 3.50 = 34.88$$ $$\Delta EV = +3.69$$
+  $$EV_{\text{actual}} = 1.00 \times 35.0 + 0.5 \times 2.5 - 0.3 \times 0.40 - 3.50 = 32.63$$ $$\Delta EV = +1.44$$
 
 ---
 

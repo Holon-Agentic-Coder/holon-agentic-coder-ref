@@ -9,7 +9,7 @@ I-1787051498-executor-plan-calibration **Agent:** antigravity-agent/gemini-3.5-f
 - Intent handling: ACCEPT_AS_IS
 - Reframed intent (if applicable): NONE
 - Exploration stance: conservative with a 1–2 sentence justification: This is an analytical and documentation intent
-  focusing on evaluating the accuracy of predicted metrics against actual outcomes for plan P-1787048480. A conservative
+  focusing on evaluating the accuracy of predicted metrics against actual outcomes for plan P-1787051525. A conservative
   approach is chosen as no runtime code is altered.
 - Safety priority level: standard
 - Priority Justification: As a pure metrics evaluation and documentation task, this carries minimal safety risks under
@@ -36,15 +36,15 @@ I-1787051498-executor-plan-calibration **Agent:** antigravity-agent/gemini-3.5-f
 
 The overall plan metrics were derived as follows:
 
-- **p_success_pred**: 0.98. Forensic records from execution `E-1787049387-antigravity-agent-gemini-3.5-flash` and plan
-  `P-1787048480` are complete and accessible, making analysis deterministic and reliable.
+- **p_success_pred**: 0.98. Forensic records from execution `E-1787051559-antigravity-agent-gemini-3.5-flash` and plan
+  `P-1787051525` are complete and accessible, making analysis deterministic and reliable.
 - **entropy_pred**: 1.2. The single documentation artifact introduces low state surface area and zero conflict or
   sandbox escape risk.
 - **impact_pred**: 35.0. Delivering the calibration report provides essential empirical feedback for the Calibration &
   Estimator Tuning Agent.
 - **cost_pred**: 4.0. Direct evaluation without complex compilation or external API calls.
 - **learning_value_pred**: 2.5. Delivers key insights into entropy overestimation biases on documentation tasks.
-- **ev_pred**: 31.19. Calculated directly: EV = 0.98 _ 35.0 + 0.5 _ 2.5 - 0.3 \* 1.2 - 4.0 = 31.19.
+- **ev_pred**: 31.19. Calculated directly: `EV = 0.98 * 35.0 + 0.5 * 2.5 - 0.3 * 1.2 - 4.0 = 31.19`.
 
 ## Safety & Constraint Alignment
 
