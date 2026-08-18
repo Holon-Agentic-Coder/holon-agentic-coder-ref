@@ -44,7 +44,7 @@ The overall plan metrics were derived as follows:
   Estimator Tuning Agent.
 - **cost_pred**: 4.0. Direct evaluation without complex compilation or external API calls.
 - **learning_value_pred**: 2.5. Delivers key insights into entropy overestimation biases on documentation tasks.
-- **ev_pred**: 31.19. Calculated directly: EV = 0.98 * 35.0 + 0.5 * 2.5 - 0.3 * 1.2 - 4.0 = 31.19.
+- **ev_pred**: 31.19. Calculated directly: EV = 0.98 _ 35.0 + 0.5 _ 2.5 - 0.3 \* 1.2 - 4.0 = 31.19.
 
 ## Safety & Constraint Alignment
 

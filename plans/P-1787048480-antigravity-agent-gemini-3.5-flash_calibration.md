@@ -92,7 +92,7 @@ $$\Delta S = 0.30 \cdot \text{SSA} + 0.25 \cdot \text{IRR} + 0.20 \cdot \text{CL
 ## 4. Step-Level Accuracy Analysis
 
 | Step ID & Description                                  | $P(\text{success})$ Error | Entropy Error | Cost Error | Resolution Notes |
-| :----------------------------------------------------- | :------------------------ | :------------ | :--------- | :--------------- |
+| :----------------------------------------------------- | :------------------------ | :------------ | :--------- | :--------------- | ----------- | ------- | --- | --------- | ------ | -------------------------------------------------------------- |
 | **Step 1: Write Sandbox Executor Architecture Spec**   | $                         | 0.98 - 1.00   | = 0.02$    | $                | 1.20 - 0.40 | = 0.80$ | $   | 4.0 - 3.5 | = 0.5$ | Specification accurately reflected `executor.py` architecture. |
 | **Step 2: Write Agent Credentials Requirements**       | $                         | 0.98 - 1.00   | = 0.02$    | $                | 1.20 - 0.30 | = 0.90$ | $   | 4.0 - 3.5 | = 0.5$ | Credentials contract accurately matched `agent_runner.py`.     |
 | **Step 3: Update Execution Guide (`execute_plan.md`)** | $                         | 0.98 - 1.00   | = 0.02$    | $                | 0.80 - 0.10 | = 0.70$ | $   | 2.0 - 1.5 | = 0.5$ | Clean cross-referencing and CLI command explanations added.    |
