@@ -59,3 +59,12 @@ sandbox:
 - **`plan_branch`** (positional, required): The target plan branch to execute.
 - **`--agent`** (optional, default: `antigravity-agent`): Agent runner to execute.
 - **`--model`** (optional, default: `gemini-3.5-flash`): Target LLM model name.
+
+---
+
+## Related Documents
+
+- [Executor Architecture Specification](../executor/execution_architecture_specification.md)
+- [Agent Credentials & API Key Requirements](../executor/agent_credentials_requirements.md)
+- [Planning Architecture Specification](../planner/planning_architecture_specification.md)
+- [Creating a Plan in Sandbox](create_plan.md)

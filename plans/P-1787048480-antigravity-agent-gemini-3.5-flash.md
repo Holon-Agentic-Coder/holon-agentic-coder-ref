@@ -35,7 +35,7 @@ antigravity-agent/gemini-3.5-flash **Created At:** 2026-08-18T10:21:20.254Z
 
 The overall plan metrics were derived as follows:
 
-- **p_success_pred**: 0.95. This is calculated as the joint probability of success of all steps (0.98 * 0.98 * 0.98 =
+- **p_success_pred**: 0.95. This is calculated as the joint probability of success of all steps (0.98 _ 0.98 _ 0.98 =
   0.941, rounded to 0.95), reflecting the sequential dependency of the documentation tasks.
 - **entropy_pred**: 3.2. This is the sum of the step-level predicted entropies (1.2 + 1.2 + 0.8 = 3.2), which represents
   the total potential complexity introduced across all branch activities.
@@ -45,8 +45,8 @@ The overall plan metrics were derived as follows:
   time cost.
 - **learning_value_pred**: 2.0. This is a qualitative aggregate representation of the epistemic gain, since the steps
   are non-exploratory and document existing logic.
-- **ev_pred**: 32.79. Calculated directly using the overall metrics under the standard formula: EV = 0.95 * 45.0 + 0.5 *
-  2.0 - 0.3 * 3.2 - 10.0 = 32.79.
+- **ev_pred**: 32.79. Calculated directly using the overall metrics under the standard formula: EV = 0.95 _ 45.0 + 0.5 _
+  2.0 - 0.3 \* 3.2 - 10.0 = 32.79.
 
 The strategy is direct implementation (EXPLOIT) of documentation steps. Since the functionality is already implemented
 in `apps/sandbox-executor/src/sandbox_executor/entrypoint/executor.py` and
@@ -101,7 +101,7 @@ NONE
 - Document the step-by-step execution lifecycle flow: cloning/fetching, repo cleaning, checkout of execution branch,
   plan and intent reading, decomposition check, agent runner building, execution, log capturing, git commit/push, and
   cleanup.
-- Document the path-traversal safety check mechanism (_check_forbidden_root) and its exact path constraints
+- Document the path-traversal safety check mechanism (\_check_forbidden_root) and its exact path constraints
   (ALLOWED_PARENTS, ALLOWED_EXACT).
 - Document the secret redaction mechanism (SECRET_FLAGS, command line argument filtering, and git diff masking).
 - Document the workspace retention policy (HOLON_KEEP_WORKSPACE) and its behavior in container/local environments.
