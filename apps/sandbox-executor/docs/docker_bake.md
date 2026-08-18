@@ -94,7 +94,6 @@ docker buildx bake -f apps/sandbox-executor/docker-bake.hcl --load
 ## Developer Best Practices
 
 > [!IMPORTANT] **Run the build script locally before pushing changes:** Whenever you modify the \*
-> _[Dockerfile](../Dockerfile)\*\* or _
-> _[docker-bake.hcl](../docker-bake.hcl)\*\*, you
-> _ \*must\*\* run `./apps/sandbox-executor/build_all_images.sh` locally to ensure there are no compilation, dependency,
-> or concurrency conflicts before pushing to remote.
+> _[Dockerfile](../Dockerfile)\*\* or _ _[docker-bake.hcl](../docker-bake.hcl)\*\*, you _ \*must\*\* run
+> `./apps/sandbox-executor/build_all_images.sh` locally to ensure there are no compilation, dependency, or concurrency
+> conflicts before pushing to remote.
