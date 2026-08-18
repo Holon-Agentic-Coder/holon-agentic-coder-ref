@@ -5,6 +5,11 @@ This guide explains how to run the Sandbox Executor role using the Docker sandbo
 The Executor checks out a plan branch, runs the AI coding agent to implement changes, executes validation test suites,
 records execution results in the ledger `holon-knowledge/ledger/executions.jsonl`, and pushes the execution branch.
 
+For in-depth specifications of the execution architecture and credentials mapping, refer to:
+
+- [Sandbox Executor Architecture Specification](../executor/execution_architecture_specification.md)
+- [Agent Credentials & API Key Requirements](../executor/agent_credentials_requirements.md)
+
 ---
 
 ## Recommended Execution Method (`./holon` CLI)
