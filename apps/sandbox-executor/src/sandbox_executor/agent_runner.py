@@ -117,13 +117,18 @@ class StandardAgentRunner(AgentRunner):
             has_session = (
                 os.path.exists("/home/holon/.gemini/antigravity-cli")
                 or os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli"))
+                or os.path.exists("/home/holon/.gemini")
+                or os.path.exists(os.path.expanduser("~/.gemini"))
                 or os.path.exists("/home/holon/.config/gcloud")
                 or os.path.exists(os.path.expanduser("~/.config/gcloud"))
+                or os.path.exists(os.path.expanduser("~/.holon/sessions/antigravity"))
+                or os.path.exists("/run/user/1000/bus")
+                or bool(os.getenv("DBUS_SESSION_BUS_ADDRESS"))
             )
             if not (has_key or has_session):
                 print(
                     "Error: Missing required API credentials for agent 'antigravity'.\n"
-                    "Please set 'HOLON_AGENT_KEY' or mount active session to '/home/holon/.gemini/antigravity-cli'.",
+                    "Please set 'HOLON_AGENT_KEY' or mount active session to '/home/holon/.gemini'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -171,15 +176,33 @@ class StandardAgentRunner(AgentRunner):
 class AntigravityAgentRunner(StandardAgentRunner):
     """Runner for the Antigravity agent.
 
-    Defers evaluation of the ``HOLON_AGENT_EFFORT`` environment variable to
-    :meth:`build_cmd` so that runtime changes to the variable are always
-    respected instead of being frozen at module import time.
+    Defers evaluation of ``HOLON_AGENT_EFFORT`` and ``HOLON_AGENT_SKIP_PERMISSIONS``
+    environment variables to :meth:`build_cmd` so that runtime changes to the variables
+    are always respected instead of being frozen at module import time.
     """
 
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
-        # Resolve HOLON_AGENT_EFFORT at call time, not at module-import time.
-        self.suffix = ["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"]
-        return super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
+        # Resolve HOLON_AGENT_EFFORT and optional permissions bypass at call time
+        suffix = list(self.suffix)
+        if os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "").lower() in ("1", "true", "yes", "on"):
+            suffix.append("--dangerously-skip-permissions")
+        suffix.extend(["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"])
+
+        self.validate()
+        cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *suffix]
+
+        for mapping in self.env_mappings:
+            val = os.getenv(mapping.env_var)
+            if not val:
+                continue
+            if mapping.is_boolean:
+                if val.lower() in ("true", "1", "yes", "on"):
+                    cmd.append(mapping.flag)
+            else:
+                cmd.extend([mapping.flag, val])
+
+        cmd.append(full_prompt)
+        return cmd
 
 
 # Runner registry: maps agent_id -> StandardAgentRunner instance.

@@ -43,15 +43,56 @@ def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
 
 
 def get_agent_session_mounts(agent_id: str) -> list[str]:
-    """Auto-detect and construct read-only session mounts for supported agents."""
+    """Auto-detect and construct session mounts for supported agents."""
     mounts = []
     home = os.path.expanduser("~")
 
+    # Handle Antigravity specific mounts
+    if agent_id.lower() in ("antigravity", "antigravity-agent"):
+        dedicated_session = os.getenv(
+            "HOLON_ANTIGRAVITY_SESSION_DIR",
+            os.path.join(home, ".holon", "sessions", "antigravity"),
+        )
+
+        # If HOLON_AGENT_KEY is supplied, session mount is optional
+        has_key = bool(os.getenv("HOLON_AGENT_KEY"))
+
+        # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
+        if sys.platform == "darwin":
+            if os.path.exists(dedicated_session):
+                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini:rw"])
+                return mounts
+            elif not has_key:
+                print(
+                    "Error: Missing Antigravity sandbox session directory on macOS.\n"
+                    f"The session directory '{dedicated_session}' does not exist.\n\n"
+                    "Please initialize the Antigravity session in an interactive TTY by running:\n\n"
+                    f"  mkdir -p {dedicated_session}\n"
+                    f"  docker run -it -v {dedicated_session}:/home/holon/.gemini:rw holon/agent-antigravity agy\n\n"
+                    "After completing interactive authentication, rerun this command.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        # On Linux and other platforms, mount ~/.holon/sessions/antigravity or host ~/.gemini/antigravity-cli
+        if os.path.exists(dedicated_session):
+            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini:rw"])
+            return mounts
+
+        host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
+        if os.path.exists(host_agy_cli):
+            mounts.extend(["-v", f"{host_agy_cli}:/home/holon/.gemini/antigravity-cli:rw"])
+
+        # Linux Host D-Bus session socket mount if present
+        if sys.platform.startswith("linux"):
+            uid = os.getuid() if hasattr(os, "getuid") else 1000
+            dbus_socket = f"/run/user/{uid}/bus"
+            if os.path.exists(dbus_socket):
+                mounts.extend(["-v", f"{dbus_socket}:/run/user/1000/bus"])
+
+        return mounts
+
     session_mapping = {
-        "antigravity": [
-            (os.path.join(home, ".gemini/antigravity-cli"), "/home/holon/.gemini/antigravity-cli"),
-            (os.path.join(home, ".config/antigravity"), "/home/holon/.config/antigravity"),
-        ],
         "claude": [
             (os.path.join(home, ".config/claude"), "/home/holon/.config/claude"),
         ],
