@@ -308,6 +308,63 @@ class TestPlanner(unittest.TestCase):
 
                 self.assertIn(expected_safe_model, checkout_cmd)
 
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.getsize")
+    @patch("os.makedirs")
+    @patch("shutil.rmtree")
+    def test_planner_invalid_plan_structure_fails_fast(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
+        """Test that planner fails fast when agent output is trivial conversational text."""
+        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
+
+        intent_data = {
+            "branch": "I-12345",
+            "intent_id": "I-12345",
+            "description": "Test description",
+            "goal": "Test goal",
+        }
+
+        def mock_open_impl(file, mode="r", *args, **kwargs):
+            file_str = str(file)
+            if "intents.jsonl" in file_str:
+                mock_file = MagicMock()
+                mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
+                mock_file.__enter__.return_value = mock_file
+                return mock_file
+            elif "planner.template.md" in file_str:
+                mock_file = MagicMock()
+                mock_file.read.return_value = "Template content"
+                mock_file.__enter__.return_value = mock_file
+                return mock_file
+            elif "plans/P-" in file_str and "md" in file_str and "r" in mode:
+                mock_file = MagicMock()
+                mock_file.read.return_value = "I will search for files in the repository to locate safety.md and files."
+                mock_file.__enter__.return_value = mock_file
+                return mock_file
+            else:
+                mock_file = MagicMock()
+                mock_file.write = MagicMock()
+                mock_file.__enter__.return_value = mock_file
+                return mock_file
+
+        mock_exists.side_effect = lambda p: "intents.jsonl" in str(p) or "plans/P-" in str(p)
+        mock_getsize.return_value = 80
+
+        mock_run_result = MagicMock()
+        mock_run_result.returncode = 0
+        mock_run_result.stdout = "I will search for files in the repository to locate safety.md and files."
+        mock_run.return_value = mock_run_result
+
+        old_argv = sys.argv
+        sys.argv = test_args
+        try:
+            with patch("builtins.open", side_effect=mock_open_impl):
+                with self.assertRaises(SystemExit) as cm:
+                    planner.main()
+                self.assertEqual(cm.exception.code, 1)
+        finally:
+            sys.argv = old_argv
+
 
 if __name__ == "__main__":
     unittest.main()

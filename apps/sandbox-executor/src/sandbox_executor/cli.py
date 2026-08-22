@@ -60,7 +60,8 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
         # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
         if sys.platform == "darwin":
             if os.path.exists(dedicated_session):
-                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini:rw"])
+                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:rw"])
+                mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
                 return mounts
             elif not has_key:
                 print(
@@ -68,7 +69,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
                     f"The session directory '{dedicated_session}' does not exist.\n\n"
                     "Please initialize the Antigravity session in an interactive TTY by running:\n\n"
                     f"  mkdir -p {dedicated_session}\n"
-                    f"  docker run -it -v {dedicated_session}:/home/holon/.gemini:rw holon/agent-antigravity agy\n\n"
+                    f"  docker run -it -v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
                     "After completing interactive authentication, rerun this command.",
                     file=sys.stderr,
                 )
@@ -76,7 +77,8 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
 
         # On Linux and other platforms, mount ~/.holon/sessions/antigravity or host ~/.gemini/antigravity-cli
         if os.path.exists(dedicated_session):
-            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini:rw"])
+            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:rw"])
+            mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
             return mounts
 
         host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
