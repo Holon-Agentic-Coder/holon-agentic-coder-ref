@@ -44,22 +44,25 @@ The plan format is as below.
 ```markdown
 # Plan for {intent_id}
 
-**Plan ID:** {plan_id} **Parent Intent ID:** {parent_intent_id} **Agent:** {agent}/{model} **Created At:** {date}
+- **Plan ID:** {plan_id}
+- **Parent Intent ID:** {parent_intent_id}
+- **Agent:** {agent}/{model}
+- **Created At:** {date}
 
 ## Planner Autonomy Summary
 
-- Intent handling: {ACCEPT_AS_IS | REFRAME | REJECT | DEFER | SPLIT}
-- Reframed intent (if applicable): {short JSON or text}
-- Exploration stance: {conservative | exploratory | balanced | fail_fast | refactor_heavy | etc.} with 1–2 sentence
+- **Intent handling:** {ACCEPT_AS_IS | REFRAME | REJECT | DEFER | SPLIT}
+- **Reframed intent (if applicable):** {short JSON or text}
+- **Exploration stance:** {conservative | exploratory | balanced | fail_fast | refactor_heavy | etc.} with 1–2 sentence
   justification.
-- Safety priority level: {standard | elevated | critical}
-- Priority Justification: {Which specific constraint in `world/` or `safety.md` triggered this level? If none, why is
-  this level appropriate for this intent?}
+- **Safety priority level:** {standard | elevated | critical}
+- **Priority Justification:** {Which specific constraint in `world/` or `safety.md` triggered this level? If none, why
+  is this level appropriate for this intent?}
 
 ## Exploration
 
-- Proportion of steps that are exploratory: {0.0–1.0}
-- Justification: {why this level of exploration is appropriate now}
+- **Proportion of steps that are exploratory:** {0.0–1.0}
+- **Justification:** {why this level of exploration is appropriate now}
 
 ## Overall Plan Metrics
 
@@ -80,13 +83,13 @@ step, aggregation method, and any strong assumptions made against the world rule
 
 ## Safety & Constraint Alignment
 
-- Key world ruleset constraints that affect this plan: {bullets with rule IDs or filenames}
-- Potential violations or edge cases: {list}
-- Mitigations built into the plan: {list}
-- Residual risk accepted (and why): {short text}
-- Allocated Entropy Budget: {budget_from_intent}
-- Predicted Plan Entropy: {sum_of_step_entropy}
-- Budget Compliance: {The strategy fits within budget | The strategy exceeds budget because...}
+- **Key world ruleset constraints that affect this plan:** {bullets with rule IDs or filenames}
+- **Potential violations or edge cases:** {list}
+- **Mitigations built into the plan:** {list}
+- **Residual risk accepted (and why):** {short text}
+- **Allocated Entropy Budget:** {budget_from_intent}
+- **Predicted Plan Entropy:** {sum_of_step_entropy}
+- **Budget Compliance:** {The strategy fits within budget | The strategy exceeds budget because...}
 
 ## Plan Description & Strategy
 
@@ -96,17 +99,20 @@ step, aggregation method, and any strong assumptions made against the world rule
 
 ## Step {step_number}: {step_description}
 
-**Sub‑intent recommendation:** {STRONGLY_YES | YES | NO} **Reasoning:** {1–2 sentences referencing risk, reusability,
-cost, learning value} **Step Type:** {IMPLEMENTATION | EXPLORATION | REFACTOR | TEST | CONFIG | DOCUMENTATION |
-INFO_GATHERING} **Exploration level:** {EXPLOIT | BALANCED | EXPLORATORY}
+- **Sub‑intent recommendation:** {STRONGLY_YES | YES | NO}
+- **Reasoning:** {1–2 sentences referencing risk, reusability, cost, learning value}
+- **Step Type:** {IMPLEMENTATION | EXPLORATION | REFACTOR | TEST | CONFIG | DOCUMENTATION | INFO_GATHERING}
+- **Exploration level:** {EXPLOIT | BALANCED | EXPLORATORY}
 
-- Hypothesis being tested: {statement} (Required for BALANCED/EXPLORATORY)
-- Learning target: {what new information we expect} (Required for BALANCED/EXPLORATORY)
-- Maximum acceptable cost for this learning: {qualitative or metric} (Required for BALANCED/EXPLORATORY)
+- **Hypothesis being tested:** {statement} (Required for BALANCED/EXPLORATORY)
+- **Learning target:** {what new information we expect} (Required for BALANCED/EXPLORATORY)
+- **Maximum acceptable cost for this learning:** {qualitative or metric} (Required for BALANCED/EXPLORATORY)
 
 ### Intent & Git Integration
 
-**Step Intent:** {step_intent} **Git branch:** {branch_name_suggestion} **Sub‑intent** {NEW / NONE}
+- **Step Intent:** {step_intent}
+- **Git branch:** {branch_name_suggestion}
+- **Sub‑intent:** {NEW | NONE}
 
 ### Implementation Details (No code blocks, only logic/steps)
 
@@ -114,19 +120,21 @@ INFO_GATHERING} **Exploration level:** {EXPLOIT | BALANCED | EXPLORATORY}
 
 ### Dependencies & Criticality
 
-**Depends on:** {Step IDs or NONE} **Is Bottleneck:** {YES / NO} (If this step fails, does the entire plan fail?, If YES
-and p_success_pred < 0.6, sub-intent recommendation should be STRONGLY_YES)
+- **Depends on:** {Step IDs or NONE}
+- **Is Bottleneck:** {YES | NO} (If this step fails, does the entire plan fail?, If YES and p_success_pred < 0.6,
+  sub-intent recommendation should be STRONGLY_YES)
 
 ### Safety & Constraint Considerations
 
-- Relevant rules: {references, e.g., safety.md#X, world/security_policy.md#Y}
-- Potential failure modes for this step: {bullets}
-- Guardrails and early‑abort checks: {bullets / short text}
+- **Relevant rules:** {references, e.g., safety.md#X, world/security_policy.md#Y}
+- **Potential failure modes for this step:** {bullets}
+- **Guardrails and early‑abort checks:** {bullets / short text}
 
 ### Success & Discard Criteria
 
-**Success:** {Specific measurable outcome or state change} **Discard:** {Threshold or signal where execution should
-stop, e.g., cost exceeds 1.5x cost_pred or p_success drops below 0.2}
+- **Success:** {Specific measurable outcome or state change}
+- **Discard:** {Threshold or signal where execution should stop, e.g., cost exceeds 1.5x cost_pred or p_success drops
+  below 0.2}
 
 ### Metrics
 
