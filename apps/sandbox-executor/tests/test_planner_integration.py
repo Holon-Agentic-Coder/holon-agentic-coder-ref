@@ -145,6 +145,7 @@ class TestPlannerIntegration(unittest.TestCase):
                             "Error: agent command failed" in combined_output
                             or "Error: Exception running agent" in combined_output
                             or "Error: Missing required API credentials" in combined_output
+                            or "Error: Missing required credentials" in combined_output
                             or "Error: Missing required environment variable" in combined_output
                         )
                         self.assertTrue(

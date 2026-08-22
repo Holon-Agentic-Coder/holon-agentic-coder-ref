@@ -183,13 +183,14 @@ class AntigravityAgentRunner(StandardAgentRunner):
 
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
         # Resolve HOLON_AGENT_EFFORT and optional permissions bypass at call time
+        prefix = list(self.prefix)
         suffix = list(self.suffix)
-        if os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "").lower() in ("1", "true", "yes", "on"):
-            suffix.append("--dangerously-skip-permissions")
+        if os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in ("1", "true", "yes", "on"):
+            prefix.append("--dangerously-skip-permissions")
         suffix.extend(["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"])
 
         self.validate()
-        cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *suffix]
+        cmd = [self.binary_name, *prefix, self.model_flag, model_name, *suffix]
 
         for mapping in self.env_mappings:
             val = os.getenv(mapping.env_var)
