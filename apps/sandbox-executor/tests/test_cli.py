@@ -45,7 +45,8 @@ class TestHolonCLI(unittest.TestCase):
         mounts = get_agent_session_mounts("antigravity")
         self.assertIsInstance(mounts, list)
         self.assertIn("-v", mounts)
-        self.assertTrue(any("/home/holon/.gemini:rw" in m for m in mounts))
+        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
+        self.assertIn("--tmpfs", mounts)
 
     @patch("sys.platform", "linux")
     @patch("os.path.exists")

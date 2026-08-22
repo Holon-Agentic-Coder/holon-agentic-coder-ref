@@ -36,9 +36,8 @@ into their immediate parent. If the step is small, not risky you can propose an 
 
 You will be eliminated from the selection process if you:
 
-- do NOT write out plan to the file `plans/P-{timestamp}-{agent}-{safe_model}.md`
-- make any code change. Do NOT make any code changes apart from the plan file
-  `plans/P-{timestamp}-{agent}-{safe_model}.md`
+- fail to output the complete plan according to the template format with valid metrics table
+- make any code change outside of the plan definition
 
 The plan format is as below.
 

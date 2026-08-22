@@ -202,7 +202,12 @@ Include metrics in this format:
         prompt_content = f.read()
     with open(intent_file) as f:
         intent_content = f.read()
-    full_prompt = f"{prompt_content}\n\nIntent metadata:\n{intent_content}"
+    full_prompt = (
+        f"{prompt_content}\n\n"
+        f"Intent metadata:\n{intent_content}\n\n"
+        "IMPORTANT INSTRUCTION: Output the complete markdown plan directly adhering to the template format. "
+        "Include the full '# Plan for ...' document with the overall metrics table '| metric | value |'."
+    )
 
     runner = get_runner(agent_name)
     cmd = runner.build_cmd(model_name, prompt_file, intent_file, full_prompt)
@@ -218,19 +223,32 @@ Include metrics in this format:
     agent_failed = False
     exit_code = 0
     try:
-        # Run agent and redirect output to the plan file
+        # Run agent and capture output
         result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            with open(plan_md_path, "w") as f:
-                f.write(result.stdout)
-        else:
-            print(f"Error: agent command failed or returned empty. code={result.returncode}")
-            print(f"Stdout:\n{result.stdout}")
-            print(f"Stderr:\n{result.stderr}")
-            agent_failed = True
-            exit_code = result.returncode if result.returncode != 0 else 1
+        wrote_file_directly = False
+        if os.path.exists(plan_md_path) and os.path.getsize(plan_md_path) > 0:
+            with open(plan_md_path) as f:
+                direct_content = f.read().strip()
+            if len(direct_content) >= 50 and ("# Plan" in direct_content or "| metric |" in direct_content):
+                wrote_file_directly = True
+
+        if not wrote_file_directly:
+            if result.returncode == 0 and result.stdout.strip():
+                stdout_text = result.stdout.strip()
+                # Extract markdown block if output is wrapped in ```markdown ... ``` or ```md ... ```
+                match = re.search(r"```(?:markdown|md)?\s*\n(.*?)\n```", stdout_text, re.DOTALL)
+                if match:
+                    stdout_text = match.group(1).strip()
+                with open(plan_md_path, "w") as f:
+                    f.write(stdout_text)
+            else:
+                print(f"Error: agent command failed or returned empty. code={result.returncode}", file=sys.stderr)
+                print(f"Stdout:\n{result.stdout}", file=sys.stderr)
+                print(f"Stderr:\n{result.stderr}", file=sys.stderr)
+                agent_failed = True
+                exit_code = result.returncode if result.returncode != 0 else 1
     except Exception as e:
-        print(f"Error: Exception running agent: {e}")
+        print(f"Error: Exception running agent: {e}", file=sys.stderr)
         agent_failed = True
         exit_code = 1
 
@@ -242,9 +260,29 @@ Include metrics in this format:
     if agent_failed:
         sys.exit(exit_code)
 
+    if not os.path.exists(plan_md_path) or os.path.getsize(plan_md_path) < 50:
+        print("Error: Plan generation produced an empty or invalid plan file.", file=sys.stderr)
+        sys.exit(1)
+
     # Parse metrics
     with open(plan_md_path) as f:
         plan_content = f.read()
+
+    # Validate that the generated plan contains structure and not just conversational chatter
+    has_plan_structure = (
+        "# Plan" in plan_content
+        or "## Overall Plan" in plan_content
+        or "## Metrics" in plan_content
+        or "## Proposed Steps" in plan_content
+        or "| metric |" in plan_content
+    )
+    if not has_plan_structure:
+        print(
+            f"Error: Generated plan does not contain standard plan structure or headers.\nContent:\n{plan_content}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     metrics = parse_metrics(plan_content)
 
     # Ensure required metrics exist with default heuristics if parsing fails

@@ -28,7 +28,16 @@ class TestAgentRunner(unittest.TestCase):
             "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash", "compiled prompt text"],
             "codex": ["codex", "exec", "-m", "gemini-3.5-flash", "compiled prompt text"],
-            "antigravity": ["agy", "--model", "gemini-3.5-flash", "--effort", "medium", "-p", "compiled prompt text"],
+            "antigravity": [
+                "agy",
+                "--dangerously-skip-permissions",
+                "--model",
+                "gemini-3.5-flash",
+                "--effort",
+                "medium",
+                "-p",
+                "compiled prompt text",
+            ],
         }
         dummy_env = {
             "HOLON_AGENT_KEY": "dummy",
