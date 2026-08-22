@@ -104,6 +104,13 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("--provider", cmd)
             self.assertIn("anthropic", cmd)
 
+        # 5. Antigravity skip permissions
+        with patch.dict(os.environ, {"HOLON_AGENT_SKIP_PERMISSIONS": "true", "HOLON_AGENT_KEY": "dummy"}):
+            runner = get_runner("antigravity")
+            cmd = runner.build_cmd("gemini-3.5-flash", "/tmp/p", "/tmp/i", "prompt")
+            self.assertIn("--dangerously-skip-permissions", cmd)
+            self.assertIn("--effort", cmd)
+
     def test_three_tier_fallback_contract(self):
         """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
         import os

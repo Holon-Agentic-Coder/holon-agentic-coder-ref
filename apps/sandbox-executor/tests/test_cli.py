@@ -21,13 +21,55 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIsInstance(mounts, list)
         self.assertIsInstance(envs, dict)
 
-    def test_get_agent_session_mounts(self):
-        antigravity_mounts = get_agent_session_mounts("antigravity")
-        self.assertIsInstance(antigravity_mounts, list)
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists")
+    def test_antigravity_macos_missing_session_exits_with_instructions(self, mock_exists):
+        mock_exists.return_value = False
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as cm:
+                get_agent_session_mounts("antigravity")
+            self.assertEqual(cm.exception.code, 1)
 
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists", return_value=False)
+    def test_antigravity_macos_missing_session_with_holon_agent_key_allowed(self, mock_exists):
+        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "dummy-token"}, clear=True):
+            mounts = get_agent_session_mounts("antigravity")
+            self.assertIsInstance(mounts, list)
+            self.assertEqual(mounts, [])
+
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists")
+    def test_antigravity_macos_existing_session_mounts_rw(self, mock_exists):
+        mock_exists.side_effect = lambda p: ".holon/sessions/antigravity" in p or "antigravity" in p
+        mounts = get_agent_session_mounts("antigravity")
+        self.assertIsInstance(mounts, list)
+        self.assertIn("-v", mounts)
+        self.assertTrue(any("/home/holon/.gemini:rw" in m for m in mounts))
+
+    @patch("sys.platform", "linux")
+    @patch("os.path.exists")
+    def test_antigravity_linux_mounts_gemini_cli(self, mock_exists):
+        mock_exists.side_effect = lambda p: ".gemini/antigravity-cli" in p
+        mounts = get_agent_session_mounts("antigravity")
+        self.assertIsInstance(mounts, list)
+        self.assertIn("-v", mounts)
+        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
+
+    @patch("sys.platform", "linux")
+    @patch("os.path.exists")
+    @patch("os.getuid", return_value=1001, create=True)
+    def test_antigravity_linux_dbus_mount(self, mock_uid, mock_exists):
+        mock_exists.side_effect = lambda p: p in ("/run/user/1001/bus", os.path.expanduser("~/.gemini/antigravity-cli"))
+        mounts = get_agent_session_mounts("antigravity")
+        self.assertIn("-v", mounts)
+        self.assertTrue(any("/run/user/1001/bus:/run/user/1000/bus" in m for m in mounts))
+        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
+
+    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container(self, mock_which, mock_run):
+    def test_run_docker_container(self, mock_which, mock_run, mock_mounts):
         mock_run.return_value = MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
             code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
@@ -37,9 +79,10 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("docker", args)
             self.assertIn("GITHUB_TOKEN=secret_token", args)
 
+    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run):
+    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts):
         mock_run.return_value = MagicMock(returncode=0)
         env = {
             "GITHUB_TOKEN": "my-github-token",
