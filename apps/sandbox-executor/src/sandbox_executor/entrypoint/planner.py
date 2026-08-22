@@ -235,8 +235,8 @@ Include metrics in this format:
         if not wrote_file_directly:
             if result.returncode == 0 and result.stdout.strip():
                 stdout_text = result.stdout.strip()
-                # Extract markdown block if output is wrapped in ```markdown ... ```
-                match = re.search(r"```markdown\s*\n(.*?)\n```", stdout_text, re.DOTALL)
+                # Extract markdown block if output is wrapped in ```markdown ... ``` or ```md ... ```
+                match = re.search(r"```(?:markdown|md)?\s*\n(.*?)\n```", stdout_text, re.DOTALL)
                 if match:
                     stdout_text = match.group(1).strip()
                 with open(plan_md_path, "w") as f:

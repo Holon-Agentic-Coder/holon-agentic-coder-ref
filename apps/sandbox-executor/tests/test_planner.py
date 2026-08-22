@@ -313,7 +313,9 @@ class TestPlanner(unittest.TestCase):
     @patch("os.path.getsize")
     @patch("os.makedirs")
     @patch("shutil.rmtree")
-    def test_planner_invalid_plan_structure_fails_fast(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
+    def test_planner_invalid_plan_structure_fails_fast(
+        self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run
+    ):
         """Test that planner fails fast when agent output is trivial conversational text."""
         test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 

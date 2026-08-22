@@ -69,7 +69,8 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
                     f"The session directory '{dedicated_session}' does not exist.\n\n"
                     "Please initialize the Antigravity session in an interactive TTY by running:\n\n"
                     f"  mkdir -p {dedicated_session}\n"
-                    f"  docker run -it -v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
+                    "  docker run -it "
+                    f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
                     "After completing interactive authentication, rerun this command.",
                     file=sys.stderr,
                 )
