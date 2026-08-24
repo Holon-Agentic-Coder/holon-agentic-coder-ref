@@ -159,12 +159,8 @@ _For developers desiring zero-touch authentication inheriting from the host macO
               )
 
               if raw.startswith("go-keyring-base64:"):
-                  token_bytes = base64.b64decode(
-                      raw[len("go-keyring-base64:") :]
-                  )
-                  token_file = os.path.join(
-                      target_dir, "antigravity-cli", "antigravity-oauth-token"
-                  )
+                  token_bytes = base64.b64decode(raw[len("go-keyring-base64:") :])
+                  token_file = os.path.join(target_dir, "antigravity-cli", "antigravity-oauth-token")
                   with open(token_file, "wb") as f:
                       f.write(token_bytes)
           except Exception as e:

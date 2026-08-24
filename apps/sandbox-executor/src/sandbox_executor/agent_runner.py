@@ -21,8 +21,12 @@ class AgentRunner:
         self.agent_id = agent_id
         self.binary_name = binary_name
         self.model_flag = model_flag
+        self._resolved_version = None
 
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+        raise NotImplementedError
+
+    def get_version(self) -> str:
         raise NotImplementedError
 
 
@@ -171,6 +175,42 @@ class StandardAgentRunner(AgentRunner):
 
         cmd.append(full_prompt)
         return cmd
+
+    def get_version(self) -> str:
+        if self._resolved_version is not None:
+            return self._resolved_version
+
+        import re
+        import subprocess
+
+        fallback_versions = {
+            "pi": "0.80.3",
+            "open-codex": "0.1.31",
+            "claude": "2.1.202",
+            "gemini": "0.49.0",
+            "opencode": "1.17.14",
+            "codex": "0.142.5",
+            "antigravity": "1.0.0",
+        }
+
+        for arg in ["--version", "-v", "version"]:
+            try:
+                result = subprocess.run(
+                    [self.binary_name, arg],
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                )
+                output = (result.stdout or "") + (result.stderr or "")
+                match = re.search(r"(\d+\.\d+\.\d+)", output)
+                if match:
+                    self._resolved_version = match.group(1)
+                    return self._resolved_version
+            except Exception:
+                continue
+
+        self._resolved_version = fallback_versions.get(self.agent_id, "1.0.0")
+        return self._resolved_version
 
 
 class AntigravityAgentRunner(StandardAgentRunner):

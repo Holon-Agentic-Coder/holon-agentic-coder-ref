@@ -168,6 +168,7 @@ Include metrics in this format:
     replacements = {
         "{timestamp}": str(plan_seq),
         "{agent}": agent_name,
+        "{agent_version}": runner.get_version(),
         "{model}": model_name,
         "{intent_id}": intent_data.get("intent_id", intent_data.get("branch", intent_branch_prefix)),
         "{parent_intent_id}": intent_data.get("parent_intent_id", "NONE"),
@@ -306,6 +307,7 @@ Include metrics in this format:
         "plan_id": plan_id,
         "intent_branch": intent_branch,
         "agent": agent_name,
+        "agent_version": runner.get_version(),
         "model": model_name,
         "p_success": p_success,
         "entropy": entropy,

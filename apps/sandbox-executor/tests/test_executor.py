@@ -228,6 +228,7 @@ class TestExecutor(unittest.TestCase):
     def test_main_execution_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
         mock_get_runner.return_value = mock_runner
 
@@ -279,6 +280,7 @@ class TestExecutor(unittest.TestCase):
     def test_main_decomposition_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
 
         mock_result = MagicMock()
@@ -346,6 +348,7 @@ class TestExecutor(unittest.TestCase):
     def test_main_custom_holon_repo_dir_not_deleted(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -373,6 +376,7 @@ class TestExecutor(unittest.TestCase):
     ):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -407,6 +411,7 @@ class TestExecutor(unittest.TestCase):
     def test_main_raises_exception_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
         mock_run_cmd.side_effect = subprocess.CalledProcessError(1, ["git", "clone"])
 
@@ -603,6 +608,7 @@ class TestExecutor(unittest.TestCase):
     def test_main_keep_workspace(self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -628,17 +634,23 @@ class TestExecutor(unittest.TestCase):
 
             mock_cleanup.assert_not_called()
 
+    @patch("sandbox_executor.entrypoint.executor.os.path.exists")
     @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
     def test_main_keep_workspace_existing_git(
-        self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup
+        self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup, mock_exists
     ):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
+
+        import genericpath
+
+        mock_exists.side_effect = lambda p: False if p == "/.dockerenv" else genericpath.exists(p)
 
         def _run_cmd_side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
@@ -658,8 +670,14 @@ class TestExecutor(unittest.TestCase):
             env = os.environ.copy()
             if "HOLON_REPO_DIR" in env:
                 del env["HOLON_REPO_DIR"]
+            if "HOLON_ROLE" in env:
+                del env["HOLON_ROLE"]
             env["HOLON_SKIP_PUSH"] = "1"
             env["HOLON_KEEP_WORKSPACE"] = "true"
+            if "USER" in env:
+                del env["USER"]
+            if "USERNAME" in env:
+                del env["USERNAME"]
 
             with (
                 patch.dict(os.environ, env, clear=True),
@@ -667,6 +685,8 @@ class TestExecutor(unittest.TestCase):
                 patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
             ):
                 executor.main()
+                print("DEBUG: mock_exists calls =", mock_exists.call_args_list)
+                print("DEBUG: stderr =", repr(mock_stderr.getvalue()))
                 self.assertIn("Warning: Reusing workspace at", mock_stderr.getvalue())
 
             mock_cleanup.assert_not_called()
@@ -694,6 +714,7 @@ class TestExecutor(unittest.TestCase):
     ):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -725,6 +746,7 @@ class TestExecutor(unittest.TestCase):
     def test_main_git_add_not_called_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
         mock_runner.build_cmd.return_value = ["agy", "run"]
         mock_get_runner.return_value = mock_runner
 

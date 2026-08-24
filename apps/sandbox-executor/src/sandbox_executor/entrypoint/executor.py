@@ -585,6 +585,7 @@ def main() -> None:
                 "execution_id": exec_id,
                 "plan_branch": plan_branch,
                 "agent": agent_name,
+                "agent_version": runner.get_version(),
                 "model": model_name,
                 "status": "decomposed",
                 "sub_intents": created_sub_intents,
@@ -635,6 +636,7 @@ def main() -> None:
                 ef.write(f"# Execution Record: {exec_id}\n\n")
                 ef.write(f"- Plan Branch: `{plan_branch}`\n")
                 ef.write(f"- Agent: `{agent_name}`\n")
+                ef.write(f"- Agent Version: `{runner.get_version()}`\n")
                 ef.write(f"- Model: `{model_name}`\n")
                 ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
                 ef.write(f"## Status\n{exec_status.capitalize()}\n\n## Summary\n{summary}\n")
@@ -643,6 +645,7 @@ def main() -> None:
                 "execution_id": exec_id,
                 "plan_branch": plan_branch,
                 "agent": agent_name,
+                "agent_version": runner.get_version(),
                 "model": model_name,
                 "status": exec_status,
                 "summary": summary,

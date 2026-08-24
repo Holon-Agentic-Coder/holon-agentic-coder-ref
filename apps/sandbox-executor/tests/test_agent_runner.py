@@ -268,6 +268,47 @@ class TestAgentRunner(unittest.TestCase):
                 except Exception as e:
                     self.fail(f"Failed to run container for agent {agent_id}: {e}")
 
+    def test_get_version_success(self):
+        """Test get_version when the binary returns a version successfully."""
+        from unittest.mock import MagicMock, patch
+
+        runner = get_runner("pi")
+        runner._resolved_version = None
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "pi version 0.80.3\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            version = runner.get_version()
+            self.assertEqual(version, "0.80.3")
+            mock_run.assert_called_with(["pi", "--version"], capture_output=True, text=True, timeout=2.0)
+            mock_run.reset_mock()
+            self.assertEqual(runner.get_version(), "0.80.3")
+            mock_run.assert_not_called()
+
+    def test_get_version_fallback(self):
+        """Test get_version when the subprocess call fails or returns no version."""
+        from unittest.mock import patch
+
+        runner = get_runner("claude")
+        runner._resolved_version = None
+
+        with patch("subprocess.run", side_effect=Exception("binary not found")):
+            version = runner.get_version()
+            self.assertEqual(version, "2.1.202")
+
+        runner._resolved_version = None
+        original_agent_id = runner.agent_id
+        runner.agent_id = "unknown-agent"
+        try:
+            with patch("subprocess.run", side_effect=Exception("binary not found")):
+                version = runner.get_version()
+                self.assertEqual(version, "1.0.0")
+        finally:
+            runner.agent_id = original_agent_id
+
 
 class TestGetRepoUrl(unittest.TestCase):
     def test_ssh_agent_forwarding_default(self):
