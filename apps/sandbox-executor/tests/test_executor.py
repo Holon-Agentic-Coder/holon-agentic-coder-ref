@@ -685,8 +685,6 @@ class TestExecutor(unittest.TestCase):
                 patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
             ):
                 executor.main()
-                print("DEBUG: mock_exists calls =", mock_exists.call_args_list)
-                print("DEBUG: stderr =", repr(mock_stderr.getvalue()))
                 self.assertIn("Warning: Reusing workspace at", mock_stderr.getvalue())
 
             mock_cleanup.assert_not_called()
