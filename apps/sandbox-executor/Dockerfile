@@ -52,13 +52,13 @@ RUN mkdir -p /home/holon/.cache
 FROM holon-base AS agent-claude
 RUN --mount=type=cache,id=npm-claude,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@anthropic-ai/claude-code" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.202
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.247
 
 # --- Gemini Agent Layer ---
 FROM holon-base AS agent-gemini
 RUN --mount=type=cache,id=npm-gemini,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@github/keytar,node-pty" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @google/gemini-cli@0.49.0
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @google/gemini-cli@0.57.0
 
 # --- OpenCode Agent Layer (opencode) ---
 FROM holon-base AS agent-opencode
