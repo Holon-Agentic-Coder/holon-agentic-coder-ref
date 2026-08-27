@@ -268,6 +268,93 @@ class TestAgentRunner(unittest.TestCase):
                 except Exception as e:
                     self.fail(f"Failed to run container for agent {agent_id}: {e}")
 
+    @pytest.mark.integration_test
+    def test_real_images_get_version(self):
+        """Integration test to verify that get_version() resolves correctly
+
+        inside each real built Docker image for all supported agents.
+        """
+        import re
+
+        agent_image_mapping = {
+            "pi": "holon/agent-pi",
+            "open-codex": "holon/agent-open-codex",
+            "claude": "holon/agent-claude",
+            "gemini": "holon/agent-gemini",
+            "opencode": "holon/agent-opencode",
+            "codex": "holon/agent-codex",
+            "antigravity": "holon/agent-antigravity",
+        }
+
+        for agent_id in runners:
+            with self.subTest(agent=agent_id):
+                image_name = agent_image_mapping.get(agent_id)
+                self.assertIsNotNone(image_name, f"Missing image mapping for agent: {agent_id}")
+
+                code = (
+                    f"from sandbox_executor.agent_runner import get_runner; "
+                    f"version = get_runner('{agent_id}').get_version(); "
+                    f"print(version)"
+                )
+                cmd = ["docker", "run", "--rm", image_name, "python3", "-c", code]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        f"Failed to run get_version() inside image '{image_name}'.\n"
+                        f"Stdout: {result.stdout}\nStderr: {result.stderr}",
+                    )
+                    version_str = result.stdout.strip()
+                    self.assertTrue(
+                        bool(re.search(r"\d+\.\d+\.\d+", version_str)),
+                        f"Resolved version '{version_str}' inside image '{image_name}' does not match semver format.",
+                    )
+                except Exception as e:
+                    self.fail(f"Failed get_version integration test for container agent {agent_id}: {e}")
+
+    def test_get_version_success(self):
+        """Test get_version when the binary returns a version successfully."""
+        from unittest.mock import MagicMock, patch
+
+        runner = get_runner("pi")
+        runner._resolved_version = None
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "pi version 0.80.3\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            version = runner.get_version()
+            self.assertEqual(version, "0.80.3")
+            mock_run.assert_called_with(["pi", "--version"], capture_output=True, text=True, timeout=2.0)
+            mock_run.reset_mock()
+            self.assertEqual(runner.get_version(), "0.80.3")
+            mock_run.assert_not_called()
+
+    def test_get_version_fallback(self):
+        """Test get_version when the subprocess call fails or returns no version."""
+        from unittest.mock import patch
+
+        runner = get_runner("claude")
+        original_agent_id = runner.agent_id
+        try:
+            runner._resolved_version = None
+
+            with patch("subprocess.run", side_effect=Exception("binary not found")):
+                version = runner.get_version()
+                self.assertEqual(version, "2.1.202")
+
+            runner._resolved_version = None
+            runner.agent_id = "unknown-agent"
+            with patch("subprocess.run", side_effect=Exception("binary not found")):
+                version = runner.get_version()
+                self.assertEqual(version, "1.0.0")
+        finally:
+            runner._resolved_version = None
+            runner.agent_id = original_agent_id
+
 
 class TestGetRepoUrl(unittest.TestCase):
     def test_ssh_agent_forwarding_default(self):
@@ -306,3 +393,53 @@ class TestGetRepoUrl(unittest.TestCase):
                 url,
                 "https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
             )
+
+
+class TestWorkspaceDirAndCleanup(unittest.TestCase):
+    def test_get_workspace_dir_override(self):
+        """Test get_workspace_dir respects HOLON_REPO_DIR when set."""
+        import os
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import get_workspace_dir
+
+        with patch.dict(os.environ, {"HOLON_REPO_DIR": "/custom/workspace/path"}):
+            self.assertEqual(get_workspace_dir(), "/custom/workspace/path")
+
+    def test_get_workspace_dir_sandbox(self):
+        """Test get_workspace_dir returns sandbox workspace path when HOLON_IN_SANDBOX is set."""
+        import os
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import get_workspace_dir
+
+        with patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True):
+            expected = os.path.expanduser("~/.holon-sandbox/workspace")
+            self.assertEqual(get_workspace_dir(), expected)
+
+    def test_get_workspace_dir_default(self):
+        """Test get_workspace_dir returns default repo path outside sandbox."""
+        import os
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import get_workspace_dir
+
+        with patch.dict(os.environ, {}, clear=True), patch("os.path.exists", return_value=False):
+            expected = os.path.expanduser("~/.holon/repo")
+            self.assertEqual(get_workspace_dir(), expected)
+
+    def test_cleanup_repo_dir_nonexistent(self):
+        """Test cleanup_repo_dir does nothing if directory does not exist."""
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import cleanup_repo_dir
+
+        with patch("os.path.lexists", return_value=False):
+            cleanup_repo_dir("/path/does/not/exist")
+
+    def test_cleanup_repo_dir_forbidden_root(self):
+        """Test cleanup_repo_dir raises RuntimeError for forbidden root directories."""
+        from sandbox_executor.agent_runner import cleanup_repo_dir
+
+        with self.assertRaises(RuntimeError):
+            cleanup_repo_dir("/etc", raise_on_error=True)

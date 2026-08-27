@@ -46,7 +46,7 @@ The plan format is as below.
 
 - **Plan ID:** {plan_id}
 - **Parent Intent ID:** {parent_intent_id}
-- **Agent:** {agent}/{model}
+- **Agent:** {agent}/{model} (version: {agent_version})
 - **Created At:** {date}
 
 ## Planner Autonomy Summary

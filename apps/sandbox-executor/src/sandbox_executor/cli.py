@@ -2,10 +2,13 @@
 """Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute)."""
 
 import argparse
+import logging
 import os
 import shutil
 import subprocess
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 def find_github_token() -> str | None:
@@ -18,9 +21,8 @@ def find_github_token() -> str | None:
             res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip():
                 return res.stdout.strip()
-        except Exception:
-            # gh CLI not logged in or failed to retrieve token
-            pass
+        except Exception as e:
+            logger.debug("Failed to retrieve token via gh CLI: %s", e)
     return None
 
 
