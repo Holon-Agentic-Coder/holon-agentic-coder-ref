@@ -580,6 +580,39 @@ To start, Holon can operate with a minimal event set:
 
 Everything else can be layered later.
 
+### Sandbox Executor Ledgers
+
+The sandbox executor logs planning events in `plans.jsonl` and execution events in `executions.jsonl`.
+
+#### Plan Selection Ledger (`plans.jsonl`)
+
+Appended when a plan is proposed by the planner:
+
+- `plan_id`: Unique identifier for the plan.
+- `intent_branch`: Target intent branch.
+- `agent`: The active agent name (e.g. `antigravity-agent`).
+- `agent_version`: The resolved version string of the agent CLI.
+- `model`: The model used for generation.
+- `p_success`, `entropy`, `impact`, `cost`, `learning_value`, `ev`: Numerical metrics.
+- `created_at`: Creation timestamp.
+- `plan_file`: Relative path to the plan markdown file.
+- `status`: Plan status (e.g. `proposed`).
+
+#### Execution Ledger (`executions.jsonl`)
+
+Appended when a plan execution begins/finishes:
+
+- `execution_id`: Unique identifier for the execution record.
+- `plan_branch`: Branch of the plan being executed.
+- `agent`: The active agent name.
+- `agent_version`: The resolved version string of the agent CLI.
+- `model`: The model used for execution.
+- `status`: Execution status (e.g. `success`, `failure`, `decomposed`).
+- `summary`: Description of execution outcome (only for terminal states).
+- `execution_file`: Relative path to the execution markdown file (only for terminal states).
+- `sub_intents`: List of sub-intents generated upon decomposition (only for `decomposed` state).
+- `created_at`: Creation timestamp.
+
 ---
 
 ## Validation and tooling: Config-Driven Schemas

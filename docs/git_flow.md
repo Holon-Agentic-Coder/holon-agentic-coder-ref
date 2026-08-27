@@ -261,10 +261,10 @@ $ git push origin main
 ```python
 def compute_merge_value(sub_intent):
     return (
-            sub_intent.impact_actual
-            - estimate_conflict_risk(sub_intent)
-            - sub_intent.entropy_actual
-            - compute_redundancy_penalty(sub_intent)
+        sub_intent.impact_actual
+        - estimate_conflict_risk(sub_intent)
+        - sub_intent.entropy_actual
+        - compute_redundancy_penalty(sub_intent)
     )
 ```
 
@@ -478,13 +478,15 @@ def auto_resolve_conflict(sub_intent, parent_branch):
 
 ```python
 def handle_conflict(sub_intent):
-    spawn_intent({
-        "intent_id": f"{sub_intent.intent_id}-R001-resolve-conflict",
-        "parent_intent_id": sub_intent.intent_id,
-        "goal": f"Resolve rebase conflict in {sub_intent.conflict_files}",
-        "intent_type": "reactive",
-        "trigger": "rebase_conflict"
-    })
+    spawn_intent(
+        {
+            "intent_id": f"{sub_intent.intent_id}-R001-resolve-conflict",
+            "parent_intent_id": sub_intent.intent_id,
+            "goal": f"Resolve rebase conflict in {sub_intent.conflict_files}",
+            "intent_type": "reactive",
+            "trigger": "rebase_conflict",
+        }
+    )
 ```
 
 ---

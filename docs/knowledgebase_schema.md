@@ -485,26 +485,21 @@ A curator or system component must:
 
 ```python
 def find_similar_intents(goal_text, constraints):
-  # Retrieve patterns with similar tags, complexity, entropy
-  patterns = kb.query(
-      kb_type="pattern",
-      tags=extract_tags(goal_text),
-      complexity_range=constraints.complexity_range,
-      entropy_range=constraints.entropy_range
-  )
-  return patterns
+    # Retrieve patterns with similar tags, complexity, entropy
+    patterns = kb.query(
+        kb_type="pattern",
+        tags=extract_tags(goal_text),
+        complexity_range=constraints.complexity_range,
+        entropy_range=constraints.entropy_range,
+    )
+    return patterns
 ```
 
 ### Query 2: Tactics for a step
 
 ```python
 def find_tactics(step_description, language):
-    tactics = kb.query(
-        kb_type="tactic",
-        tags=extract_tags(step_description),
-        language=language,
-        status="active"
-    )
+    tactics = kb.query(kb_type="tactic", tags=extract_tags(step_description), language=language, status="active")
     return tactics
 ```
 
@@ -512,11 +507,7 @@ def find_tactics(step_description, language):
 
 ```python
 def find_failure_modes(module_path):
-    failures = kb.query(
-        kb_type="failure_mode",
-        tags=[module_path],
-        status="active"
-    )
+    failures = kb.query(kb_type="failure_mode", tags=[module_path], status="active")
     return failures
 ```
 
@@ -524,11 +515,7 @@ def find_failure_modes(module_path):
 
 ```python
 def get_active_estimator(metric_name):
-    estimator = kb.query_one(
-        kb_type="estimator",
-        metric_name=metric_name,
-        status="active"
-    )
+    estimator = kb.query_one(kb_type="estimator", metric_name=metric_name, status="active")
     return estimator
 ```
 
