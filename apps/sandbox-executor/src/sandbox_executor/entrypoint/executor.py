@@ -29,21 +29,12 @@ import traceback
 from datetime import UTC, datetime
 from typing import Any
 
-import shutil
-
 from sandbox_executor.agent_runner import (
-    _check_forbidden_root,
-    _clear_dir_contents,
-    _handle_remove_readonly,
-    _rmtree,
     cleanup_repo_dir,
     get_repo_url,
     get_runner,
     get_workspace_dir,
 )
-
-# Backward-compatibility alias
-_cleanup_repo_dir = cleanup_repo_dir
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000

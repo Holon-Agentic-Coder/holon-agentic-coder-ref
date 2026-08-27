@@ -338,20 +338,21 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         runner = get_runner("claude")
-        runner._resolved_version = None
-
-        with patch("subprocess.run", side_effect=Exception("binary not found")):
-            version = runner.get_version()
-            self.assertEqual(version, "2.1.202")
-
-        runner._resolved_version = None
         original_agent_id = runner.agent_id
-        runner.agent_id = "unknown-agent"
         try:
+            runner._resolved_version = None
+
+            with patch("subprocess.run", side_effect=Exception("binary not found")):
+                version = runner.get_version()
+                self.assertEqual(version, "2.1.202")
+
+            runner._resolved_version = None
+            runner.agent_id = "unknown-agent"
             with patch("subprocess.run", side_effect=Exception("binary not found")):
                 version = runner.get_version()
                 self.assertEqual(version, "1.0.0")
         finally:
+            runner._resolved_version = None
             runner.agent_id = original_agent_id
 
 

@@ -6,6 +6,12 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from sandbox_executor.agent_runner import (
+    _check_forbidden_root,
+    _clear_dir_contents,
+    _handle_remove_readonly,
+    cleanup_repo_dir,
+)
 from sandbox_executor.entrypoint import executor
 
 
@@ -428,10 +434,10 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    @patch("sandbox_executor.entrypoint.executor.os.path.lexists", return_value=True)
-    @patch("sandbox_executor.entrypoint.executor.os.path.ismount", return_value=False)
-    @patch("sandbox_executor.entrypoint.executor.os.path.islink", return_value=False)
+    @patch("sandbox_executor.agent_runner._rmtree")
+    @patch("sandbox_executor.agent_runner.os.path.lexists", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=False)
+    @patch("sandbox_executor.agent_runner.os.path.islink", return_value=False)
     def test_main_raises_runtime_error_on_cleanup_failure(
         self, mock_islink, mock_ismount, mock_lexists, mock_rmtree, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
@@ -452,102 +458,102 @@ class TestExecutor(unittest.TestCase):
             with open(file_path, "w") as f:
                 f.write("hello")
 
-            executor._clear_dir_contents(tmp_dir)
+            _clear_dir_contents(tmp_dir)
             self.assertTrue(os.path.exists(tmp_dir))
             self.assertEqual(os.listdir(tmp_dir), [])
 
             # Test guard clause when path is a file, not a directory
             with open(file_path, "w") as f:
                 f.write("hello")
-            executor._clear_dir_contents(file_path)
+            _clear_dir_contents(file_path)
             self.assertTrue(os.path.exists(file_path))
 
-    @patch("sandbox_executor.entrypoint.executor.os.path.lexists", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.path.lexists", return_value=True)
     def test_cleanup_repo_dir_forbidden_root(self, mock_lexists):
         with self.assertRaises(RuntimeError) as ctx:
-            executor._cleanup_repo_dir("/etc", raise_on_error=True)
+            cleanup_repo_dir("/etc", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
         with self.assertRaises(RuntimeError) as ctx2:
-            executor._cleanup_repo_dir("/etc/apt", raise_on_error=True)
+            cleanup_repo_dir("/etc/apt", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
 
         with self.assertRaises(RuntimeError) as ctx3:
-            executor._cleanup_repo_dir("/usr/bin", raise_on_error=True)
+            cleanup_repo_dir("/usr/bin", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
         with self.assertRaises(RuntimeError) as ctx_sys:
-            executor._cleanup_repo_dir("/private/var/log", raise_on_error=True)
+            cleanup_repo_dir("/private/var/log", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
 
-    @patch("sandbox_executor.entrypoint.executor.os.remove")
-    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=False)
-    @patch("sandbox_executor.entrypoint.executor.os.path.islink", return_value=False)
-    @patch("sandbox_executor.entrypoint.executor.os.path.ismount", return_value=False)
-    @patch("sandbox_executor.entrypoint.executor.os.path.lexists", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.remove")
+    @patch("sandbox_executor.agent_runner.os.path.isdir", return_value=False)
+    @patch("sandbox_executor.agent_runner.os.path.islink", return_value=False)
+    @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=False)
+    @patch("sandbox_executor.agent_runner.os.path.lexists", return_value=True)
     def test_cleanup_repo_dir_regular_file(self, mock_lexists, mock_ismount, mock_islink, mock_isdir, mock_remove):
-        executor._cleanup_repo_dir("/tmp/repo_file.txt", raise_on_error=True)
+        cleanup_repo_dir("/tmp/repo_file.txt", raise_on_error=True)
         mock_remove.assert_called_once_with("/tmp/repo_file.txt")
 
-    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.path.isdir", return_value=True)
     def test_clear_dir_contents_forbidden_roots(self, mock_isdir):
         with self.assertRaises(RuntimeError) as ctx:
-            executor._clear_dir_contents("/etc", raise_on_error=True)
+            _clear_dir_contents("/etc", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
         with self.assertRaises(RuntimeError) as ctx2:
-            executor._clear_dir_contents("/etc/apt", raise_on_error=True)
+            _clear_dir_contents("/etc/apt", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
 
         with self.assertRaises(RuntimeError) as ctx3:
-            executor._clear_dir_contents("/usr/bin", raise_on_error=True)
+            _clear_dir_contents("/usr/bin", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
         with self.assertRaises(RuntimeError) as ctx_sys:
-            executor._clear_dir_contents("/private/var/log", raise_on_error=True)
+            _clear_dir_contents("/private/var/log", raise_on_error=True)
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
 
     def test_check_forbidden_root_blocked_paths(self):
         # Paths outside the safelist should raise RuntimeError
         with self.assertRaises(RuntimeError) as ctx:
-            executor._check_forbidden_root("/var")
+            _check_forbidden_root("/var")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
         with self.assertRaises(RuntimeError) as ctx2:
-            executor._check_forbidden_root("/etc/apt")
+            _check_forbidden_root("/etc/apt")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx2.exception))
 
         with self.assertRaises(RuntimeError) as ctx3:
-            executor._check_forbidden_root("/opt/workspace")
+            _check_forbidden_root("/opt/workspace")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
     def test_check_forbidden_root_mac_var_folders_allowed(self):
         # Should not raise any error
-        executor._check_forbidden_root("/private/var/folders/xx/yyyy/T/workspace")
+        _check_forbidden_root("/private/var/folders/xx/yyyy/T/workspace")
 
     def test_check_forbidden_root_linux_var_allowed(self):
         # Should not raise any error
-        executor._check_forbidden_root("/var/tmp/workspace")
+        _check_forbidden_root("/var/tmp/workspace")
 
         with self.assertRaises(RuntimeError) as ctx:
-            executor._check_forbidden_root("/var/log")
+            _check_forbidden_root("/var/log")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
-    @patch("sandbox_executor.entrypoint.executor.os.path.realpath")
-    @patch("sandbox_executor.entrypoint.executor.os.path.abspath")
+    @patch("sandbox_executor.agent_runner.os.path.realpath")
+    @patch("sandbox_executor.agent_runner.os.path.abspath")
     def test_check_forbidden_root_symlinks(self, mock_abspath, mock_realpath):
         # Even if abs_path is allowed, realpath being forbidden should trigger rejection
         mock_abspath.return_value = "/var/folders/etc_symlink"
         mock_realpath.return_value = "/private/etc"
         with self.assertRaises(RuntimeError) as ctx:
-            executor._check_forbidden_root("/var/folders/etc_symlink")
+            _check_forbidden_root("/var/folders/etc_symlink")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
 
-    @patch("sandbox_executor.entrypoint.executor.os.listdir", return_value=[])
-    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.listdir", return_value=[])
+    @patch("sandbox_executor.agent_runner.os.path.isdir", return_value=True)
     def test_clear_dir_contents_allowed_roots(self, mock_isdir, mock_listdir):
         # Should not raise any error
-        executor._clear_dir_contents("/home/user/workspace/repo", raise_on_error=True)
+        _clear_dir_contents("/home/user/workspace/repo", raise_on_error=True)
         mock_listdir.assert_called_once_with("/home/user/workspace/repo")
 
     def test_clear_dir_contents_raise_on_error(self):
@@ -556,32 +562,30 @@ class TestExecutor(unittest.TestCase):
             with open(sub_file, "w") as f:
                 f.write("test")
             unlink_patch = patch(
-                "sandbox_executor.entrypoint.executor.os.unlink", side_effect=PermissionError("Permission denied")
+                "sandbox_executor.agent_runner.os.unlink", side_effect=PermissionError("Permission denied")
             )
             with unlink_patch:
                 # Default raise_on_error=False swallows error
-                executor._clear_dir_contents(tmp_dir, raise_on_error=False)
+                _clear_dir_contents(tmp_dir, raise_on_error=False)
                 # raise_on_error=True propagates error
                 with self.assertRaises(PermissionError):
-                    executor._clear_dir_contents(tmp_dir, raise_on_error=True)
+                    _clear_dir_contents(tmp_dir, raise_on_error=True)
 
-    @patch("sandbox_executor.entrypoint.executor.os.chmod")
-    @patch("sandbox_executor.entrypoint.executor.os.unlink", side_effect=PermissionError("Permission denied"))
-    @patch("sandbox_executor.entrypoint.executor.os.path.islink", return_value=True)
-    @patch("sandbox_executor.entrypoint.executor.os.listdir", return_value=["symlink_item"])
-    @patch("sandbox_executor.entrypoint.executor.os.path.isdir", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.chmod")
+    @patch("sandbox_executor.agent_runner.os.unlink", side_effect=PermissionError("Permission denied"))
+    @patch("sandbox_executor.agent_runner.os.path.islink", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.listdir", return_value=["symlink_item"])
+    @patch("sandbox_executor.agent_runner.os.path.isdir", return_value=True)
     def test_clear_dir_contents_symlink_permission_error(
         self, mock_isdir, mock_listdir, mock_islink, mock_unlink, mock_chmod
     ):
-        executor._clear_dir_contents("/tmp/workspace_dir")
+        _clear_dir_contents("/tmp/workspace_dir")
         mock_chmod.assert_not_called()
 
-    @patch("sandbox_executor.entrypoint.executor.os.chmod")
-    @patch("sandbox_executor.entrypoint.executor.os.path.isdir")
+    @patch("sandbox_executor.agent_runner.os.chmod")
+    @patch("sandbox_executor.agent_runner.os.path.isdir")
     def test_handle_remove_readonly(self, mock_isdir, mock_chmod):
         import stat
-
-        from sandbox_executor.entrypoint.executor import _handle_remove_readonly
 
         mock_func = MagicMock()
 
@@ -600,7 +604,7 @@ class TestExecutor(unittest.TestCase):
         mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
         mock_func.assert_called_with("/fake/file.txt")
 
-    @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
@@ -635,7 +639,7 @@ class TestExecutor(unittest.TestCase):
             mock_cleanup.assert_not_called()
 
     @patch("sandbox_executor.entrypoint.executor.os.path.exists")
-    @patch("sandbox_executor.entrypoint.executor._cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
