@@ -64,23 +64,23 @@ RUN --mount=type=cache,id=npm-gemini,uid=1000,gid=1000,target=/home/holon/.npm \
 FROM holon-base AS agent-opencode
 RUN --mount=type=cache,id=npm-opencode,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=opencode-ai" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund opencode-ai@1.17.14
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund opencode-ai@1.18.23
 
 # --- Pi Agent Layer ---
 FROM holon-base AS agent-pi
 RUN --mount=type=cache,id=npm-pi,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@google/genai,protobufjs" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.80.3
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.84.3
 
 # --- Codex Agent Layer ---
 FROM holon-base AS agent-codex
 RUN --mount=type=cache,id=npm-codex,uid=1000,gid=1000,target=/home/holon/.npm \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.142.5
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.150.1
 
 # --- Open Codex Agent Layer ---
 FROM holon-base AS agent-open-codex
 RUN --mount=type=cache,id=npm-open-codex,uid=1000,gid=1000,target=/home/holon/.npm \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund open-codex@0.1.31
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.150.1
 
 # --- Antigravity Agent Layer ---
 FROM holon-base AS agent-antigravity
