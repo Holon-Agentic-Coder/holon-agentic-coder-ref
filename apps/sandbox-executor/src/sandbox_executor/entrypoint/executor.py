@@ -21,18 +21,29 @@ import contextlib
 import json
 import os
 import re
-import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.agent_runner import get_repo_url, get_runner
+import shutil
+
+from sandbox_executor.agent_runner import (
+    _check_forbidden_root,
+    _clear_dir_contents,
+    _handle_remove_readonly,
+    _rmtree,
+    cleanup_repo_dir,
+    get_repo_url,
+    get_runner,
+    get_workspace_dir,
+)
+
+# Backward-compatibility alias
+_cleanup_repo_dir = cleanup_repo_dir
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
@@ -46,149 +57,6 @@ SECRET_FLAGS = {
     "--passwd",
     "--auth",
 }
-
-# Safelist of parent directories whose subdirectories are allowed to be modified/deleted.
-# Any path not nested strictly inside one of these directories is blocked by default.
-ALLOWED_PARENTS = {
-    "/home",
-    "/Users",
-    "/tmp",
-    "/var/tmp",
-    "/private/var/folders",
-    "/var/folders",
-    # Specific Holon workspace parent directories — intentionally narrow, not all of `~`.
-    os.path.expanduser("~/.holon-sandbox"),
-    os.path.expanduser("~/.holon"),
-}
-
-_temp = tempfile.gettempdir()
-if _temp != "/":
-    ALLOWED_PARENTS.add(_temp)
-
-# Explicit safelist of exact paths that are allowed.
-# Note: os.getcwd() and os.path.expanduser("~") are intentionally excluded — they can
-# resolve to "/" under certain invocation contexts (e.g. system accounts or root invocation),
-# which would disable all safety checks.
-ALLOWED_EXACT = {
-    "/workspace",
-    "/repo",
-}
-
-# Pre-resolve allowed parent and exact paths once at module load time.
-# This prevents test mocks (e.g. patching os.path.realpath) from polluting the allowed sets at runtime.
-ALLOWED_PARENT_RESOLVED = {os.path.abspath(p) for p in ALLOWED_PARENTS} | {os.path.realpath(p) for p in ALLOWED_PARENTS}
-ALLOWED_EXACT_RESOLVED = {os.path.abspath(e) for e in ALLOWED_EXACT} | {os.path.realpath(e) for e in ALLOWED_EXACT}
-
-
-def _check_forbidden_root(path: str) -> None:
-    abs_path = os.path.abspath(path)
-    real_path = os.path.realpath(path)
-
-    for p in (abs_path, real_path):
-        if p == "/":
-            raise RuntimeError(f"Refusing to perform operation on system root-level directory: {path}")
-
-        p_allowed = False
-        # 1. Check if the path matches an allowed exact path
-        if p in ALLOWED_EXACT_RESOLVED:
-            p_allowed = True
-        else:
-            # 2. Check if the path is nested under an allowed parent directory
-            for parent_p in ALLOWED_PARENT_RESOLVED:
-                if p.startswith(parent_p.rstrip("/") + "/"):
-                    p_allowed = True
-                    break
-        if not p_allowed:
-            # Keep the error message exact for backward compatibility with existing tests
-            msg = f"Refusing to perform operation on system root-level directory: {path}"
-            raise RuntimeError(msg)
-
-
-def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
-    """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
-    try:
-        if os.path.isdir(path):
-            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
-        else:
-            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
-    except (OSError, NotImplementedError):
-        # Ignore permission errors on chmod attempt; rmtree/unlink will report any fatal failure.
-        pass
-    func(path)
-
-
-def _rmtree(path: str) -> None:
-    """Helper to call shutil.rmtree with the onexc error handler."""
-    if sys.version_info >= (3, 12):  # noqa: UP036
-        shutil.rmtree(path, onexc=_handle_remove_readonly)
-    else:
-        shutil.rmtree(path, onerror=_handle_remove_readonly)
-
-
-def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
-    """Clear all contents of a directory without removing the directory itself (useful for mount points)."""
-    if not os.path.isdir(path):
-        return
-
-    try:
-        _check_forbidden_root(path)
-    except RuntimeError as e:
-        if raise_on_error:
-            raise
-        print(f"Warning: {e}", file=sys.stderr)
-        return
-
-    try:
-        items = os.listdir(path)
-    except PermissionError as e:
-        if raise_on_error:
-            raise
-        print(f"Warning: Failed to list directory {path}: {e}", file=sys.stderr)
-        return
-
-    for item in items:
-        item_path = os.path.join(path, item)
-        try:
-            if os.path.islink(item_path) or not os.path.isdir(item_path):
-                try:
-                    os.unlink(item_path)
-                except PermissionError:
-                    if not os.path.islink(item_path):
-                        os.chmod(item_path, stat.S_IWUSR | stat.S_IRUSR)
-                    os.unlink(item_path)
-            else:
-                _rmtree(item_path)
-        except Exception as e:
-            if raise_on_error:
-                raise
-            print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
-
-
-def _cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
-    """Clean up existing repo directory.
-
-    Clears contents if mount, unlinks if symlink, otherwise removes the tree.
-
-    Args:
-        repo_dir: Path to the repository directory.
-        raise_on_error: If True, propagates exceptions. If False, prints a warning and continues.
-    """
-    if not os.path.lexists(repo_dir):
-        return
-    try:
-        _check_forbidden_root(repo_dir)
-        if os.path.ismount(repo_dir):
-            _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
-        elif os.path.islink(repo_dir):
-            os.unlink(repo_dir)
-        elif os.path.isdir(repo_dir):
-            _rmtree(repo_dir)
-        else:
-            os.remove(repo_dir)
-    except Exception as e:
-        if raise_on_error:
-            raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
-        print(f"Warning: Failed to clean up repo dir {repo_dir}: {e}", file=sys.stderr)
 
 
 def redact_text(text: str) -> str:
@@ -424,20 +292,16 @@ def main() -> None:
         )
     in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
 
-    repo_dir = os.getenv("HOLON_REPO_DIR")
-    if not repo_dir:
-        repo_dir = (
-            os.path.expanduser("~/.holon-sandbox/workspace") if in_sandbox else os.path.expanduser("~/.holon/repo")
-        )
-        is_default_repo = True
-        if not keep_workspace:
-            if not in_sandbox:
-                print(
-                    f"Warning: Cleaning default local repository directory at {repo_dir}.\n"
-                    "Set HOLON_KEEP_WORKSPACE=1 to retain.",
-                    file=sys.stderr,
-                )
-            _cleanup_repo_dir(repo_dir, raise_on_error=True)
+    is_default_repo = not os.getenv("HOLON_REPO_DIR")
+    repo_dir = get_workspace_dir()
+    if is_default_repo and not keep_workspace:
+        if not in_sandbox:
+            print(
+                f"Warning: Cleaning default local repository directory at {repo_dir}.\n"
+                "Set HOLON_KEEP_WORKSPACE=1 to retain.",
+                file=sys.stderr,
+            )
+        cleanup_repo_dir(repo_dir, raise_on_error=True)
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
@@ -465,7 +329,7 @@ def main() -> None:
                     "Discarding stale workspace and re-cloning.",
                     file=sys.stderr,
                 )
-                _cleanup_repo_dir(repo_dir, raise_on_error=True)
+                cleanup_repo_dir(repo_dir, raise_on_error=True)
                 os.makedirs(repo_dir, exist_ok=True)
                 run_cmd(
                     ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
@@ -686,7 +550,7 @@ def main() -> None:
     finally:
         # reuse `keep_workspace` already computed at function start
         if is_default_repo and repo_dir and not keep_workspace:
-            _cleanup_repo_dir(repo_dir, raise_on_error=False)
+            cleanup_repo_dir(repo_dir, raise_on_error=False)
 
 
 if __name__ == "__main__":

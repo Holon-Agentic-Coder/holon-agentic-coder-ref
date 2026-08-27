@@ -286,7 +286,7 @@ class TestAgentRunner(unittest.TestCase):
             "antigravity": "holon/agent-antigravity",
         }
 
-        for agent_id in runners.keys():
+        for agent_id in runners:
             with self.subTest(agent=agent_id):
                 image_name = agent_image_mapping.get(agent_id)
                 self.assertIsNotNone(image_name, f"Missing image mapping for agent: {agent_id}")
@@ -392,3 +392,53 @@ class TestGetRepoUrl(unittest.TestCase):
                 url,
                 "https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
             )
+
+
+class TestWorkspaceDirAndCleanup(unittest.TestCase):
+    def test_get_workspace_dir_override(self):
+        """Test get_workspace_dir respects HOLON_REPO_DIR when set."""
+        import os
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import get_workspace_dir
+
+        with patch.dict(os.environ, {"HOLON_REPO_DIR": "/custom/workspace/path"}):
+            self.assertEqual(get_workspace_dir(), "/custom/workspace/path")
+
+    def test_get_workspace_dir_sandbox(self):
+        """Test get_workspace_dir returns sandbox workspace path when HOLON_IN_SANDBOX is set."""
+        import os
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import get_workspace_dir
+
+        with patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True):
+            expected = os.path.expanduser("~/.holon-sandbox/workspace")
+            self.assertEqual(get_workspace_dir(), expected)
+
+    def test_get_workspace_dir_default(self):
+        """Test get_workspace_dir returns default repo path outside sandbox."""
+        import os
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import get_workspace_dir
+
+        with patch.dict(os.environ, {}, clear=True), patch("os.path.exists", return_value=False):
+            expected = os.path.expanduser("~/.holon/repo")
+            self.assertEqual(get_workspace_dir(), expected)
+
+    def test_cleanup_repo_dir_nonexistent(self):
+        """Test cleanup_repo_dir does nothing if directory does not exist."""
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import cleanup_repo_dir
+
+        with patch("os.path.lexists", return_value=False):
+            cleanup_repo_dir("/path/does/not/exist")
+
+    def test_cleanup_repo_dir_forbidden_root(self):
+        """Test cleanup_repo_dir raises RuntimeError for forbidden root directories."""
+        from sandbox_executor.agent_runner import cleanup_repo_dir
+
+        with self.assertRaises(RuntimeError):
+            cleanup_repo_dir("/etc", raise_on_error=True)

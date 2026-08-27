@@ -5,7 +5,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 
-from sandbox_executor.agent_runner import get_repo_url
+from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_workspace_dir
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -53,7 +53,8 @@ def main():
 
     target_branch = intent_data.get("target_branch", "main")
 
-    repo_dir = os.path.expanduser("~/repo")
+    repo_dir = get_workspace_dir()
+    cleanup_repo_dir(repo_dir, raise_on_error=True)
     os.makedirs(repo_dir, exist_ok=True)
 
     repo_url = get_repo_url()

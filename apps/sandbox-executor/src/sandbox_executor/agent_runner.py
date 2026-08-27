@@ -1,8 +1,169 @@
 import logging
 import os
+import stat
 import sys
+import tempfile
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Directory cleanup and root protection helpers
+ALLOWED_PARENTS = {
+    "/home",
+    "/Users",
+    "/tmp",
+    "/var/tmp",
+    "/private/var/folders",
+    "/var/folders",
+    os.path.expanduser("~/.holon-sandbox"),
+    os.path.expanduser("~/.holon"),
+}
+
+_temp = tempfile.gettempdir()
+if _temp != "/":
+    ALLOWED_PARENTS.add(_temp)
+
+ALLOWED_EXACT = {
+    "/workspace",
+    "/repo",
+}
+
+ALLOWED_PARENT_RESOLVED = {os.path.abspath(p) for p in ALLOWED_PARENTS} | {os.path.realpath(p) for p in ALLOWED_PARENTS}
+ALLOWED_EXACT_RESOLVED = {os.path.abspath(e) for e in ALLOWED_EXACT} | {os.path.realpath(e) for e in ALLOWED_EXACT}
+
+
+def _check_forbidden_root(path: str) -> None:
+    abs_path = os.path.abspath(path)
+    real_path = os.path.realpath(path)
+
+    for p in (abs_path, real_path):
+        if p == "/":
+            raise RuntimeError(f"Refusing to perform operation on system root-level directory: {path}")
+
+        p_allowed = False
+        if p in ALLOWED_EXACT_RESOLVED:
+            p_allowed = True
+        else:
+            for parent_p in ALLOWED_PARENT_RESOLVED:
+                if p.startswith(parent_p.rstrip("/") + "/"):
+                    p_allowed = True
+                    break
+        if not p_allowed:
+            msg = f"Refusing to perform operation on system root-level directory: {path}"
+            raise RuntimeError(msg)
+
+
+def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
+    """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
+    try:
+        if os.path.isdir(path):
+            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
+        else:
+            os.chmod(path, stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
+    except (OSError, NotImplementedError):
+        pass
+    func(path)
+
+
+def _rmtree(path: str) -> None:
+    """Helper to call shutil.rmtree with the onexc / onerror error handler."""
+    import shutil
+
+    if sys.version_info >= (3, 12):  # noqa: UP036
+        shutil.rmtree(path, onexc=_handle_remove_readonly)
+    else:
+        shutil.rmtree(path, onerror=_handle_remove_readonly)
+
+
+def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
+    """Clear all contents of a directory without removing the directory itself."""
+    if not os.path.isdir(path):
+        return
+
+    try:
+        _check_forbidden_root(path)
+    except RuntimeError as e:
+        if raise_on_error:
+            raise
+        print(f"Warning: {e}", file=sys.stderr)
+        return
+
+    try:
+        items = os.listdir(path)
+    except PermissionError as e:
+        if raise_on_error:
+            raise
+        print(f"Warning: Failed to list directory {path}: {e}", file=sys.stderr)
+        return
+
+    for item in items:
+        item_path = os.path.join(path, item)
+        try:
+            if os.path.islink(item_path) or not os.path.isdir(item_path):
+                try:
+                    os.unlink(item_path)
+                except PermissionError:
+                    if not os.path.islink(item_path):
+                        os.chmod(item_path, stat.S_IWUSR | stat.S_IRUSR)
+                    os.unlink(item_path)
+            else:
+                _rmtree(item_path)
+        except Exception as e:
+            if raise_on_error:
+                raise
+            print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
+
+
+def cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
+    """Clean up existing repo directory.
+
+    Clears contents if mount, unlinks if symlink, otherwise removes the tree with read-only chmod handling.
+
+    Args:
+        repo_dir: Path to the repository directory.
+        raise_on_error: If True, propagates exceptions. If False, prints a warning and continues.
+    """
+    if not os.path.lexists(repo_dir):
+        return
+    try:
+        _check_forbidden_root(repo_dir)
+        if os.path.ismount(repo_dir):
+            _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
+        elif os.path.islink(repo_dir):
+            os.unlink(repo_dir)
+        elif os.path.isdir(repo_dir):
+            _rmtree(repo_dir)
+        else:
+            os.remove(repo_dir)
+    except Exception as e:
+        if raise_on_error:
+            raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
+        print(f"Warning: Failed to clean up repo dir {repo_dir}: {e}", file=sys.stderr)
+
+
+def get_workspace_dir() -> str:
+    """Returns the workspace directory path based on environment or sandbox status.
+
+    Checks ``HOLON_REPO_DIR`` first, then determines if running in a sandbox environment
+    (via ``HOLON_IN_SANDBOX``, ``HOLON_ROLE``, ``/.dockerenv``, or user heuristic) and returns
+    ``~/.holon-sandbox/workspace`` if in a sandbox or ``~/.holon/repo`` otherwise.
+    """
+    repo_dir = os.getenv("HOLON_REPO_DIR")
+    if repo_dir:
+        return repo_dir
+
+    in_sandbox_explicit = (
+        str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")
+        or bool(os.getenv("HOLON_ROLE"))
+        or os.path.exists("/.dockerenv")
+    )
+    in_sandbox_heuristic = os.getenv("USER") == "holon" or os.getenv("USERNAME") == "holon"
+    if in_sandbox_heuristic and not in_sandbox_explicit:
+        logger.warning("using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.")
+    in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
+
+    return os.path.expanduser("~/.holon-sandbox/workspace") if in_sandbox else os.path.expanduser("~/.holon/repo")
 
 
 class EnvMapping:
@@ -69,11 +230,11 @@ class StandardAgentRunner(AgentRunner):
 
                     # Unpack session files into /home/holon/ if specified
                     config_files = bundle.get("config_files", {})
-                    base_home = os.path.abspath(os.path.expanduser("~"))
+                    base_home = os.path.realpath(os.path.expanduser("~"))
                     if not base_home.endswith(os.sep):
                         base_home += os.sep
                     for rel_path, content in config_files.items():
-                        full_dest = os.path.abspath(os.path.expanduser(rel_path))
+                        full_dest = os.path.realpath(os.path.expanduser(rel_path))
                         if not full_dest.startswith(base_home):
                             raise ValueError(f"Path traversal detected in config_files path: {rel_path}")
                         os.makedirs(os.path.dirname(full_dest), exist_ok=True)

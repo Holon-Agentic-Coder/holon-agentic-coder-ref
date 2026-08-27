@@ -2,13 +2,12 @@
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 from datetime import UTC, datetime
 
-from sandbox_executor.agent_runner import get_repo_url, get_runner
+from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -107,9 +106,8 @@ def main():
     if intent_branch_prefix.endswith("/_"):
         intent_branch_prefix = intent_branch_prefix[:-2]
 
-    repo_dir = os.path.expanduser("~/repo")
-    if os.path.exists(repo_dir):
-        shutil.rmtree(repo_dir)
+    repo_dir = get_workspace_dir()
+    cleanup_repo_dir(repo_dir, raise_on_error=True)
     os.makedirs(repo_dir, exist_ok=True)
 
     # Clone the repo

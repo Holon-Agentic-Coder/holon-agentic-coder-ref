@@ -369,8 +369,8 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
-    @patch("sandbox_executor.entrypoint.executor._rmtree")
+    @patch("sandbox_executor.agent_runner.os.path.expanduser")
+    @patch("sandbox_executor.agent_runner._rmtree")
     def test_main_default_workspace_deleted(
         self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
@@ -604,7 +604,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
+    @patch("sandbox_executor.agent_runner.os.path.expanduser")
     def test_main_keep_workspace(self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
@@ -639,7 +639,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
+    @patch("sandbox_executor.agent_runner.os.path.expanduser")
     def test_main_keep_workspace_existing_git(
         self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup, mock_exists
     ):
@@ -704,9 +704,9 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.os.path.expanduser")
-    @patch("sandbox_executor.entrypoint.executor._clear_dir_contents")
-    @patch("sandbox_executor.entrypoint.executor.os.path.ismount", return_value=True)
+    @patch("sandbox_executor.agent_runner.os.path.expanduser")
+    @patch("sandbox_executor.agent_runner._clear_dir_contents")
+    @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=True)
     def test_main_mount_point_clears_contents(
         self, mock_ismount, mock_clear_dir_contents, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
