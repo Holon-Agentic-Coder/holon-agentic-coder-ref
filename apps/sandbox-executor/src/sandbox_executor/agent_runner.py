@@ -62,6 +62,7 @@ def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
         else:
             os.chmod(path, stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
     except (OSError, NotImplementedError):
+        # Ignore filesystem/permission errors if chmod is unsupported on target path or mount
         pass
     func(path)
 
