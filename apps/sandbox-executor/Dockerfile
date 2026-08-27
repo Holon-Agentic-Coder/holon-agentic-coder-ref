@@ -77,10 +77,7 @@ FROM holon-base AS agent-codex
 RUN --mount=type=cache,id=npm-codex,uid=1000,gid=1000,target=/home/holon/.npm \
     npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.150.1
 
-# --- Open Codex Agent Layer ---
-FROM holon-base AS agent-open-codex
-RUN --mount=type=cache,id=npm-open-codex,uid=1000,gid=1000,target=/home/holon/.npm \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.150.1
+
 
 # --- Antigravity Agent Layer ---
 FROM holon-base AS agent-antigravity
