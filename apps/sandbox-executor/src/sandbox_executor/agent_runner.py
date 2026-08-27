@@ -61,9 +61,8 @@ def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
             os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
         else:
             os.chmod(path, stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
-    except (OSError, NotImplementedError):
-        # Ignore filesystem/permission errors if chmod is unsupported on target path or mount
-        pass
+    except (OSError, NotImplementedError) as err:
+        logger.debug("Failed to set write permissions on %s: %s", path, err)
     func(path)
 
 
