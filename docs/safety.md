@@ -85,18 +85,11 @@ def run_in_process_sandbox(code, allowed_paths):
     env = os.environ.copy()
 
 
-env['PYTHONPATH'] = ':'.join(allowed_paths)
-env['NO_NETWORK'] = '1'
+env["PYTHONPATH"] = ":".join(allowed_paths)
+env["NO_NETWORK"] = "1"
 
-result = subprocess.run(
-    ['python', '-c', code],
-    env=env,
-    capture_output=True,
-    timeout=300,
-    cwd=allowed_paths[0]
-)
+result = subprocess.run(["python", "-c", code], env=env, capture_output=True, timeout=300, cwd=allowed_paths[0])
 return result
-
 ```
 
 #### 2) **Container sandbox** (standard)
@@ -210,11 +203,11 @@ def compute_trust_score(agent_id, ledger, config):
     rebase_conflicts = sum(e.rebase_conflicts for e in executions)
 
     trust_score = (
-            weights.success_rate * success_rate +
-            weights.calibration * (1 - min(1.0, mean_calibration_error)) +
-            weights.entropy * (1 - min(1.0, mean_entropy_error / 50)) +
-            weights.rebase * (1 - min(1.0, rebase_conflicts / 10))
-            - weights.escape_penalty * sandbox_escapes
+        weights.success_rate * success_rate
+        + weights.calibration * (1 - min(1.0, mean_calibration_error))
+        + weights.entropy * (1 - min(1.0, mean_entropy_error / 50))
+        + weights.rebase * (1 - min(1.0, rebase_conflicts / 10))
+        - weights.escape_penalty * sandbox_escapes
     )
 
     return max(0.0, min(1.0, trust_score))
@@ -264,12 +257,7 @@ def allocate_entropy_budget(intent_type, parent_budget, trust_level):
         return parent_budget
     else:
         # Sub-intents get fraction of parent budget
-        fraction = {
-            "baseline": 0.3,
-            "medium": 0.5,
-            "high": 0.7,
-            "highest": 0.9
-        }[trust_level]
+        fraction = {"baseline": 0.3, "medium": 0.5, "high": 0.7, "highest": 0.9}[trust_level]
         return parent_budget * fraction
 ```
 

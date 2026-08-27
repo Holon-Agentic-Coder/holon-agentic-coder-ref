@@ -74,6 +74,16 @@ Consolidates machine-authored history and the intelligence evolved from it.
 Agents and system components are **config-driven**; they are initialised with a `config_path` (defaulting to
 `holon-config/`) and a `knowledge_path` (defaulting to `holon-knowledge/`).
 
+### Agent CLI Versioning in the Validation Cycle
+
+To guarantee reproducibility and full provenance, the stateless runner does not assume static agent environments.
+Instead, when executing plans, it dynamically resolves the exact agent CLI version. The runner tries to query the binary
+directly (using `--version`, `-v`, or `version` flags). If the execution environment does not have the binary or the
+invocation fails, it falls back to the exact version declared in the orchestrator build environment (defined in
+`apps/sandbox-executor/Dockerfile`). The resolved `agent_version` is embedded in the schema validation cycle for both
+`plans.jsonl` and `executions.jsonl`, linking the exact binary version with predictions, calibration errors, and final
+outputs.
+
 ---
 
 ### High-level architecture
