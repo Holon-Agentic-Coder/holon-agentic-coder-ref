@@ -227,6 +227,12 @@ Agents are instantiated with a unique ID, a specific model tier, and a trust lev
 Every task execution is wrapped in a logging envelope. The system records the start, any tool calls made during
 execution, and the final outcome (success/failure) to the immutable Ledger.
 
+Additionally, the active agent CLI version is resolved at run-time by calling the runner's `get_version()` mechanism.
+This queries the CLI binary directly with version flags (such as `--version`, `-v`, or `version`) with a fallback to
+predefined Dockerfile-aligned agent versions if the binary is absent or the execution fails. The resolved
+`agent_version` is logged alongside the agent name in both the `plans.jsonl` and `executions.jsonl` ledgers to ensure
+full auditability.
+
 ### 3) Agent trust update
 
 The system periodically recalculates agent trust scores based on successful executions, calibration accuracy, and
@@ -358,7 +364,6 @@ def score_intent_quality(proposed_intent, agent_id, ledger, kb):
         score += 0.2
 
     return max(0.0, min(1.0, score))
-
 ```
 
 ### Intent approval gates
@@ -385,7 +390,6 @@ def approve_intent_proposal(proposed_intent, agent_id, quality_score):
     else:
         # Lower trust: always require human review
         return "human_review_required"
-
 ```
 
 ---

