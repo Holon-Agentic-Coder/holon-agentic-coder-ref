@@ -268,6 +268,51 @@ class TestAgentRunner(unittest.TestCase):
                 except Exception as e:
                     self.fail(f"Failed to run container for agent {agent_id}: {e}")
 
+    @pytest.mark.integration_test
+    def test_real_images_get_version(self):
+        """Integration test to verify that get_version() resolves correctly
+
+        inside each real built Docker image for all supported agents.
+        """
+        import re
+
+        agent_image_mapping = {
+            "pi": "holon/agent-pi",
+            "open-codex": "holon/agent-open-codex",
+            "claude": "holon/agent-claude",
+            "gemini": "holon/agent-gemini",
+            "opencode": "holon/agent-opencode",
+            "codex": "holon/agent-codex",
+            "antigravity": "holon/agent-antigravity",
+        }
+
+        for agent_id in runners.keys():
+            with self.subTest(agent=agent_id):
+                image_name = agent_image_mapping.get(agent_id)
+                self.assertIsNotNone(image_name, f"Missing image mapping for agent: {agent_id}")
+
+                code = (
+                    f"from sandbox_executor.agent_runner import get_runner; "
+                    f"version = get_runner('{agent_id}').get_version(); "
+                    f"print(version)"
+                )
+                cmd = ["docker", "run", "--rm", image_name, "python3", "-c", code]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        f"Failed to run get_version() inside image '{image_name}'.\n"
+                        f"Stdout: {result.stdout}\nStderr: {result.stderr}",
+                    )
+                    version_str = result.stdout.strip()
+                    self.assertTrue(
+                        bool(re.search(r"\d+\.\d+\.\d+", version_str)),
+                        f"Resolved version '{version_str}' inside image '{image_name}' does not match semver format.",
+                    )
+                except Exception as e:
+                    self.fail(f"Failed get_version integration test for container agent {agent_id}: {e}")
+
     def test_get_version_success(self):
         """Test get_version when the binary returns a version successfully."""
         from unittest.mock import MagicMock, patch
