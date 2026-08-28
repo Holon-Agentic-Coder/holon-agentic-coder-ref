@@ -1,6 +1,8 @@
 import logging
 import os
+import re
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
@@ -341,9 +343,6 @@ class StandardAgentRunner(AgentRunner):
         if self._resolved_version is not None:
             return self._resolved_version
 
-        import re
-        import subprocess
-
         for arg in ["--version", "-v", "version"]:
             try:
                 result = subprocess.run(
@@ -352,12 +351,15 @@ class StandardAgentRunner(AgentRunner):
                     text=True,
                     timeout=2.0,
                 )
+                if result.returncode != 0:
+                    continue
                 output = (result.stdout or "") + (result.stderr or "")
                 match = re.search(r"(\d+\.\d+\.\d+)", output)
                 if match:
                     self._resolved_version = match.group(1)
                     return self._resolved_version
-            except Exception:
+            except Exception as exc:
+                logger.debug("Failed to query version for agent %s: %s", self.agent_id, exc)
                 continue
 
         self._resolved_version = "unknown"

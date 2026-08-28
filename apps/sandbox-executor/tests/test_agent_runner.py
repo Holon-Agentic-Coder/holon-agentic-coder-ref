@@ -345,6 +345,30 @@ class TestAgentRunner(unittest.TestCase):
             runner._resolved_version = None
             runner.agent_id = original_agent_id
 
+    def test_get_version_nonzero_returncode(self):
+        """Test get_version when subprocess returns a non-zero exit code."""
+        from unittest.mock import MagicMock, patch
+
+        runner = get_runner("pi")
+        runner._resolved_version = None
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = "pi 0.84.3"
+        mock_result.stderr = "Error: execution failed"
+
+        with patch("subprocess.run", return_value=mock_result):
+            version = runner.get_version()
+            self.assertEqual(version, "unknown")
+
+    def test_open_codex_removed(self):
+        """Test that open-codex is removed and accessing it raises KeyError in runners dict and SystemExit in get_runner."""
+        with self.assertRaises(KeyError):
+            _ = runners["open-codex"]
+        with self.assertRaises(SystemExit):
+            get_runner("open-codex")
+
+
 
 class TestGetRepoUrl(unittest.TestCase):
     def test_ssh_agent_forwarding_default(self):
