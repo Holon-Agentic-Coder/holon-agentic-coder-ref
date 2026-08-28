@@ -190,6 +190,7 @@ class AgentRunner:
         raise NotImplementedError
 
     def get_version(self) -> str:
+        """Return agent version string, returning 'unknown' fallback if resolution fails."""
         raise NotImplementedError
 
 
@@ -340,6 +341,7 @@ class StandardAgentRunner(AgentRunner):
         return cmd
 
     def get_version(self) -> str:
+        """Return agent version string, returning 'unknown' fallback if resolution fails."""
         if self._resolved_version is not None:
             return self._resolved_version
 

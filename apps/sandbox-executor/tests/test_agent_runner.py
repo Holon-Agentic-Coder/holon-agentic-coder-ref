@@ -362,7 +362,8 @@ class TestAgentRunner(unittest.TestCase):
             self.assertEqual(version, "unknown")
 
     def test_open_codex_removed(self):
-        """Test that open-codex is removed and accessing it raises KeyError in runners dict and SystemExit in get_runner."""
+        """Test that open-codex is removed and accessing it raises KeyError in runners dict
+        and SystemExit in get_runner."""
         with self.assertRaises(KeyError):
             _ = runners["open-codex"]
         with self.assertRaises(SystemExit):
@@ -405,7 +406,10 @@ class TestGetRepoUrl(unittest.TestCase):
             url = get_repo_url()
             self.assertEqual(
                 url,
-                "https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
+                (
+                    "https://x-access-token:github_pat_secret456@"
+                    "github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git"
+                ),
             )
 
 
