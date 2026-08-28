@@ -400,7 +400,7 @@ class AntigravityAgentRunner(StandardAgentRunner):
 # Runner registry: maps agent_id -> StandardAgentRunner instance.
 #
 # Architectural assumption: one agent per sandbox container execution.
-# HOLON_AGENT_PROVIDER is shared across runners that use it (pi-agent, open-codex),
+# HOLON_AGENT_PROVIDER is shared across runners that use it (e.g. pi-agent),
 # but since only a single agent is active per container, a single HOLON_AGENT_PROVIDER
 # value is always unambiguous at runtime. If multi-agent orchestration is ever needed,
 # per-agent provider overrides would need to be introduced.
@@ -414,16 +414,6 @@ runners = {
             # HOLON_AGENT_PROVIDER selects the backend provider (e.g. anthropic, openai).
             # Auth is handled by HOLON_AGENT_KEY, which _apply_generic_token maps to PI_API_KEY
             # internally so the pi CLI can authenticate via its native env var.
-            EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
-        ],
-        required_keys=["HOLON_AGENT_KEY"],
-    ),
-    "open-codex": StandardAgentRunner(
-        "open-codex",
-        "open-codex",
-        "-m",
-        prefix=["-q"],
-        env_mappings=[
             EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
         ],
         required_keys=["HOLON_AGENT_KEY"],

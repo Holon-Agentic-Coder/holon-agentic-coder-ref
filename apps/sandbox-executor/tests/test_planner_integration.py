@@ -80,7 +80,6 @@ class TestPlannerIntegration(unittest.TestCase):
 
             agents = [
                 "pi-agent",
-                "open-codex-agent",
                 "claude-agent",
                 "gemini-agent",
                 "opencode-agent",
@@ -96,7 +95,6 @@ class TestPlannerIntegration(unittest.TestCase):
 
                         agent_images = {
                             "pi-agent": "holon/agent-pi",
-                            "open-codex-agent": "holon/agent-open-codex",
                             "claude-agent": "holon/agent-claude",
                             "gemini-agent": "holon/agent-gemini",
                             "opencode-agent": "holon/agent-opencode",
