@@ -360,6 +360,9 @@ class StandardAgentRunner(AgentRunner):
                 if match:
                     self._resolved_version = match.group(1)
                     return self._resolved_version
+            except subprocess.TimeoutExpired:
+                logger.debug("Version check timed out for agent %s", self.agent_id)
+                continue
             except Exception as exc:
                 logger.debug("Failed to query version for agent %s: %s", self.agent_id, exc)
                 continue

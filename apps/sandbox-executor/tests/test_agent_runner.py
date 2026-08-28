@@ -361,6 +361,18 @@ class TestAgentRunner(unittest.TestCase):
             version = runner.get_version()
             self.assertEqual(version, "unknown")
 
+    def test_get_version_timeout(self):
+        """Test get_version handling when subprocess times out."""
+        import subprocess
+        from unittest.mock import patch
+
+        runner = get_runner("pi")
+        runner._resolved_version = None
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="pi", timeout=2.0)):
+            version = runner.get_version()
+            self.assertEqual(version, "unknown")
+
     def test_open_codex_removed(self):
         """Test that open-codex is removed and accessing it raises KeyError in runners dict
         and SystemExit in get_runner."""
