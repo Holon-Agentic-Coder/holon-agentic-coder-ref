@@ -344,16 +344,6 @@ class StandardAgentRunner(AgentRunner):
         import re
         import subprocess
 
-        fallback_versions = {
-            "pi": "0.84.3",
-            "open-codex": "0.1.31",
-            "claude": "2.1.247",
-            "gemini": "0.57.0",
-            "opencode": "1.18.23",
-            "codex": "0.150.1",
-            "antigravity": "1.0.0",
-        }
-
         for arg in ["--version", "-v", "version"]:
             try:
                 result = subprocess.run(
@@ -370,7 +360,7 @@ class StandardAgentRunner(AgentRunner):
             except Exception:
                 continue
 
-        self._resolved_version = fallback_versions.get(self.agent_id, "1.0.0")
+        self._resolved_version = "unknown"
         return self._resolved_version
 
 
