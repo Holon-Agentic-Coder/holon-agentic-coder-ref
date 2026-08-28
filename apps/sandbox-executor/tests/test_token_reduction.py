@@ -556,3 +556,53 @@ def test_run_docker_container_tears_down_sidecar_after_the_run(monkeypatch):
 
     assert cli.run_docker_container("executor", "holon/agent-pi", [], agent_id="pi") == 7
     assert teardowns == [True]
+
+
+def test_hybrid_cache(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    req_1 = {
+        "system": "You are a helpful assistant.",
+        "messages": [{"role": "user", "content": "Fix bug in 2026-08-28T18:00:00Z task-1234"}],
+    }
+    resp_1 = {"result": "Fixed bug in task-1234"}
+
+    cache.put(req_1, resp_1, provider="anthropic")
+
+    # Exact lookup after normalization (timestamp & task ID stripped)
+    req_2 = {
+        "system": "You are a helpful assistant.",
+        "messages": [{"role": "user", "content": "Fix bug in 2026-08-28T19:30:00Z task-5678"}],
+    }
+    cached_resp = cache.get(req_2, provider="anthropic")
+    assert cached_resp is not None
+    assert cached_resp["result"] == "Fixed bug in task-1234"
+
+
+def test_mitm_interceptor(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(cache_dir=str(tmp_path), enable_caching=True)
+    endpoint = "https://api.anthropic.com/v1/messages"
+
+    req_json = {
+        "system": "System prompt",
+        "messages": [{"role": "user", "content": "Hello LLM"}],
+    }
+
+    # Initial request -> Cache miss
+    cleaned_req, cached_resp = interceptor.intercept_request(endpoint, req_json)
+    assert cached_resp is None
+    assert isinstance(cleaned_req["system"], list)
+
+    # Store response
+    fake_resp = {"id": "msg_123", "content": [{"type": "text", "text": "Hello human"}]}
+    interceptor.intercept_response(endpoint, cleaned_req, fake_resp)
+
+    # Subsequent identical request -> Cache hit
+    _, cached_hit = interceptor.intercept_request(endpoint, req_json)
+    assert cached_hit is not None
+    assert cached_hit["id"] == "msg_123"
+
