@@ -21,6 +21,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -507,8 +508,27 @@ def main() -> None:
                 "execution_file": exec_file_rel,
                 "created_at": timestamp_str,
             }
+            os.makedirs(ledger_dir, exist_ok=True)
             with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
                 ef.write(json.dumps(exec_entry) + "\n")
+
+            git_check = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False)
+            if git_check.returncode != 0:
+                print(
+                    "Warning: git repository invalid or missing after agent execution. Re-initializing git repo...",
+                    file=sys.stderr,
+                )
+                git_dot = os.path.join(repo_dir, ".git")
+                if os.path.exists(git_dot):
+                    if os.path.isdir(git_dot):
+                        shutil.rmtree(git_dot, ignore_errors=True)
+                    else:
+                        with contextlib.suppress(Exception):
+                            os.remove(git_dot)
+                run_cmd(["git", "init"], cwd=repo_dir)
+                run_cmd(["git", "symbolic-ref", "HEAD", f"refs/heads/{exec_branch}"], cwd=repo_dir)
+                repo_url = get_repo_url()
+                run_cmd(["git", "remote", "add", "origin", repo_url], cwd=repo_dir, check=False)
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
             run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)

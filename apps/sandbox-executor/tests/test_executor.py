@@ -283,6 +283,68 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_main_git_recovery_on_corrupted_repo(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+        mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
+        mock_get_runner.return_value = mock_runner
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+                mock_res.returncode = 0
+                mock_res.stdout = "OK"
+            elif args == ["git", "rev-parse", "--is-inside-work-tree"]:
+                # Simulate corrupted git repository after agent execution
+                mock_res.returncode = 1
+                mock_res.stdout = ""
+                mock_res.stderr = "fatal: not a git repository"
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = "OK"
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+        ):
+            # Create dummy .git directory to test removal/re-init
+            git_dot = os.path.join(tmp_dir, ".git")
+            os.makedirs(git_dot, exist_ok=True)
+
+            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+                executor.main()
+
+            self.assertIn("Warning: git repository invalid or missing after agent execution", mock_stderr.getvalue())
+
+            # Verify that recovery commands were executed in sequence
+            called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
+            self.assertIn(["git", "init"], called_cmds)
+            self.assertTrue(any(cmd[:3] == ["git", "symbolic-ref", "HEAD"] for cmd in called_cmds))
+            self.assertIn(["git", "remote", "add", "origin", "/mock/repo"], called_cmds)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     def test_main_decomposition_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()

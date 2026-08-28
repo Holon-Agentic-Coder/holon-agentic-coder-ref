@@ -1,0 +1,12 @@
+{
+  "_note": "Reserved for future entropy computation integration. Not yet loaded by the runtime.",
+  "coefficients": {
+    "alpha_bd": 1.0,
+    "beta_kf": 1.0,
+    "gamma_cd": 1.0,
+    "delta_atv": 1.0,
+    "epsilon_uc": 1.0
+  },
+  "calibration_status": "uncalibrated_initial_defaults",
+  "description": "System-level entropy coefficients across repository and agent swarm"
+}
