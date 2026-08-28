@@ -344,7 +344,7 @@ class TestAgentRunner(unittest.TestCase):
 
             with patch("subprocess.run", side_effect=Exception("binary not found")):
                 version = runner.get_version()
-                self.assertEqual(version, "2.1.202")
+                self.assertEqual(version, "2.1.247")
 
             runner._resolved_version = None
             runner.agent_id = "unknown-agent"

@@ -345,12 +345,12 @@ class StandardAgentRunner(AgentRunner):
         import subprocess
 
         fallback_versions = {
-            "pi": "0.80.3",
+            "pi": "0.84.3",
             "open-codex": "0.1.31",
-            "claude": "2.1.202",
-            "gemini": "0.49.0",
-            "opencode": "1.17.14",
-            "codex": "0.142.5",
+            "claude": "2.1.247",
+            "gemini": "0.57.0",
+            "opencode": "1.18.23",
+            "codex": "0.150.1",
             "antigravity": "1.0.0",
         }
 
