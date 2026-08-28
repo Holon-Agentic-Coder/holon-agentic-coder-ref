@@ -89,6 +89,43 @@ def parse_metrics(content):
     return metrics
 
 
+def load_metrics_config(repo_dir: str) -> dict:
+    """Load config-driven metrics physics parameters from holon-config/metrics/.
+
+    Returns a dictionary with 'lambda' (entropy penalty) and 'mu' (learning value weight).
+    Defaults: lambda = 0.3, mu = 0.5 as specified in docs/metrics.md (§1.2, §11).
+    Validation enforces range (0.0, 1.0] for both lambda and mu to prevent invalid or
+    unbounded scaling of EV physics coefficients.
+    """
+    config = {"lambda": 0.3, "mu": 0.5}
+    ev_config_path = os.path.join(repo_dir, "holon-config/metrics/ev_config.json")
+    if os.path.exists(ev_config_path):
+        try:
+            with open(ev_config_path) as f:
+                data = json.load(f)
+                raw_lambda = float(data["lambda"]) if "lambda" in data else config["lambda"]
+                raw_mu = float(data["mu"]) if "mu" in data else config["mu"]
+                # Validate lambda and mu within range (0.0, 1.0], falling back to
+                # docs/metrics.md defaults (lambda=0.3, mu=0.5)
+                if 0 < raw_lambda <= 1.0:
+                    config["lambda"] = raw_lambda
+                else:
+                    print(
+                        f"Warning: 'lambda' value {raw_lambda} out of range (0, 1]. Using default.",
+                        file=sys.stderr,
+                    )
+                if 0 < raw_mu <= 1.0:
+                    config["mu"] = raw_mu
+                else:
+                    print(
+                        f"Warning: 'mu' value {raw_mu} out of range (0, 1]. Using default.",
+                        file=sys.stderr,
+                    )
+        except Exception as e:
+            print(f"Warning: Failed to load {ev_config_path}: {e}. Using defaults.", file=sys.stderr)
+    return config
+
+
 def main():
     if len(sys.argv) < 4:
         print("Usage: planner.py <intent_branch> <agent_name> <model_name>")
@@ -290,13 +327,17 @@ Include metrics in this format:
         if k not in metrics:
             metrics[k] = default_val
 
-    # Recalculate EV based on default formula: EV = P(success)*Impact + 1.0*LV - 0.1*Entropy - Cost
+    # Recalculate EV based on config-driven formula: EV = P(success)*Impact + mu*LV - lambda*Entropy - Cost
+    ev_config = load_metrics_config(repo_dir)
+    ev_lambda = ev_config["lambda"]
+    ev_mu = ev_config["mu"]
+
     p_success = metrics["p_success"]
     entropy = metrics["entropy"]
     impact = metrics["impact"]
     cost = metrics["cost"]
     learning_value = metrics["learning_value"]
-    ev = p_success * impact + 1.0 * learning_value - 0.1 * entropy - cost
+    ev = p_success * impact + ev_mu * learning_value - ev_lambda * entropy - cost
     metrics["ev"] = ev
 
     # Append plan summary to ledger

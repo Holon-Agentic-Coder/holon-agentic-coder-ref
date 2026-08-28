@@ -46,6 +46,47 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(metrics.get("cost"), 0.4)
         self.assertEqual(metrics.get("learning_value"), 3.5)
 
+    def test_load_metrics_config(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Case 1: missing config file -> default values (lambda=0.3, mu=0.5)
+            config = planner.load_metrics_config(tmp_dir)
+            self.assertEqual(config["lambda"], 0.3)
+            self.assertEqual(config["mu"], 0.5)
+
+            # Case 2: valid ev_config.json present
+            metrics_dir = pathlib.Path(tmp_dir) / "holon-config" / "metrics"
+            metrics_dir.mkdir(parents=True)
+            ev_file = metrics_dir / "ev_config.json"
+            ev_file.write_text(json.dumps({"lambda": 0.4, "mu": 0.6}))
+
+            config2 = planner.load_metrics_config(tmp_dir)
+            self.assertEqual(config2["lambda"], 0.4)
+            self.assertEqual(config2["mu"], 0.6)
+
+            # Case 3: malformed JSON -> defaults returned, no exception raised
+            ev_file.write_text("not valid json")
+            config3 = planner.load_metrics_config(tmp_dir)
+            self.assertEqual(config3["lambda"], 0.3)
+            self.assertEqual(config3["mu"], 0.5)
+
+            # Case 4: partial keys -> present key used, missing key falls back to default
+            ev_file.write_text(json.dumps({"lambda": 0.2}))
+            config4 = planner.load_metrics_config(tmp_dir)
+            self.assertEqual(config4["lambda"], 0.2)
+            self.assertEqual(config4["mu"], 0.5)
+
+            # Case 5: non-numeric value -> falls back to default for that key
+            ev_file.write_text(json.dumps({"lambda": "abc", "mu": 0.5}))
+            config5 = planner.load_metrics_config(tmp_dir)
+            self.assertEqual(config5["lambda"], 0.3)
+            self.assertEqual(config5["mu"], 0.5)
+
+            # Case 6: out-of-range bounds -> both fall back to defaults
+            ev_file.write_text(json.dumps({"lambda": -1.0, "mu": 2.0}))
+            config6 = planner.load_metrics_config(tmp_dir)
+            self.assertEqual(config6["lambda"], 0.3)
+            self.assertEqual(config6["mu"], 0.5)
+
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.path.getsize")
