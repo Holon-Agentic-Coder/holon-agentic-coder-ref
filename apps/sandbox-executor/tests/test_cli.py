@@ -125,6 +125,7 @@ class TestHolonCLI(unittest.TestCase):
                 "holon/agent-antigravity",
                 ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"],
                 agent_id="antigravity",
+                token_reduce=False,
             )
 
         mock_run_container.reset_mock()
@@ -160,6 +161,7 @@ class TestHolonCLI(unittest.TestCase):
                 "holon/agent-antigravity",
                 ["plan_branch_name", "antigravity-agent", "gemini-3.5-flash"],
                 agent_id="antigravity",
+                token_reduce=False,
             )
 
 

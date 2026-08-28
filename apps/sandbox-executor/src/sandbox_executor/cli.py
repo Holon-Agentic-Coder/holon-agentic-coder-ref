@@ -120,12 +120,117 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
     return mounts
 
 
+def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
+    """Spawns the mitmproxy Docker sidecar and returns target container mounts and network options."""
+    import time
+
+    # 1. Create docker network holon-net if not exists
+    subprocess.run(["docker", "network", "create", "holon-net"], capture_output=True, check=False)
+
+    # 2. Kill existing holon-proxy sidecar if running
+    subprocess.run(["docker", "rm", "-f", "holon-proxy"], capture_output=True, check=False)
+
+    # 3. Generate Root CA cert
+    from sandbox_executor.token_reduction.ca_generator import generate_root_ca
+
+    ca_cert_path, _ = generate_root_ca()
+
+    # 4. Resolve host addon path
+    addon_dir = os.path.dirname(os.path.abspath(__file__))
+    addon_path = os.path.join(addon_dir, "token_reduction", "mitm_addon.py")
+
+    # 5. Start the holon-proxy docker sidecar
+    # We mount ~/.holon folder to persist cache db in /home/mitmproxy/.holon inside container
+    home_dir = os.path.expanduser("~")
+    holon_home = os.path.join(home_dir, ".holon")
+    os.makedirs(holon_home, exist_ok=True)
+
+    docker_run_proxy = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        "holon-proxy",
+        "--network",
+        "holon-net",
+        "-v",
+        f"{holon_home}:/home/mitmproxy/.holon",
+        "-v",
+        f"{addon_path}:/tmp/mitm_addon.py:ro",
+        "mitmproxy/mitmproxy:12.2.3",
+        "mitmdump",
+        "-s",
+        "/tmp/mitm_addon.py",
+        "--listen-port",
+        "8080",
+    ]
+
+    proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
+    if proxy_spawn.returncode != 0:
+        logger.warning("Failed to start mitmproxy sidecar container: %s", proxy_spawn.stderr)
+        # Fallback to local default proxy url if sidecar fails
+        proxy_url = "http://172.17.0.1:8080"
+        mounts = []
+    else:
+        # Wait a moment for proxy to initialize
+        time.sleep(1.0)
+        proxy_url = "http://holon-proxy:8080"
+        mounts = ["--network", "holon-net"]
+
+    container_cert_path = "/usr/local/share/ca-certificates/holon-root-ca.crt"
+    mounts.extend(["-v", f"{ca_cert_path}:{container_cert_path}:ro"])
+
+    env_vars = {
+        "HTTP_PROXY": proxy_url,
+        "HTTPS_PROXY": proxy_url,
+        "NODE_EXTRA_CA_CERTS": container_cert_path,
+        "REQUESTS_CA_BUNDLE": container_cert_path,
+        "CURL_CA_BUNDLE": container_cert_path,
+        "SSL_CERT_FILE": container_cert_path,
+    }
+    return mounts, env_vars
+
+
+def get_token_reduction_mounts_and_envs(
+    token_reduce: bool = False,
+) -> tuple[list[str], dict[str, str]]:
+    """Generates Root CA cert and constructs proxy volume mounts and environment variables."""
+    mounts = []
+    env_vars = {}
+
+    if token_reduce:
+        try:
+            return setup_token_reduction_proxy()
+        except Exception as e:
+            logger.warning("Failed to configure token reduction proxy sidecar: %s", e)
+    elif os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY"):
+        try:
+            from sandbox_executor.token_reduction.ca_generator import generate_root_ca
+
+            ca_cert_path, _ = generate_root_ca()
+            container_cert_path = "/usr/local/share/ca-certificates/holon-root-ca.crt"
+            mounts.extend(["-v", f"{ca_cert_path}:{container_cert_path}:ro"])
+
+            proxy_url = os.getenv("HOLON_PROXY_URL") or os.getenv("HTTP_PROXY") or "http://172.17.0.1:8080"
+            env_vars["HTTP_PROXY"] = proxy_url
+            env_vars["HTTPS_PROXY"] = proxy_url
+            env_vars["NODE_EXTRA_CA_CERTS"] = container_cert_path
+            env_vars["REQUESTS_CA_BUNDLE"] = container_cert_path
+            env_vars["CURL_CA_BUNDLE"] = container_cert_path
+            env_vars["SSL_CERT_FILE"] = container_cert_path
+        except Exception as e:
+            logger.warning("Failed to configure token reduction proxy mounts: %s", e)
+
+    return mounts, env_vars
+
+
 def run_docker_container(
     role: str,
     image_name: str,
     container_args: list[str],
     agent_id: str = "antigravity",
     intent_file: str | None = None,
+    token_reduce: bool = False,
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it."""
     if not shutil.which("docker"):
@@ -157,6 +262,12 @@ def run_docker_container(
     for k, v in ssh_envs.items():
         docker_cmd.extend(["-e", f"{k}={v}"])
 
+    # Token Reduction Proxy & CA Mounts
+    tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce)
+    docker_cmd.extend(tr_mounts)
+    for k, v in tr_envs.items():
+        docker_cmd.extend(["-e", f"{k}={v}"])
+
     # Intent file mount for intent-creator role
     if role == "intent-creator" and intent_file:
         abs_intent = os.path.abspath(intent_file)
@@ -185,8 +296,12 @@ def run_docker_container(
         else:
             sanitized_cmd.append(item)
     print(f"Executing: {' '.join(sanitized_cmd)}")
-    result = subprocess.run(docker_cmd)
-    return result.returncode
+    try:
+        result = subprocess.run(docker_cmd)
+        return result.returncode
+    finally:
+        if token_reduce:
+            subprocess.run(["docker", "rm", "-f", "holon-proxy"], capture_output=True, check=False)
 
 
 def main() -> None:
@@ -213,12 +328,22 @@ def main() -> None:
         default="gemini-3.5-flash",
         help="Model name to pass to agent (e.g. gemini-3.5-flash, claude-3-5-sonnet)",
     )
+    plan_parser.add_argument(
+        "--token-reduce",
+        action="store_true",
+        help="Enable MITM proxy and SSL CA mounts for agent token reduction",
+    )
 
     # Subcommand: execute
     exec_parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
     exec_parser.add_argument("plan_branch", help="Target plan branch name")
     exec_parser.add_argument("--agent", default="antigravity-agent", help="Agent runner to execute")
     exec_parser.add_argument("--model", default="gemini-3.5-flash", help="Model name to pass to agent")
+    exec_parser.add_argument(
+        "--token-reduce",
+        action="store_true",
+        help="Enable MITM proxy and SSL CA mounts for agent token reduction",
+    )
 
     args = parser.parse_args()
 
@@ -241,12 +366,28 @@ def main() -> None:
     elif args.command == "plan":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.intent_branch, args.agent, args.model]
-        sys.exit(run_docker_container("planner", image_name, container_args, agent_id=agent_id))
+        sys.exit(
+            run_docker_container(
+                "planner",
+                image_name,
+                container_args,
+                agent_id=agent_id,
+                token_reduce=args.token_reduce,
+            )
+        )
 
     elif args.command == "execute":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.plan_branch, args.agent, args.model]
-        sys.exit(run_docker_container("executor", image_name, container_args, agent_id=agent_id))
+        sys.exit(
+            run_docker_container(
+                "executor",
+                image_name,
+                container_args,
+                agent_id=agent_id,
+                token_reduce=args.token_reduce,
+            )
+        )
 
 
 if __name__ == "__main__":
