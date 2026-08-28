@@ -370,7 +370,6 @@ class TestAgentRunner(unittest.TestCase):
             get_runner("open-codex")
 
 
-
 class TestGetRepoUrl(unittest.TestCase):
     def test_ssh_agent_forwarding_default(self):
         """Test that get_repo_url returns the standard SSH URL."""
