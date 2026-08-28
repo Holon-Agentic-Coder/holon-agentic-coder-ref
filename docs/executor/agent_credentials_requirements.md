@@ -114,19 +114,13 @@ Each agent has specific command-line structures and validation routines:
 - **Validation**: Requires `HOLON_AGENT_KEY` to be set, or active session configuration mounted to
   `/home/holon/.config/pi`.
 
-### 5. `open-codex`
-
-- **Binary**: `open-codex`
-- **Command template**: `open-codex -q -m <model_name> --provider <HOLON_AGENT_PROVIDER> <prompt>`
-- **Validation**: Requires the `HOLON_AGENT_KEY` environment variable.
-
-### 6. `opencode`
+### 5. `opencode`
 
 - **Binary**: `opencode`
 - **Command template**: `opencode run --model <model_name> --agent <HOLON_AGENT_MODE> <prompt>`
 - **Validation**: Requires the `HOLON_AGENT_KEY` environment variable.
 
-### 7. `codex`
+### 6. `codex`
 
 - **Binary**: `codex`
 - **Command template**:
