@@ -23,7 +23,6 @@ class TestAgentRunner(unittest.TestCase):
 
         expected_commands = {
             "pi": ["pi", "-p", "--model", "gemini-3.5-flash", "compiled prompt text"],
-            "open-codex": ["open-codex", "-q", "-m", "gemini-3.5-flash", "compiled prompt text"],
             "claude": ["claude", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
             "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash", "compiled prompt text"],
@@ -93,14 +92,7 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("-c", cmd)
             self.assertIn("temperature=0.2", cmd)
 
-        # 3. Open Codex provider
-        with patch.dict(os.environ, {"HOLON_AGENT_PROVIDER": "custom-ollama", "HOLON_AGENT_KEY": "dummy"}):
-            runner = get_runner("open-codex")
-            cmd = runner.build_cmd("m", "/tmp/p", "/tmp/i", "prompt")
-            self.assertIn("--provider", cmd)
-            self.assertIn("custom-ollama", cmd)
-
-        # 4. Pi provider (auth handled internally via HOLON_AGENT_KEY -> PI_API_KEY)
+        # 3. Pi provider (auth handled internally via HOLON_AGENT_KEY -> PI_API_KEY)
         # Note: --api-key is NOT a CLI flag anymore; the pi CLI reads PI_API_KEY from
         # os.environ directly. _apply_generic_token() maps HOLON_AGENT_KEY -> PI_API_KEY.
         env = {
@@ -238,7 +230,6 @@ class TestAgentRunner(unittest.TestCase):
         """
         agent_image_mapping = {
             "pi": "holon/agent-pi",
-            "open-codex": "holon/agent-open-codex",
             "claude": "holon/agent-claude",
             "gemini": "holon/agent-gemini",
             "opencode": "holon/agent-opencode",
@@ -278,7 +269,6 @@ class TestAgentRunner(unittest.TestCase):
 
         agent_image_mapping = {
             "pi": "holon/agent-pi",
-            "open-codex": "holon/agent-open-codex",
             "claude": "holon/agent-claude",
             "gemini": "holon/agent-gemini",
             "opencode": "holon/agent-opencode",
@@ -322,15 +312,15 @@ class TestAgentRunner(unittest.TestCase):
 
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "pi version 0.80.3\n"
+        mock_result.stdout = "pi version 0.84.3\n"
         mock_result.stderr = ""
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             version = runner.get_version()
-            self.assertEqual(version, "0.80.3")
+            self.assertEqual(version, "0.84.3")
             mock_run.assert_called_with(["pi", "--version"], capture_output=True, text=True, timeout=2.0)
             mock_run.reset_mock()
-            self.assertEqual(runner.get_version(), "0.80.3")
+            self.assertEqual(runner.get_version(), "0.84.3")
             mock_run.assert_not_called()
 
     def test_get_version_fallback(self):
@@ -344,16 +334,52 @@ class TestAgentRunner(unittest.TestCase):
 
             with patch("subprocess.run", side_effect=Exception("binary not found")):
                 version = runner.get_version()
-                self.assertEqual(version, "2.1.202")
+                self.assertEqual(version, "unknown")
 
             runner._resolved_version = None
             runner.agent_id = "unknown-agent"
             with patch("subprocess.run", side_effect=Exception("binary not found")):
                 version = runner.get_version()
-                self.assertEqual(version, "1.0.0")
+                self.assertEqual(version, "unknown")
         finally:
             runner._resolved_version = None
             runner.agent_id = original_agent_id
+
+    def test_get_version_nonzero_returncode(self):
+        """Test get_version when subprocess returns a non-zero exit code."""
+        from unittest.mock import MagicMock, patch
+
+        runner = get_runner("pi")
+        runner._resolved_version = None
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = "pi 0.84.3"
+        mock_result.stderr = "Error: execution failed"
+
+        with patch("subprocess.run", return_value=mock_result):
+            version = runner.get_version()
+            self.assertEqual(version, "unknown")
+
+    def test_get_version_timeout(self):
+        """Test get_version handling when subprocess times out."""
+        import subprocess
+        from unittest.mock import patch
+
+        runner = get_runner("pi")
+        runner._resolved_version = None
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="pi", timeout=2.0)):
+            version = runner.get_version()
+            self.assertEqual(version, "unknown")
+
+    def test_open_codex_removed(self):
+        """Test that open-codex is removed and accessing it raises KeyError in runners dict
+        and SystemExit in get_runner."""
+        with self.assertRaises(KeyError):
+            _ = runners["open-codex"]
+        with self.assertRaises(SystemExit):
+            get_runner("open-codex")
 
 
 class TestGetRepoUrl(unittest.TestCase):
@@ -391,7 +417,10 @@ class TestGetRepoUrl(unittest.TestCase):
             url = get_repo_url()
             self.assertEqual(
                 url,
-                "https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
+                (
+                    "https://x-access-token:github_pat_secret456@"
+                    "github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git"
+                ),
             )
 
 

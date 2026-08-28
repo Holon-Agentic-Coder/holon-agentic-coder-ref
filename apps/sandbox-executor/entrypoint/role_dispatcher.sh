@@ -33,7 +33,7 @@ if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
         pi)
             export PI_API_KEY="${HOLON_AGENT_KEY}"
             ;;
-        codex|open-codex)
+        codex)
             export OPENAI_API_KEY="${HOLON_AGENT_KEY}"
             ;;
         gemini)

@@ -1,6 +1,8 @@
 import logging
 import os
+import re
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
@@ -188,6 +190,7 @@ class AgentRunner:
         raise NotImplementedError
 
     def get_version(self) -> str:
+        """Return agent version string, returning 'unknown' fallback if resolution fails."""
         raise NotImplementedError
 
 
@@ -338,21 +341,9 @@ class StandardAgentRunner(AgentRunner):
         return cmd
 
     def get_version(self) -> str:
+        """Return agent version string, returning 'unknown' fallback if resolution fails."""
         if self._resolved_version is not None:
             return self._resolved_version
-
-        import re
-        import subprocess
-
-        fallback_versions = {
-            "pi": "0.80.3",
-            "open-codex": "0.1.31",
-            "claude": "2.1.202",
-            "gemini": "0.49.0",
-            "opencode": "1.17.14",
-            "codex": "0.142.5",
-            "antigravity": "1.0.0",
-        }
 
         for arg in ["--version", "-v", "version"]:
             try:
@@ -362,15 +353,21 @@ class StandardAgentRunner(AgentRunner):
                     text=True,
                     timeout=2.0,
                 )
+                if result.returncode != 0:
+                    continue
                 output = (result.stdout or "") + (result.stderr or "")
                 match = re.search(r"(\d+\.\d+\.\d+)", output)
                 if match:
                     self._resolved_version = match.group(1)
                     return self._resolved_version
-            except Exception:
+            except subprocess.TimeoutExpired:
+                logger.debug("Version check timed out for agent %s", self.agent_id)
+                continue
+            except Exception as exc:
+                logger.debug("Failed to query version for agent %s: %s", self.agent_id, exc)
                 continue
 
-        self._resolved_version = fallback_versions.get(self.agent_id, "1.0.0")
+        self._resolved_version = "unknown"
         return self._resolved_version
 
 
@@ -410,7 +407,7 @@ class AntigravityAgentRunner(StandardAgentRunner):
 # Runner registry: maps agent_id -> StandardAgentRunner instance.
 #
 # Architectural assumption: one agent per sandbox container execution.
-# HOLON_AGENT_PROVIDER is shared across runners that use it (pi-agent, open-codex),
+# HOLON_AGENT_PROVIDER is shared across runners that use it (e.g. pi-agent),
 # but since only a single agent is active per container, a single HOLON_AGENT_PROVIDER
 # value is always unambiguous at runtime. If multi-agent orchestration is ever needed,
 # per-agent provider overrides would need to be introduced.
@@ -424,16 +421,6 @@ runners = {
             # HOLON_AGENT_PROVIDER selects the backend provider (e.g. anthropic, openai).
             # Auth is handled by HOLON_AGENT_KEY, which _apply_generic_token maps to PI_API_KEY
             # internally so the pi CLI can authenticate via its native env var.
-            EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
-        ],
-        required_keys=["HOLON_AGENT_KEY"],
-    ),
-    "open-codex": StandardAgentRunner(
-        "open-codex",
-        "open-codex",
-        "-m",
-        prefix=["-q"],
-        env_mappings=[
             EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
         ],
         required_keys=["HOLON_AGENT_KEY"],

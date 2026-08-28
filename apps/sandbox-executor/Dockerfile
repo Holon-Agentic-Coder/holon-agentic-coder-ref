@@ -3,7 +3,7 @@
 # TODO: do we want to bake in the agents or decide at runtime? we can run agent at runtime by running `npx @anthropic-ai/claude-code`
 # TODO: if we bake the agents in we need to rebuild the image everytime there is an update
 # TODO: if we choose the agent at runtime we can choose certain version or latest at runtime
-# Build targets: holon-base, agent-claude, agent-gemini, agent-opencode, agent-codex, agent-open-codex, holon-orchestrator
+# Build targets: holon-base, agent-claude, agent-gemini, agent-opencode, agent-codex, agent-pi, agent-antigravity, holon-orchestrator
 
 # --- Base Layer ---
 FROM python:3.13-slim AS holon-base
@@ -52,35 +52,30 @@ RUN mkdir -p /home/holon/.cache
 FROM holon-base AS agent-claude
 RUN --mount=type=cache,id=npm-claude,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@anthropic-ai/claude-code" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.202
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.247
 
 # --- Gemini Agent Layer ---
 FROM holon-base AS agent-gemini
 RUN --mount=type=cache,id=npm-gemini,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@github/keytar,node-pty" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @google/gemini-cli@0.49.0
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @google/gemini-cli@0.57.0
 
 # --- OpenCode Agent Layer (opencode) ---
 FROM holon-base AS agent-opencode
 RUN --mount=type=cache,id=npm-opencode,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=opencode-ai" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund opencode-ai@1.17.14
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund opencode-ai@1.18.23
 
 # --- Pi Agent Layer ---
 FROM holon-base AS agent-pi
 RUN --mount=type=cache,id=npm-pi,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@google/genai,protobufjs" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.80.3
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @earendil-works/pi-coding-agent@0.84.3
 
 # --- Codex Agent Layer ---
 FROM holon-base AS agent-codex
 RUN --mount=type=cache,id=npm-codex,uid=1000,gid=1000,target=/home/holon/.npm \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.142.5
-
-# --- Open Codex Agent Layer ---
-FROM holon-base AS agent-open-codex
-RUN --mount=type=cache,id=npm-open-codex,uid=1000,gid=1000,target=/home/holon/.npm \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund open-codex@0.1.31
+    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @openai/codex@0.150.1
 
 # --- Antigravity Agent Layer ---
 FROM holon-base AS agent-antigravity

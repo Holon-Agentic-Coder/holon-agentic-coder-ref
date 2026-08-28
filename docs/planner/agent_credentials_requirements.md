@@ -15,7 +15,6 @@ variables must be passed to `docker run`.
 | **`gemini-agent`**      | `gemini`            | `@google/gemini-cli`              | `GEMINI_API_KEY` or `GOOGLE_API_KEY`                                   | Google Gemini CLI client tool.                                                                                                   |
 | **`opencode-agent`**    | `opencode`          | `opencode-ai`                     | `OPENAI_API_KEY`                                                       | Connects to OpenAI-styled backends.                                                                                              |
 | **`codex-agent`**       | `codex`             | `@openai/codex`                   | `OPENAI_API_KEY`                                                       | OpenAI Codex agent integration.                                                                                                  |
-| **`open-codex-agent`**  | `open-codex`        | `open-codex`                      | `OPENAI_API_KEY`                                                       | Open Codex agent integration.                                                                                                    |
 | **`antigravity-agent`** | `agy`               | N/A (Downloaded via script)       | `GOOGLE_API_KEY` or Google Cloud Application Default Credentials (ADC) | Antigravity CLI agent. In headless/non-interactive environments, OAuth prompts will timeout; active credentials must be present. |
 
 ---

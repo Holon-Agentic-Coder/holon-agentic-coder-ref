@@ -228,7 +228,6 @@ def main() -> None:
         "claude": "holon/agent-claude",
         "pi": "holon/agent-pi",
         "codex": "holon/agent-codex",
-        "open-codex": "holon/agent-open-codex",
         "gemini": "holon/agent-gemini",
         "opencode": "holon/agent-opencode",
     }
