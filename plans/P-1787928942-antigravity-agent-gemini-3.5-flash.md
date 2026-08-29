@@ -46,7 +46,7 @@ The overall plan metrics were derived as follows:
 - **cost_pred**: 9.0. Sum of the cost estimates for all individual steps (1.5 + 3.0 + 2.5 + 2.0 = 9.0).
 - **learning_value_pred**: 6.0. The peak learning value associated with Step 2, representing the epistemic gain from
   testing Jaccard similarity matching efficacy on real-world request patterns.
-- **ev_pred**: 69.4. Calculated using the default EV config constants: EV = 0.90 * 85.0 + 0.5 * 6.0 - 0.3 * 3.5 - 9.0 =
+- **ev_pred**: 69.4. Calculated using the default EV config constants: EV = 0.90 _ 85.0 + 0.5 _ 6.0 - 0.3 \* 3.5 - 9.0 =
   76.5 + 3.0 - 1.05 - 9.0 = 69.4 (rounded).
 
 ## Safety & Constraint Alignment
