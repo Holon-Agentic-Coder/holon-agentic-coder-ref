@@ -52,6 +52,38 @@ sandbox:
 - **macOS**: Mounts `/run/host-services/ssh-auth.sock` to the container and updates the `SSH_AUTH_SOCK` environment.
 - **Linux/Other**: Mounts the host's existing `SSH_AUTH_SOCK` value to `/run/ssh-agent` in the container.
 
+### 4. Optional Token Reduction Proxy (`--token-reduce`)
+
+```bash
+./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" \
+  --agent antigravity-agent --model gemini-3.5-flash --token-reduce
+```
+
+`--token-reduce` routes the sandbox's HTTP(S) egress through a locally-owned mitmproxy sidecar so agent responses can be
+compacted before they are tokenized.
+
+> [!WARNING] **`--token-reduce` performs local TLS interception.** A Holon Root CA is generated at
+> `~/.holon/certs/holon-root-ca.crt` and trusted inside the sandbox (registered by the entrypoint via
+> `update-ca-certificates`). The Root CA **private key** (`holon-root-ca.key`, mode `0600`) stays on the host and is
+> never mounted into any container; the sidecar only receives a narrow read-only cache directory
+> (`~/.holon/proxy-cache`).
+
+- **Prerequisites**: the `docker` and `openssl` host binaries. If either is missing, the sidecar fails to start, or it
+  never becomes ready, the CLI logs an actionable error and the run continues with **direct egress** — a dead proxy is
+  never injected into the sandbox.
+- **Isolation**: the sidecar runs on a per-run Docker network (`holon-net-<pid>-<uuid>`), is capped at
+  `--memory=256m --cpus=0.5` with bounded log rotation, and both it and its network are removed when the run finishes.
+
+### Environment contract
+
+| Variable             | Effect                                                                                                                                                    |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HOLON_TOKEN_REDUCE` | Opt-in without the flag (`1`, `true`, `yes`, `on`). Attaches to an already-running proxy; never starts one.                                               |
+| `HOLON_PROXY_URL`    | Proxy URL used in the `HOLON_TOKEN_REDUCE` path. Defaults to the host gateway (`host.docker.internal:8080` on macOS/Windows, `172.17.0.1:8080` on Linux). |
+
+> [!IMPORTANT] Host `HTTP_PROXY` / `HTTPS_PROXY` are **never** interpreted as opt-in. Sandbox networking is only changed
+> when you pass `--token-reduce` or set `HOLON_TOKEN_REDUCE` explicitly.
+
 ---
 
 ## Command Breakdown
@@ -59,6 +91,9 @@ sandbox:
 - **`plan_branch`** (positional, required): The target plan branch to execute.
 - **`--agent`** (optional, default: `antigravity-agent`): Agent runner to execute.
 - **`--model`** (optional, default: `gemini-3.5-flash`): Target LLM model name.
+- **`--token-reduce`** (optional, flag): Route sandbox egress through the local token-reduction proxy (requires
+  `docker` + `openssl`; performs local TLS interception, see
+  [Optional Token Reduction Proxy](#4-optional-token-reduction-proxy--token-reduce)).
 
 ---
 

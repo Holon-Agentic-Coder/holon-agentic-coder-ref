@@ -36,6 +36,38 @@ Run from the repository root:
 
 ---
 
+## Optional: Token Reduction Proxy (`--token-reduce`)
+
+Pass `--token-reduce` to route the planner sandbox's HTTP(S) egress through a locally-owned mitmproxy sidecar, so
+responses can be compacted before the agent spends tokens on them.
+
+```bash
+./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash --token-reduce
+```
+
+> [!WARNING] **`--token-reduce` performs local TLS interception.** A Holon Root CA is generated at
+> `~/.holon/certs/holon-root-ca.crt` and made trusted inside the sandbox so it can decrypt and re-encrypt agent traffic.
+> The Root CA **private key** (`holon-root-ca.key`, mode `0600`) stays on the host and is never mounted into any
+> container; the sidecar only receives a narrow read-only cache directory (`~/.holon/proxy-cache`).
+
+- **Prerequisites**: the `docker` and `openssl` host binaries. If either is missing, the sidecar fails to start, or it
+  never becomes ready, the CLI logs an actionable error and the run continues with **direct egress** — a dead proxy is
+  never injected into the sandbox.
+- **Isolation**: the sidecar runs on a per-run Docker network (`holon-net-<pid>-<uuid>`), is capped at
+  `--memory=256m --cpus=0.5` with bounded log rotation, and both it and its network are removed when the run finishes.
+
+### Environment contract
+
+| Variable             | Effect                                                                                                                                                    |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HOLON_TOKEN_REDUCE` | Opt-in without the flag (`1`, `true`, `yes`, `on`). Attaches to an already-running proxy; never starts one.                                               |
+| `HOLON_PROXY_URL`    | Proxy URL used in the `HOLON_TOKEN_REDUCE` path. Defaults to the host gateway (`host.docker.internal:8080` on macOS/Windows, `172.17.0.1:8080` on Linux). |
+
+> [!IMPORTANT] Host `HTTP_PROXY` / `HTTPS_PROXY` are **never** interpreted as opt-in. Sandbox networking is only changed
+> when you pass `--token-reduce` or set `HOLON_TOKEN_REDUCE` explicitly.
+
+---
+
 ## Low-Level Execution (Manual `docker run`)
 
 If you need to invoke Docker manually, run the following command to start the planner container, replacing arguments as

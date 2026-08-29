@@ -728,6 +728,49 @@ flowchart TD
 
 ---
 
+## Sandbox CLI usage
+
+All containerized Holon roles are driven by the [`./holon`](holon) host wrapper from the repository root. It maps agent
+names to images, forwards credentials (`GITHUB_TOKEN`, `HOLON_AGENT_*`), mounts the SSH agent socket, and optionally
+attaches the token-reduction proxy.
+
+```bash
+./holon intent intents/my-task.json                                  # Intent Creator
+./holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
+./holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" \
+  --agent pi-agent --model gemini-3.5-flash --token-reduce
+```
+
+> [!NOTE] `--token-reduce` is available on `plan` and `execute` (not on `intent`). See
+> [Running Plan Generation](docs/sandbox/create_plan.md) and [Running Execution](docs/sandbox/execute_plan.md) for the
+> full contract.
+
+### Token reduction (`--token-reduce`)
+
+`--token-reduce` starts a locally-owned mitmproxy sidecar and moves the sandbox onto a per-run Docker network so agent
+responses can be compacted before they are tokenized.
+
+> [!WARNING] **`--token-reduce` performs local TLS interception** against that locally-owned proxy. A Holon Root CA is
+> generated at `~/.holon/certs/holon-root-ca.crt` and trusted inside the sandbox. The Root CA **private key**
+> (`holon-root-ca.key`, mode `0600`) stays on the host and is never mounted into any container; the sidecar only
+> receives a narrow read-only cache directory (`~/.holon/proxy-cache`).
+
+- **Prerequisites**: `docker` and `openssl` on the host `PATH`. On any failure (missing binary, failed sidecar, proxy
+  that never becomes ready) the CLI logs an actionable error and the run continues with **direct egress**; a dead proxy
+  is never injected.
+- **Containment**: the sidecar is capped at `--memory=256m --cpus=0.5` with bounded log rotation, and both it and its
+  per-run network (`holon-net-<pid>-<uuid>`) are removed when the run finishes.
+
+| Variable             | Effect                                                                                                                                                    |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HOLON_TOKEN_REDUCE` | Opt-in without the flag (`1`, `true`, `yes`, `on`). Attaches to an already-running proxy; never starts one.                                               |
+| `HOLON_PROXY_URL`    | Proxy URL used in the `HOLON_TOKEN_REDUCE` path. Defaults to the host gateway (`host.docker.internal:8080` on macOS/Windows, `172.17.0.1:8080` on Linux). |
+
+> [!IMPORTANT] Host `HTTP_PROXY` / `HTTPS_PROXY` are **never** interpreted as opt-in; sandbox networking only changes
+> when `--token-reduce` or `HOLON_TOKEN_REDUCE` is set explicitly.
+
+---
+
 ## Contributing
 
 This project is currently in the **ideation and planning phase**. The focus is on refining the conceptual architecture,

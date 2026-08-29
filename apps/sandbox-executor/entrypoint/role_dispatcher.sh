@@ -45,6 +45,15 @@ if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
     esac
 fi
 
+# Trust the host-provided Holon Root CA when token reduction is enabled.
+# The sandbox image is Debian-based (python:3.13-slim) with ca-certificates: a file dropped into
+# /usr/local/share/ca-certificates/ only becomes effective after update-ca-certificates runs.
+# Guarded and non-fatal: never block role dispatch over CA bookkeeping.
+HOLON_ROOT_CA_PATH="/usr/local/share/ca-certificates/holon-root-ca.crt"
+if [ -f "$HOLON_ROOT_CA_PATH" ] && command -v update-ca-certificates &>/dev/null; then
+    update-ca-certificates >/dev/null 2>&1 || true
+fi
+
 ROLE="${HOLON_ROLE:-}"
 
 case "$ROLE" in
