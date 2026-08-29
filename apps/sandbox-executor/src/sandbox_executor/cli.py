@@ -17,9 +17,18 @@ from sandbox_executor.token_reduction import generate_root_ca
 
 logger = logging.getLogger(__name__)
 
-# Directory the Root CA is mounted into inside the sandbox (picked up by update-ca-certificates
-# in the entrypoint, and referenced by the *_CA_BUNDLE / SSL_CERT_FILE env vars).
+# Directory the Root CA certificate is mounted into inside the sandbox. The sandbox image runs as
+# the unprivileged `holon` user, so update-ca-certificates can never run there; the entrypoint
+# instead concatenates this mount with the image's system bundle into CONTAINER_CA_BUNDLE_PATH.
 CONTAINER_CA_DIR = "/usr/local/share/ca-certificates"
+# Merged trust bundle (image system roots + Holon Root CA) materialised by the sandbox entrypoint.
+# SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE REPLACE the trust store of the clients that
+# read them, so they must point here and never at the single-cert Holon mount.
+CONTAINER_CA_BUNDLE_PATH = "/home/holon/.holon-ca-bundle.crt"
+# Loopback tooling and link-local metadata endpoints must never be force-proxied.
+NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
+# mitmproxy loads its signing CA from this directory inside the sidecar image.
+MITM_PROXY_CA_DIR = "/home/mitmproxy/.mitmproxy"
 PROXY_LISTEN_PORT = 8080
 PROXY_READY_TIMEOUT_SECONDS = 15.0
 PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
@@ -28,10 +37,13 @@ PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 
 _TOKEN_REDUCE_HELP = (
-    "Cut agent token usage by routing sandbox egress through a locally-owned mitmproxy sidecar. "
-    "Requires the 'docker' and 'openssl' host binaries and performs LOCAL TLS INTERCEPTION: a Holon "
-    "Root CA is generated under ~/.holon/certs and trusted inside the sandbox (the private key never "
-    "leaves the host)."
+    "EXPERIMENTAL / NOT YET FUNCTIONAL (Phase 2): cut agent token usage by routing sandbox egress "
+    "through a locally-owned mitmproxy sidecar. The Phase 2 addon (mitm_addon.py) is not shipped "
+    "yet, so the preflight fails and the run degrades to direct egress. Requires the 'docker' and "
+    "'openssl' host binaries and performs LOCAL TLS INTERCEPTION: a Holon Root CA is generated under "
+    "~/.holon/certs, its private key is mounted read-only into the proxy sidecar only (never into "
+    "the agent container), and the sandbox trusts a merged CA bundle built at container start. Only "
+    "use against a locally-owned proxy: no credential redaction is implemented yet."
 )
 
 
@@ -172,16 +184,64 @@ def _ca_mount_args(ca_cert_path: str) -> list[str]:
 
 
 def _build_proxy_envs(ca_cert_path: str, proxy_url: str) -> dict[str, str]:
-    """Env vars that route the sandbox through ``proxy_url`` and make it trust the Holon Root CA."""
+    """Env vars that route the sandbox through ``proxy_url`` and make it trust the Holon Root CA.
+
+    ``NODE_EXTRA_CA_CERTS`` *augments* Node's built-in roots, so it may point straight at the
+    read-only Holon CA mount. ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` / ``CURL_CA_BUNDLE``
+    *replace* the trust store, so they point at the merged bundle the sandbox entrypoint writes at
+    startup (system roots + Holon CA). Pointing them at the single-cert mount would make every
+    legitimate HTTPS endpoint (github.com, api.openai.com, the agent's own LLM) fail verification.
+    """
     container_ca = _container_ca_path(ca_cert_path)
     return {
         "HTTP_PROXY": proxy_url,
         "HTTPS_PROXY": proxy_url,
+        # curl and many CLIs only ever read the lowercase spellings.
+        "http_proxy": proxy_url,
+        "https_proxy": proxy_url,
+        "NO_PROXY": NO_PROXY_HOSTS,
+        "no_proxy": NO_PROXY_HOSTS,
         "NODE_EXTRA_CA_CERTS": container_ca,
-        "REQUESTS_CA_BUNDLE": container_ca,
-        "CURL_CA_BUNDLE": container_ca,
-        "SSL_CERT_FILE": container_ca,
+        "SSL_CERT_FILE": CONTAINER_CA_BUNDLE_PATH,
+        "REQUESTS_CA_BUNDLE": CONTAINER_CA_BUNDLE_PATH,
+        # CURL_CA_BUNDLE is honoured by `requests`, not by the curl binary itself.
+        "CURL_CA_BUNDLE": CONTAINER_CA_BUNDLE_PATH,
     }
+
+
+def _mitm_proxy_ca_paths(ca_cert_path: str, ca_key_path: str) -> tuple[str, str]:
+    """Materialise the mitmproxy CA pair under ``~/.holon/proxy-ca`` and return the host paths.
+
+    A MITM proxy inherently requires the CA **private key**: without it the sidecar cannot sign the
+    forged leaf certificates that make interception work, and it would fall back to its own
+    ephemeral CA that the sandbox does not trust. Exposure is therefore narrowed to exactly two
+    files (combined key+cert and cert-only) mounted read-only into ``/home/mitmproxy/.mitmproxy``.
+    The private key is never mounted into the *agent* container, which only receives the public
+    certificate.
+    """
+    ca_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-ca")
+    os.makedirs(ca_dir, exist_ok=True)
+    os.chmod(ca_dir, 0o700)  # this directory holds the CA private key
+
+    combined_path = os.path.join(ca_dir, "mitmproxy-ca.pem")
+    cert_only_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
+
+    with open(ca_cert_path) as cert_handle:
+        cert_blob = cert_handle.read()
+    with open(ca_key_path) as key_handle:
+        key_blob = key_handle.read()
+
+    # Created with 0o600 up front so the combined key+cert file is never world-readable, whatever
+    # the caller's umask is, and re-chmodded in case a previous run left a looser mode behind.
+    fd = os.open(combined_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(f"{key_blob}{cert_blob}")
+    os.chmod(combined_path, 0o600)
+
+    shutil.copyfile(ca_cert_path, cert_only_path)
+    os.chmod(cert_only_path, 0o644)
+
+    return combined_path, cert_only_path
 
 
 def _proxy_gateway_url(port: int = PROXY_LISTEN_PORT) -> str:
@@ -276,12 +336,16 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
             "without it; re-run without --token-reduce to execute with direct egress."
         )
 
-    ca_cert_path, _ = generate_root_ca()
+    ca_cert_path, ca_key_path = generate_root_ca()
 
     # Share ONLY a narrow proxy cache dir, read-only. Never mount ~/.holon: that subtree holds the
     # Root CA private key (~/.holon/certs) and the agent auth session stores (~/.holon/sessions).
     proxy_cache_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-cache")
     os.makedirs(proxy_cache_dir, exist_ok=True)
+
+    # mitmproxy needs the CA private key to sign leaves (see _mitm_proxy_ca_paths); hand it exactly
+    # the two files it expects, read-only, instead of the whole certificate directory.
+    mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
 
     _sidecar_state.network_name = network_name
     _sidecar_state.network_created = _ensure_network(network_name)
@@ -308,6 +372,10 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
         "-v",
         f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
         "-v",
+        f"{mitm_ca_combined}:{MITM_PROXY_CA_DIR}/mitmproxy-ca.pem:ro",
+        "-v",
+        f"{mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
+        "-v",
         f"{addon_path}:/tmp/mitm_addon.py:ro",
         "mitmproxy/mitmproxy:12.2.3",
         "mitmdump",
@@ -319,6 +387,11 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
         "stream_large_bodies=1m",
     ]
 
+    logger.info(
+        "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
+        "image, which can take a while before the container appears.",
+        container_name,
+    )
     proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
     if proxy_spawn.returncode != 0:
         stderr = (proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()
@@ -390,7 +463,8 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
         )
         return [], {}
 
-    ca_cert_path, _ = generate_root_ca()
+    # Probe before generating: an unreachable proxy must not leave a fresh CA behind on a host that
+    # is about to run with direct egress.
     if not _wait_for_proxy(host_port[0], host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS):
         logger.error(
             "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s:%s. Start the proxy or "
@@ -399,6 +473,8 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
             host_port[1],
         )
         return [], {}
+
+    ca_cert_path, _ = generate_root_ca()
 
     return [*_gateway_host_args(), *_ca_mount_args(ca_cert_path)], _build_proxy_envs(ca_cert_path, proxy_url)
 
@@ -467,41 +543,43 @@ def run_docker_container(
     for k, v in ssh_envs.items():
         docker_cmd.extend(["-e", f"{k}={v}"])
 
-    # Token Reduction Proxy & CA Mounts
+    # Token Reduction Proxy & CA Mounts. From this point on the sidecar (and its network) may exist,
+    # so every remaining exit path — early returns included — must run teardown, not just the final
+    # subprocess.run.
     tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce)
-    docker_cmd.extend(tr_mounts)
-    for k, v in tr_envs.items():
-        docker_cmd.extend(["-e", f"{k}={v}"])
-
-    # Intent file mount for intent-creator role
-    if role == "intent-creator" and intent_file:
-        abs_intent = os.path.abspath(intent_file)
-        if not os.path.exists(abs_intent):
-            print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)
-            return 1
-        docker_cmd.extend(["-v", f"{abs_intent}:/tmp/intent.json"])
-
-    # Auto-detect Session Mounts
-    session_mounts = get_agent_session_mounts(agent_id)
-    docker_cmd.extend(session_mounts)
-
-    # Image and args
-    docker_cmd.append(image_name)
-    docker_cmd.extend(container_args)
-
-    sensitive_keys = [
-        "GITHUB_TOKEN",
-        "HOLON_AGENT_KEY",
-    ]
-    sanitized_cmd = []
-    for item in docker_cmd:
-        if any(item.startswith(f"{key}=") for key in sensitive_keys):
-            k, _ = item.split("=", 1)
-            sanitized_cmd.append(f"{k}=***REDACTED***")
-        else:
-            sanitized_cmd.append(item)
-    print(f"Executing: {' '.join(sanitized_cmd)}")
     try:
+        docker_cmd.extend(tr_mounts)
+        for k, v in tr_envs.items():
+            docker_cmd.extend(["-e", f"{k}={v}"])
+
+        # Intent file mount for intent-creator role
+        if role == "intent-creator" and intent_file:
+            abs_intent = os.path.abspath(intent_file)
+            if not os.path.exists(abs_intent):
+                print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)
+                return 1
+            docker_cmd.extend(["-v", f"{abs_intent}:/tmp/intent.json"])
+
+        # Auto-detect Session Mounts
+        session_mounts = get_agent_session_mounts(agent_id)
+        docker_cmd.extend(session_mounts)
+
+        # Image and args
+        docker_cmd.append(image_name)
+        docker_cmd.extend(container_args)
+
+        sensitive_keys = [
+            "GITHUB_TOKEN",
+            "HOLON_AGENT_KEY",
+        ]
+        sanitized_cmd = []
+        for item in docker_cmd:
+            if any(item.startswith(f"{key}=") for key in sensitive_keys):
+                k, _ = item.split("=", 1)
+                sanitized_cmd.append(f"{k}=***REDACTED***")
+            else:
+                sanitized_cmd.append(item)
+        print(f"Executing: {' '.join(sanitized_cmd)}")
         result = subprocess.run(docker_cmd)
         return result.returncode
     finally:
