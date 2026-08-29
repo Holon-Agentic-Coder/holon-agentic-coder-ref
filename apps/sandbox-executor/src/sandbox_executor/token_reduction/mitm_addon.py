@@ -98,10 +98,9 @@ class MITMProxyInterceptor:
             logger.warning("Skipping cache put for non-200 HTTP status code (%d) on %s", status_code, endpoint)
             return
 
-        if isinstance(response_json, dict):
-            if "error" in response_json or response_json.get("type") == "error":
-                logger.warning("Skipping cache put for API error response payload on %s", endpoint)
-                return
+        if isinstance(response_json, dict) and ("error" in response_json or response_json.get("type") == "error"):
+            logger.warning("Skipping cache put for API error response payload on %s", endpoint)
+            return
 
         provider = self.detect_provider(endpoint)
         if provider != "unknown":
@@ -141,7 +140,9 @@ class MitmproxyAddon:
                         )
                         if response_cls and hasattr(response_cls, "make"):
                             flow.response = response_cls.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
-                        setattr(flow, "is_cached", True)
+                        flow.is_cached = True
+            except json.JSONDecodeError as exc:
+                logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
                 logger.exception("Mitmproxy request intercept error for endpoint: %s", url)
 
@@ -163,6 +164,8 @@ class MitmproxyAddon:
                     req_data = json.loads(req_text)
                     resp_data = json.loads(resp_text)
                     self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
+            except json.JSONDecodeError as exc:
+                logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
             except Exception:
                 logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
 

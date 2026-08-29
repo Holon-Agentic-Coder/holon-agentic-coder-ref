@@ -55,14 +55,15 @@ class HybridCacheStore:
                 """
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_prompt_cache_provider_created ON prompt_cache (provider, created_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_prompt_cache_provider_created "
+                "ON prompt_cache (provider, created_at DESC)"
             )
             conn.commit()
 
     def generate_prefix_key(self, payload: dict[str, Any], provider: str = "anthropic") -> str:
         """Generates a stable prefix-tree hash key from the payload system and message turns."""
         normalized_str = self.normalize_payload(payload, provider)
-        return hashlib.sha256(f"{provider}:{normalized_str}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{provider}:{normalized_str}".encode()).hexdigest()
 
     def normalize_payload(self, payload: dict[str, Any], provider: str = "anthropic") -> str:
         """Normalizes payload by stripping transient variables like timestamps, run IDs, and temporary tokens."""
@@ -87,6 +88,7 @@ class HybridCacheStore:
         """Extracts user message content specifically to avoid system prompt and JSON key token pollution.
         Prioritizes the most recent user turns to prevent long conversation history token dilution.
         """
+
         def _extract_item_text(item: Any) -> list[str]:
             texts: list[str] = []
             if isinstance(item, str):
@@ -159,9 +161,8 @@ class HybridCacheStore:
                 for item in system_val:
                     if isinstance(item, str):
                         system_texts.append(item)
-                    elif isinstance(item, dict):
-                        if "text" in item and isinstance(item["text"], str):
-                            system_texts.append(item["text"])
+                    elif isinstance(item, dict) and "text" in item and isinstance(item["text"], str):
+                        system_texts.append(item["text"])
             elif isinstance(system_val, dict):
                 if "text" in system_val and isinstance(system_val["text"], str):
                     system_texts.append(system_val["text"])
@@ -305,4 +306,3 @@ class HybridCacheStore:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM prompt_cache")
             conn.commit()
-

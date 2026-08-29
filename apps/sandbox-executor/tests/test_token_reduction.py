@@ -628,7 +628,7 @@ def test_mitm_interceptor_caching_disabled(tmp_path):
 
     endpoint = "https://api.anthropic.com/v1/messages"
     req_json = {"system": "System prompt", "messages": [{"role": "user", "content": "Hello LLM"}]}
-    cleaned_req, cached_resp = interceptor.intercept_request(endpoint, req_json)
+    _cleaned_req, cached_resp = interceptor.intercept_request(endpoint, req_json)
     assert cached_resp is None
     assert interceptor._cache_store is None
     assert not cache_dir.exists()
@@ -637,6 +637,7 @@ def test_mitm_interceptor_caching_disabled(tmp_path):
 def test_mitm_addon_lifecycle_and_hit_count(tmp_path):
     import json
     import sqlite3
+
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
 
     cache_dir = tmp_path / "cache"
@@ -705,6 +706,7 @@ def test_mitm_addon_lifecycle_and_hit_count(tmp_path):
 
 def test_hybrid_cache_atomic_hit_count_and_system_prompt_normalization(tmp_path):
     import sqlite3
+
     from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
 
     cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
@@ -846,6 +848,7 @@ def test_mitm_addon_null_request_flow():
 
 def test_mitm_addon_error_response_caching_bypass(tmp_path):
     import json
+
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
 
     cache_dir = tmp_path / "cache"
@@ -877,11 +880,13 @@ def test_mitm_addon_error_response_caching_bypass(tmp_path):
 
     class FakeRequest:
         pretty_url = endpoint
+
         def get_text(self):
             return json.dumps(req_json)
 
     class FakeResponse:
         status_code = 429
+
         def get_text(self):
             return json.dumps({"error": "Rate limit exceeded"})
 
@@ -911,7 +916,10 @@ def test_hybrid_cache_anthropic_tool_result_content_block_extraction(tmp_path):
                         "type": "tool_result",
                         "tool_use_id": "toolu_123",
                         "content": [
-                            {"type": "text", "text": "Successfully compiled binary target main without any compilation warnings"}
+                            {
+                                "type": "text",
+                                "text": ("Successfully compiled binary target main without any compilation warnings"),
+                            }
                         ],
                     }
                 ],
@@ -963,7 +971,8 @@ def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
     cache.put(req_turn9, resp_turn9, provider="anthropic")
 
     # Turn 10 with long history (turns 1..9) but a completely DIFFERENT instruction in turn 10:
-    long_history_turn10 = list(long_history_turn9) + [
+    long_history_turn10 = [
+        *long_history_turn9,
         {"role": "assistant", "content": "Turn 9 done"},
         {"role": "user", "content": "Turn 10: Delete temporary log files from output build directory"},
     ]
@@ -973,7 +982,8 @@ def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
     assert cache.get(req_turn10_diff, provider="anthropic") is None
 
     # Query Turn 10 with semantically SIMILAR instruction for turn 10:
-    long_history_turn10_similar = list(long_history_turn9) + [
+    long_history_turn10_similar = [
+        *long_history_turn9,
         {"role": "assistant", "content": "Turn 9 done"},
         {"role": "user", "content": "Turn 10: Delete temporary log files from build output folder"},
     ]
@@ -991,6 +1001,7 @@ def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
 
 def test_mitm_addon_response_make_import_fallback(monkeypatch):
     import json
+
     from sandbox_executor.token_reduction import mitm_addon
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
 
@@ -1018,8 +1029,10 @@ def test_mitm_addon_response_make_import_fallback(monkeypatch):
 
     class FakeRequest:
         pretty_url = url
+
         def get_text(self):
             return json.dumps(req_payload)
+
         def set_text(self, text):
             pass
 
@@ -1044,6 +1057,7 @@ def test_mitm_addon_response_make_import_fallback(monkeypatch):
         request = FakeRequest()
         response = None
         is_cached = False
+
         class Response:
             @classmethod
             def make(cls, status_code, content, headers):
@@ -1065,6 +1079,7 @@ def test_mitm_addon_response_make_import_fallback(monkeypatch):
 
 def test_hybrid_cache_put_upsert_preserves_hit_count(tmp_path):
     import sqlite3
+
     from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
 
     cache = HybridCacheStore(cache_dir=str(tmp_path))
@@ -1091,8 +1106,3 @@ def test_hybrid_cache_put_upsert_preserves_hit_count(tmp_path):
         row = conn.execute("SELECT hit_count, response_json FROM prompt_cache").fetchone()
         assert row[0] == 2
         assert "Updated response" in row[1]
-
-
-
-
-
