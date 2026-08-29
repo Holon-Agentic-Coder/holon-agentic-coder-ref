@@ -63,8 +63,8 @@ class MitmproxyAddon:
                     data = json.loads(content)
                     cleaned_data = self.interceptor.intercept_request(url, data)
                     flow.request.set_text(json.dumps(cleaned_data))
-            except Exception as e:
-                logger.warning("Mitmproxy request intercept error: %s", e)
+            except Exception:
+                logger.exception("Mitmproxy request intercept error for endpoint: %s", url)
 
 
 addons = [MitmproxyAddon()]

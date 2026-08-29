@@ -324,3 +324,183 @@ def test_mitm_interceptor_and_addon():
     addon.request(flow_mock)
 
     flow_mock.request.set_text.assert_called_once()
+
+
+def test_anthropic_cache_control_limit_enforcement():
+    cleaner = JSONContextCleaner(enable_deduplication=False, enable_prompt_caching=True)
+
+    # 1. Payload with 3 pre-existing cache_control breakpoints
+    payload = {
+        "system": [
+            {"type": "text", "text": "Sys1", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "Sys2", "cache_control": {"type": "ephemeral"}},
+        ],
+        "tools": [
+            {"name": "tool1", "description": "t1", "cache_control": {"type": "ephemeral"}},
+            {"name": "tool2", "description": "t2"},
+        ],
+        "messages": [
+            {"role": "user", "content": "Turn 0"},
+            {"role": "assistant", "content": "Turn 1"},
+            {"role": "user", "content": "Turn 2"},
+            {"role": "assistant", "content": "Turn 3"},
+        ],
+    }
+
+    cleaned = cleaner.process_payload(payload, provider="anthropic")
+    total_tags = cleaner._count_existing_cache_controls(cleaned)
+    assert total_tags <= 4
+    # Out of tool2 and messages[-2], only 1 should be added because initial count was 3
+    assert total_tags == 4
+
+    # 2. Payload with 4 pre-existing cache_control breakpoints
+    payload4 = {
+        "system": [
+            {"type": "text", "text": "Sys1", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "Sys2", "cache_control": {"type": "ephemeral"}},
+        ],
+        "tools": [
+            {"name": "tool1", "description": "t1", "cache_control": {"type": "ephemeral"}},
+        ],
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Msg", "cache_control": {"type": "ephemeral"}}],
+            },
+            {"role": "assistant", "content": "Ans"},
+        ],
+    }
+
+    cleaned4 = cleaner.process_payload(payload4, provider="anthropic")
+    total_tags4 = cleaner._count_existing_cache_controls(cleaned4)
+    assert total_tags4 == 4
+
+
+def test_anthropic_history_boundary_preservation():
+    cleaner = JSONContextCleaner(enable_deduplication=False, enable_prompt_caching=False, max_turns=6)
+
+    messages = [
+        {"role": "user", "content": "Turn 0: Initial query"},
+        {"role": "assistant", "content": "Turn 1: Response 1"},
+        {"role": "user", "content": "Turn 2: Followup 1"},
+        {"role": "assistant", "content": "Turn 3: Response 2"},
+        {"role": "user", "content": "Turn 4: Followup 2"},
+        {"role": "assistant", "content": "Turn 5: Response 3"},
+        {"role": "user", "content": "Turn 6: Recent user query"},
+        {"role": "assistant", "content": "Turn 7: Recent assistant answer"},
+        {"role": "user", "content": "Turn 8: Latest user prompt"},
+        {"role": "assistant", "content": "Turn 9: Latest response"},
+    ]
+
+    cleaned = cleaner.process_payload({"messages": messages}, provider="anthropic")
+    cleaned_msgs = cleaned["messages"]
+
+    # Verify boundary preservation:
+    # Index 0 is Turn 0 (initial user message)
+    assert cleaned_msgs[0]["content"] == "Turn 0: Initial query"
+    assert cleaned_msgs[0]["role"] == "user"
+
+    # Index 1 is summary_msg with assistant role
+    assert cleaned_msgs[1]["role"] == "assistant"
+    assert "[Summary of omitted" in cleaned_msgs[1]["content"]
+
+    # Index 2 is Turn 4 or Turn 6 user prompt (preserved recent turn), NOT merged into Turn 0
+    assert cleaned_msgs[2]["role"] == "user"
+    assert "Turn" in cleaned_msgs[2]["content"]
+    assert "[Summary of omitted" not in cleaned_msgs[2]["content"]
+
+    # Index 3 is assistant response
+    assert cleaned_msgs[3]["role"] == "assistant"
+
+
+def test_openai_role_merging_and_summarization():
+    cleaner = JSONContextCleaner(enable_deduplication=False, max_turns=6)
+
+    messages = [
+        {"role": "system", "content": "System prompt"},
+        {"role": "user", "content": "Turn 1"},
+        {"role": "user", "content": "Turn 1 duplicate role"},
+        {"role": "assistant", "content": "Turn 2"},
+        {"role": "user", "content": "Turn 3"},
+        {"role": "assistant", "content": "Turn 4"},
+        {"role": "user", "content": "Turn 5"},
+        {"role": "assistant", "content": "Turn 6"},
+        {"role": "user", "content": "Turn 7"},
+        {"role": "assistant", "content": "Turn 8"},
+        {"role": "user", "content": "Turn 9"},
+        {"role": "assistant", "content": "Turn 10"},
+        {"role": "user", "content": "Recent user turn"},
+    ]
+
+    cleaned = cleaner.process_payload({"messages": messages}, provider="openai")
+    cleaned_msgs = cleaned["messages"]
+
+    assert len(cleaned_msgs) < len(messages)
+    # Check consecutive role merging was executed
+    roles = [m["role"] for m in cleaned_msgs]
+    # No adjacent identical roles
+    for i in range(len(roles) - 1):
+        assert roles[i] != roles[i + 1]
+
+
+def test_gemini_history_truncation_and_summarization():
+    cleaner = JSONContextCleaner(enable_deduplication=False, max_turns=6)
+
+    contents = [
+        {"role": "user", "parts": [{"text": "Turn 0: Start"}]},
+        {"role": "model", "parts": [{"text": "Turn 1: Ack"}]},
+        {"role": "user", "parts": [{"text": "Turn 2: Query 1"}]},
+        {"role": "model", "parts": [{"text": "Turn 3: Ans 1"}]},
+        {"role": "user", "parts": [{"text": "Turn 4: Query 2"}]},
+        {"role": "model", "parts": [{"text": "Turn 5: Ans 2"}]},
+        {"role": "user", "parts": [{"text": "Turn 6: Query 3"}]},
+        {"role": "model", "parts": [{"text": "Turn 7: Ans 3"}]},
+        {"role": "user", "parts": [{"text": "Turn 8: Query 4"}]},
+        {"role": "model", "parts": [{"text": "Turn 9: Ans 4"}]},
+        {"role": "user", "parts": [{"text": "Turn 10: Recent user"}]},
+        {"role": "model", "parts": [{"text": "Turn 11: Recent model"}]},
+    ]
+
+    cleaned = cleaner.process_payload({"contents": contents}, provider="gemini")
+    cleaned_contents = cleaned["contents"]
+
+    assert len(cleaned_contents) < len(contents)
+    summary_found = any(
+        "[Summary of omitted" in p.get("text", "")
+        for turn in cleaned_contents
+        for p in turn.get("parts", [])
+    )
+    assert summary_found is True
+
+
+
+def test_anthropic_deduplicate_list_tool_outputs():
+    cleaner = JSONContextCleaner(enable_prompt_caching=False)
+    large_list_content = [{"type": "text", "text": "D" * 150}]
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_10", "content": large_list_content},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_11", "content": large_list_content},
+            ],
+        },
+        {"role": "assistant", "content": "Thinking..."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_12", "content": "Recent"},
+            ],
+        },
+    ]
+
+    cleaned = cleaner.process_payload({"messages": messages}, provider="anthropic")
+    cleaned_msgs = cleaned["messages"]
+    assert "[Omitted: Tool result content is identical to Turn 0 (call_10)]" in cleaned_msgs[1]["content"][0]["content"]
+

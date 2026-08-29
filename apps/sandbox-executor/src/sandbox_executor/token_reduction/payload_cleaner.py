@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 import logging
 from typing import Any
 
@@ -105,6 +106,20 @@ class JSONContextCleaner:
                                     turn_idx,
                                     resource_name,
                                 )
+                        elif isinstance(tool_out, list):
+                            serialized = json.dumps(tool_out, sort_keys=True)
+                            if len(serialized) > 100:
+                                content_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+                                if content_hash in seen_content_hashes and is_older_turn:
+                                    prev_turn, prev_res = seen_content_hashes[content_hash]
+                                    item_copy["content"] = (
+                                        f"[Omitted: Tool result content is identical to Turn {prev_turn} ({prev_res})]"
+                                    )
+                                else:
+                                    seen_content_hashes[content_hash] = (
+                                        turn_idx,
+                                        resource_name,
+                                    )
 
                     cleaned_content.append(item_copy)
                 msg_copy["content"] = cleaned_content
@@ -122,7 +137,8 @@ class JSONContextCleaner:
         return cleaned_messages
 
     def _is_clean_user_message(self, msg: dict[str, Any], provider: str) -> bool:
-        if msg.get("role") != "user":
+        role = msg.get("role", "user" if provider == "gemini" else "")
+        if role != "user":
             return False
 
         content = msg.get("content")
@@ -132,7 +148,7 @@ class JSONContextCleaner:
                     if isinstance(item, dict) and item.get("type") == "tool_result":
                         return False
             return True
-        elif provider == "openai":
+        elif provider in ("openai", "gemini"):
             return True
         return False
 
@@ -161,7 +177,7 @@ class JSONContextCleaner:
             "Agent performed file reads, search commands, and initial code edits.]"
         )
         summary_msg = {
-            "role": "user",
+            "role": "assistant",
             "content": summary_text,
         }
 
@@ -177,57 +193,113 @@ class JSONContextCleaner:
                 continue
             prev = merged[-1]
             if prev.get("role") == msg.get("role"):
-                prev_content = prev.get("content")
-                curr_content = msg.get("content")
+                if "content" in prev or "content" in msg:
+                    prev_content = prev.get("content")
+                    curr_content = msg.get("content")
 
-                if isinstance(prev_content, list) or isinstance(curr_content, list):
-                    prev_blocks = []
-                    if isinstance(prev_content, list):
-                        prev_blocks.extend(copy.deepcopy(prev_content))
-                    elif isinstance(prev_content, str):
-                        prev_blocks.append({"type": "text", "text": prev_content})
+                    if isinstance(prev_content, list) or isinstance(curr_content, list):
+                        prev_blocks = []
+                        if isinstance(prev_content, list):
+                            prev_blocks.extend(copy.deepcopy(prev_content))
+                        elif isinstance(prev_content, str):
+                            prev_blocks.append({"type": "text", "text": prev_content})
 
-                    curr_blocks = []
-                    if isinstance(curr_content, list):
-                        curr_blocks.extend(copy.deepcopy(curr_content))
-                    elif isinstance(curr_content, str):
-                        curr_blocks.append({"type": "text", "text": curr_content})
+                        curr_blocks = []
+                        if isinstance(curr_content, list):
+                            curr_blocks.extend(copy.deepcopy(curr_content))
+                        elif isinstance(curr_content, str):
+                            curr_blocks.append({"type": "text", "text": curr_content})
 
-                    prev["content"] = prev_blocks + curr_blocks
-                else:
-                    prev["content"] = str(prev_content) + "\n\n" + str(curr_content)
+                        prev["content"] = prev_blocks + curr_blocks
+                    else:
+                        prev["content"] = str(prev_content) + "\n\n" + str(curr_content)
+
+                if "parts" in prev or "parts" in msg:
+                    prev_parts = prev.get("parts", [])
+                    curr_parts = msg.get("parts", [])
+                    if isinstance(prev_parts, list) and isinstance(curr_parts, list):
+                        prev["parts"] = copy.deepcopy(prev_parts) + copy.deepcopy(curr_parts)
             else:
                 merged.append(copy.deepcopy(msg))
         return merged
 
+    def _count_existing_cache_controls(self, payload: dict[str, Any]) -> int:
+        count = 0
+
+        system = payload.get("system")
+        if isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict) and "cache_control" in block:
+                    count += 1
+        elif isinstance(system, dict) and "cache_control" in system:
+            count += 1
+
+        tools = payload.get("tools")
+        if isinstance(tools, list):
+            for tool in tools:
+                if isinstance(tool, dict) and "cache_control" in tool:
+                    count += 1
+
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            for msg in messages:
+                if isinstance(msg, dict):
+                    if "cache_control" in msg:
+                        count += 1
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and "cache_control" in block:
+                                count += 1
+                    elif isinstance(content, dict) and "cache_control" in content:
+                        count += 1
+
+        return count
+
     def _inject_anthropic_cache_control(self, payload: dict[str, Any]) -> dict[str, Any]:
+        existing_count = self._count_existing_cache_controls(payload)
+        max_allowed = 4
+        budget = max_allowed - existing_count
+        if budget <= 0:
+            return payload
+
         # Inject cache_control on system prompt block
         system = payload.get("system")
         if isinstance(system, list) and len(system) > 0:
             last_sys = system[-1]
             if isinstance(last_sys, dict) and "cache_control" not in last_sys:
                 last_sys["cache_control"] = {"type": "ephemeral"}
+                budget -= 1
         elif isinstance(system, str):
             payload["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            budget -= 1
 
         # Inject cache_control on tools definition if present
-        tools = payload.get("tools")
-        if isinstance(tools, list) and len(tools) > 0:
-            last_tool = tools[-1]
-            if isinstance(last_tool, dict) and "cache_control" not in last_tool:
-                last_tool["cache_control"] = {"type": "ephemeral"}
+        if budget > 0:
+            tools = payload.get("tools")
+            if isinstance(tools, list) and len(tools) > 0:
+                last_tool = tools[-1]
+                if isinstance(last_tool, dict) and "cache_control" not in last_tool:
+                    last_tool["cache_control"] = {"type": "ephemeral"}
+                    budget -= 1
 
         # Inject cache_control on recent messages history turn
-        messages = payload.get("messages", [])
-        if len(messages) >= 2:
-            target_msg = messages[-2]
-            content = target_msg.get("content")
-            if isinstance(content, list) and len(content) > 0:
-                last_block = content[-1]
-                if isinstance(last_block, dict) and "cache_control" not in last_block:
-                    last_block["cache_control"] = {"type": "ephemeral"}
-            elif isinstance(content, str):
-                target_msg["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+        if budget > 0:
+            messages = payload.get("messages", [])
+            if isinstance(messages, list) and len(messages) >= 2:
+                target_msg = messages[-2]
+                if isinstance(target_msg, dict):
+                    content = target_msg.get("content")
+                    if isinstance(content, list) and len(content) > 0:
+                        last_block = content[-1]
+                        if isinstance(last_block, dict) and "cache_control" not in last_block:
+                            last_block["cache_control"] = {"type": "ephemeral"}
+                            budget -= 1
+                    elif isinstance(content, str):
+                        target_msg["content"] = [
+                            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                        ]
+                        budget -= 1
 
         return payload
 
@@ -272,10 +344,11 @@ class JSONContextCleaner:
                 suffix = cleaned_messages[suffix_idx:]
                 middle_count = len(cleaned_messages) - len(prefix) - len(suffix)
                 summary_msg = {
-                    "role": "user",
+                    "role": "assistant",
                     "content": f"[Summary of omitted {middle_count} intermediate conversation turns]",
                 }
                 cleaned_messages = [*prefix, summary_msg, *suffix]
+                cleaned_messages = self._merge_consecutive_roles(cleaned_messages)
 
         payload["messages"] = cleaned_messages
         return payload
@@ -309,6 +382,30 @@ class JSONContextCleaner:
 
             turn_copy["parts"] = cleaned_parts
             cleaned_contents.append(turn_copy)
+
+        if len(cleaned_contents) > self.max_turns:
+            target_idx = len(cleaned_contents) - _RECENT_TURNS_TO_KEEP
+            suffix_idx = None
+            for i in range(target_idx, 0, -1):
+                if self._is_clean_user_message(cleaned_contents[i], "gemini"):
+                    suffix_idx = i
+                    break
+            if suffix_idx is None:
+                for i in range(target_idx + 1, len(cleaned_contents)):
+                    if self._is_clean_user_message(cleaned_contents[i], "gemini"):
+                        suffix_idx = i
+                        break
+
+            if suffix_idx is not None and suffix_idx > 1:
+                prefix = cleaned_contents[:1]
+                suffix = cleaned_contents[suffix_idx:]
+                middle_count = len(cleaned_contents) - len(prefix) - len(suffix)
+                summary_msg = {
+                    "role": "model",
+                    "parts": [{"text": f"[Summary of omitted {middle_count} intermediate conversation turns]"}],
+                }
+                cleaned_contents = [*prefix, summary_msg, *suffix]
+                cleaned_contents = self._merge_consecutive_roles(cleaned_contents)
 
         payload["contents"] = cleaned_contents
         return payload
