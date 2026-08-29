@@ -81,6 +81,9 @@ class JSONContextCleaner:
         turn_count = len(messages)
 
         for turn_idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                cleaned_messages.append(msg)
+                continue
             msg_copy = copy.deepcopy(msg)
             # Only deduplicate in older history turns (leave current turn intact)
             is_older_turn = turn_idx < (turn_count - 2)
@@ -89,8 +92,12 @@ class JSONContextCleaner:
             if isinstance(content, list):
                 cleaned_content = []
                 for item in content:
+                    if not isinstance(item, dict):
+                        cleaned_content.append(item)
+                        continue
                     item_copy = copy.deepcopy(item)
-                    if isinstance(item_copy, dict) and item_copy.get("type") == "tool_result":
+                    item_type = item_copy.get("type")
+                    if item_type == "tool_result":
                         tool_out = item_copy.get("content", "")
                         resource_name = item_copy.get("tool_use_id", f"tool_result_{turn_idx}")
 
@@ -120,6 +127,20 @@ class JSONContextCleaner:
                                         turn_idx,
                                         resource_name,
                                     )
+                    elif item_type == "text":
+                        text_out = item_copy.get("text", "")
+                        if isinstance(text_out, str) and len(text_out) > 100:
+                            content_hash = hashlib.sha256(text_out.encode("utf-8")).hexdigest()
+                            if content_hash in seen_content_hashes and is_older_turn:
+                                prev_turn, prev_res = seen_content_hashes[content_hash]
+                                item_copy["text"] = (
+                                    f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
+                                )
+                            else:
+                                seen_content_hashes[content_hash] = (
+                                    turn_idx,
+                                    f"turn_{turn_idx}",
+                                )
 
                     cleaned_content.append(item_copy)
                 msg_copy["content"] = cleaned_content
@@ -137,6 +158,8 @@ class JSONContextCleaner:
         return cleaned_messages
 
     def _is_clean_user_message(self, msg: dict[str, Any], provider: str) -> bool:
+        if not isinstance(msg, dict):
+            return False
         role = msg.get("role", "user" if provider == "gemini" else "")
         if role != "user":
             return False
@@ -172,10 +195,7 @@ class JSONContextCleaner:
         suffix = messages[suffix_idx:]
         middle = messages[1:suffix_idx]
 
-        summary_text = (
-            f"[Summary of omitted {len(middle)} intermediate conversation turns: "
-            "Agent performed file reads, search commands, and initial code edits.]"
-        )
+        summary_text = f"[Summary of omitted {len(middle)} intermediate conversation turns]"
         summary_msg = {
             "role": "assistant",
             "content": summary_text,
@@ -188,10 +208,16 @@ class JSONContextCleaner:
             return []
         merged = []
         for msg in messages:
+            if not isinstance(msg, dict):
+                merged.append(copy.deepcopy(msg))
+                continue
             if not merged:
                 merged.append(copy.deepcopy(msg))
                 continue
             prev = merged[-1]
+            if not isinstance(prev, dict):
+                merged.append(copy.deepcopy(msg))
+                continue
             if prev.get("role") == msg.get("role"):
                 if "content" in prev or "content" in msg:
                     prev_content = prev.get("content")
@@ -312,6 +338,9 @@ class JSONContextCleaner:
         cleaned_messages = []
 
         for turn_idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                cleaned_messages.append(msg)
+                continue
             msg_copy = copy.deepcopy(msg)
             is_older_turn = turn_idx < (turn_count - 2)
             content = msg_copy.get("content", "")
@@ -362,23 +391,30 @@ class JSONContextCleaner:
         cleaned_contents = []
 
         for turn_idx, turn in enumerate(contents):
+            if not isinstance(turn, dict):
+                cleaned_contents.append(turn)
+                continue
             turn_copy = copy.deepcopy(turn)
             is_older_turn = turn_idx < (turn_count - 2)
             parts = turn_copy.get("parts", [])
             cleaned_parts = []
 
-            for part in parts:
-                part_copy = copy.deepcopy(part)
-                text = part_copy.get("text", "")
-                if isinstance(text, str) and len(text) > 200:
-                    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                    if text_hash in seen_content_hashes and is_older_turn:
-                        prev_turn, prev_res = seen_content_hashes[text_hash]
-                        part_copy["text"] = f"[Omitted: Content is identical to Turn {prev_turn} ({prev_res})]"
-                    else:
-                        seen_content_hashes[text_hash] = (turn_idx, f"turn_{turn_idx}")
+            if isinstance(parts, list):
+                for part in parts:
+                    if not isinstance(part, dict):
+                        cleaned_parts.append(part)
+                        continue
+                    part_copy = copy.deepcopy(part)
+                    text = part_copy.get("text", "")
+                    if isinstance(text, str) and len(text) > 200:
+                        text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                        if text_hash in seen_content_hashes and is_older_turn:
+                            prev_turn, prev_res = seen_content_hashes[text_hash]
+                            part_copy["text"] = f"[Omitted: Content is identical to Turn {prev_turn} ({prev_res})]"
+                        else:
+                            seen_content_hashes[text_hash] = (turn_idx, f"turn_{turn_idx}")
 
-                cleaned_parts.append(part_copy)
+                    cleaned_parts.append(part_copy)
 
             turn_copy["parts"] = cleaned_parts
             cleaned_contents.append(turn_copy)

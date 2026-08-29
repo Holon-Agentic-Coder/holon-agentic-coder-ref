@@ -6,7 +6,7 @@ from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProx
 from sandbox_executor.token_reduction.payload_cleaner import JSONContextCleaner
 
 
-def test_cleaner_init_defaults():
+def test_cleaner_init_defaults() -> None:
     cleaner = JSONContextCleaner()
     assert cleaner.enable_deduplication is True
     assert cleaner.enable_prompt_caching is True
@@ -18,7 +18,7 @@ def test_cleaner_init_defaults():
     assert custom.max_turns == 10
 
 
-def test_process_payload_unknown_provider():
+def test_process_payload_unknown_provider() -> None:
     cleaner = JSONContextCleaner()
     payload = {"messages": [{"role": "user", "content": "Hello"}]}
     res = cleaner.process_payload(payload, provider="unknown")
@@ -26,7 +26,7 @@ def test_process_payload_unknown_provider():
     assert res is not payload  # deep copy verification
 
 
-def test_anthropic_deduplication_tool_results():
+def test_anthropic_deduplication_tool_results() -> None:
     cleaner = JSONContextCleaner(enable_prompt_caching=False)
     large_output = "A" * 150
     short_output = "B" * 50
@@ -76,7 +76,7 @@ def test_anthropic_deduplication_tool_results():
     assert cleaned_msgs[3]["content"][0]["content"] == large_output
 
 
-def test_anthropic_deduplication_string_messages():
+def test_anthropic_deduplication_string_messages() -> None:
     cleaner = JSONContextCleaner(enable_prompt_caching=False)
     long_msg = "X" * 250
     short_msg = "Y" * 50
@@ -98,7 +98,7 @@ def test_anthropic_deduplication_string_messages():
     assert "[Omitted: Message content is identical to Turn 0 (turn_0)]" in cleaned_msgs[2]["content"]
 
 
-def test_anthropic_deduplication_disabled():
+def test_anthropic_deduplication_disabled() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, enable_prompt_caching=False)
     long_msg = "X" * 250
     messages = [
@@ -114,7 +114,7 @@ def test_anthropic_deduplication_disabled():
     assert cleaned["messages"][2]["content"] == long_msg
 
 
-def test_anthropic_cache_control_injection():
+def test_anthropic_cache_control_injection() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False)
 
     # 1. System prompt string wrapping and tools list injection
@@ -157,7 +157,7 @@ def test_anthropic_cache_control_injection():
     assert cleaned2["messages"][-2]["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_anthropic_history_summarization_and_role_merging():
+def test_anthropic_history_summarization_and_role_merging() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, enable_prompt_caching=False, max_turns=8)
 
     # Build 12 messages (> max_turns 8 and > _RECENT_TURNS_TO_KEEP 6)
@@ -186,7 +186,7 @@ def test_anthropic_history_summarization_and_role_merging():
     assert summary_found is True
 
 
-def test_consecutive_role_merging():
+def test_consecutive_role_merging() -> None:
     cleaner = JSONContextCleaner()
 
     # String + String consecutive user roles
@@ -213,7 +213,7 @@ def test_consecutive_role_merging():
     assert cleaner._merge_consecutive_roles([]) == []
 
 
-def test_openai_cleaning():
+def test_openai_cleaning() -> None:
     cleaner = JSONContextCleaner(max_turns=6)
     long_text = "O" * 250
 
@@ -244,7 +244,7 @@ def test_openai_cleaning():
     assert cleaner._clean_openai(invalid_payload, {}) == invalid_payload
 
 
-def test_gemini_cleaning():
+def test_gemini_cleaning() -> None:
     cleaner = JSONContextCleaner()
     long_text = "G" * 250
 
@@ -270,7 +270,7 @@ def test_gemini_cleaning():
     assert cleaner._clean_gemini(invalid_payload, {}) == invalid_payload
 
 
-def test_thread_safety_local_state():
+def test_thread_safety_local_state() -> None:
     """Verify seen_content_hashes is not shared across calls (I-1 regression test)."""
     cleaner = JSONContextCleaner(enable_prompt_caching=False)
     long_text = "T" * 250
@@ -301,7 +301,7 @@ def test_thread_safety_local_state():
     assert res2["messages"][0]["content"] == long_text
 
 
-def test_mitm_interceptor_and_addon():
+def test_mitm_interceptor_and_addon() -> None:
     interceptor = MITMProxyInterceptor()
 
     # Provider detection
@@ -326,7 +326,7 @@ def test_mitm_interceptor_and_addon():
     flow_mock.request.set_text.assert_called_once()
 
 
-def test_anthropic_cache_control_limit_enforcement():
+def test_anthropic_cache_control_limit_enforcement() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, enable_prompt_caching=True)
 
     # 1. Payload with 3 pre-existing cache_control breakpoints
@@ -376,7 +376,7 @@ def test_anthropic_cache_control_limit_enforcement():
     assert total_tags4 == 4
 
 
-def test_anthropic_history_boundary_preservation():
+def test_anthropic_history_boundary_preservation() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, enable_prompt_caching=False, max_turns=6)
 
     messages = [
@@ -413,7 +413,7 @@ def test_anthropic_history_boundary_preservation():
     assert cleaned_msgs[3]["role"] == "assistant"
 
 
-def test_openai_role_merging_and_summarization():
+def test_openai_role_merging_and_summarization() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, max_turns=6)
 
     messages = [
@@ -443,7 +443,7 @@ def test_openai_role_merging_and_summarization():
         assert roles[i] != roles[i + 1]
 
 
-def test_gemini_history_truncation_and_summarization():
+def test_gemini_history_truncation_and_summarization() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, max_turns=6)
 
     contents = [
@@ -473,8 +473,7 @@ def test_gemini_history_truncation_and_summarization():
     assert summary_found is True
 
 
-
-def test_anthropic_deduplicate_list_tool_outputs():
+def test_anthropic_deduplicate_list_tool_outputs() -> None:
     cleaner = JSONContextCleaner(enable_prompt_caching=False)
     large_list_content = [{"type": "text", "text": "D" * 150}]
 
@@ -503,4 +502,94 @@ def test_anthropic_deduplicate_list_tool_outputs():
     cleaned = cleaner.process_payload({"messages": messages}, provider="anthropic")
     cleaned_msgs = cleaned["messages"]
     assert "[Omitted: Tool result content is identical to Turn 0 (call_10)]" in cleaned_msgs[1]["content"][0]["content"]
+
+
+def test_anthropic_deduplicate_list_text_blocks() -> None:
+    cleaner = JSONContextCleaner(enable_prompt_caching=False)
+    large_text = "T" * 150
+
+    messages = [
+        # Turn 0: older turn with list text content
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": large_text}],
+        },
+        # Turn 1: older turn repeating list text content
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": large_text}],
+        },
+        # Turn 2: assistant turn
+        {"role": "assistant", "content": "Acknowledged."},
+        # Turn 3: current turn (recent turn protected)
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": large_text}],
+        },
+    ]
+
+    payload = {"messages": messages}
+    cleaned = cleaner.process_payload(payload, provider="anthropic")
+    cleaned_msgs = cleaned["messages"]
+
+    # Turn 0: retained original large text
+    assert cleaned_msgs[0]["content"][0]["text"] == large_text
+
+    # Turn 1: older turn repeating large text replaced with placeholder
+    assert "[Omitted: Message content is identical to Turn 0 (turn_0)]" in cleaned_msgs[1]["content"][0]["text"]
+
+    # Turn 3: recent turn protected from deduplication
+    assert cleaned_msgs[3]["content"][0]["text"] == large_text
+
+
+def test_non_dict_payload_items_handling() -> None:
+    cleaner = JSONContextCleaner()
+
+    # Anthropic with non-dict elements in messages and content list
+    anthropic_payload = {
+        "messages": [
+            "malformed_string_turn",
+            12345,
+            None,
+            {
+                "role": "user",
+                "content": ["malformed_item", None, 999, {"type": "text", "text": "Valid text block"}],
+            },
+        ]
+    }
+    cleaned_anthropic = cleaner.process_payload(anthropic_payload, provider="anthropic")
+    assert cleaned_anthropic["messages"][0] == "malformed_string_turn"
+    assert cleaned_anthropic["messages"][1] == 12345
+    assert cleaned_anthropic["messages"][2] is None
+    assert cleaned_anthropic["messages"][3]["content"][0] == "malformed_item"
+
+    # OpenAI with non-dict elements in messages
+    openai_payload = {
+        "messages": [
+            "invalid_msg",
+            None,
+            {"role": "user", "content": "Valid query"},
+        ]
+    }
+    cleaned_openai = cleaner.process_payload(openai_payload, provider="openai")
+    assert cleaned_openai["messages"][0] == "invalid_msg"
+    assert cleaned_openai["messages"][1] is None
+    assert cleaned_openai["messages"][2]["content"] == "Valid query"
+
+    # Gemini with non-dict elements in contents and parts
+    gemini_payload = {
+        "contents": [
+            "invalid_turn",
+            None,
+            {
+                "role": "user",
+                "parts": ["invalid_part", None, {"text": "Valid text"}],
+            },
+        ]
+    }
+    cleaned_gemini = cleaner.process_payload(gemini_payload, provider="gemini")
+    assert cleaned_gemini["contents"][0] == "invalid_turn"
+    assert cleaned_gemini["contents"][1] is None
+    assert cleaned_gemini["contents"][2]["parts"][0] == "invalid_part"
+
 
