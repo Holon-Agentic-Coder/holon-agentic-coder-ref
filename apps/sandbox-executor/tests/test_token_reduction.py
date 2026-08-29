@@ -605,4 +605,3 @@ def test_mitm_interceptor(tmp_path):
     _, cached_hit = interceptor.intercept_request(endpoint, req_json)
     assert cached_hit is not None
     assert cached_hit["id"] == "msg_123"
-
