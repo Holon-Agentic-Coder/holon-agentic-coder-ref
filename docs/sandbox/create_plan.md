@@ -36,6 +36,59 @@ Run from the repository root:
 
 ---
 
+## Optional: Token Reduction Proxy (`--token-reduce`)
+
+Pass `--token-reduce` to route the planner sandbox's HTTP(S) egress through a locally-owned mitmproxy sidecar, so
+responses can be compacted before the agent spends tokens on them.
+
+```bash
+./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash --token-reduce
+```
+
+> [!WARNING] **`--token-reduce` is experimental and not yet functional.** The Phase 2 mitmproxy addon (`mitm_addon.py`)
+> is not shipped yet, so the preflight raises `FileNotFoundError`, the CLI logs an actionable error, and the run
+> continues with **direct egress** — no interception takes place.
+
+> [!WARNING] Once functional, `--token-reduce` performs **local TLS interception**. A Holon Root CA is generated at
+> `~/.holon/certs/holon-root-ca.crt` (with `basicConstraints=critical,CA:TRUE` and
+> `keyUsage=critical,keyCertSign,cRLSign`, and rotated automatically once it would expire within 30 days) so it can
+> decrypt and re-encrypt agent traffic.
+>
+> **Trust mechanism (merged bundle, not `update-ca-certificates`)**: the sandbox image runs as the unprivileged `holon`
+> user, so the Debian trust store can never be refreshed. Instead the entrypoint concatenates the image's system store
+> (`/etc/ssl/certs/ca-certificates.crt`) with the Holon CA into `/home/holon/.holon-ca-bundle.crt`, and `SSL_CERT_FILE`
+> / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` point at that merged file — those variables _replace_ the trust store, so
+> pointing them at the single-cert Holon mount would break every legitimate HTTPS endpoint. `NODE_EXTRA_CA_CERTS` points
+> at the Holon CA alone because it _augments_ Node's built-in roots.
+>
+> **Key exposure**: a MITM proxy inherently requires the CA **private key** to sign forged leaves, so
+> `~/.holon/proxy-ca/mitmproxy-ca.pem` (key + cert, mode `0600`) and `mitmproxy-ca-cert.pem` are mounted **read-only
+> into the proxy sidecar only** (`/home/mitmproxy/.mitmproxy`). The private key is never mounted into the _agent_
+> container, which only ever receives the public certificate.
+>
+> **Retention / redaction posture**: the proxy cache (`~/.holon/proxy-cache`) is mounted read-only into the sidecar and
+> sidecar logs are size-bounded, but **no credential redaction is implemented yet** (Phase 2). `--token-reduce` must
+> therefore only be used against a locally-owned proxy.
+
+- **Prerequisites**: the `docker` and `openssl` host binaries. If either is missing, the addon script is absent, the
+  sidecar fails to start, or it never becomes ready, the CLI logs an actionable error and the run continues with
+  **direct egress** — a dead proxy is never injected into the sandbox.
+- **Isolation**: the sidecar runs on a per-run Docker network (`holon-net-<pid>-<uuid>`), is capped at
+  `--memory=256m --cpus=0.5` with bounded log rotation, and both it and its network are removed when the run finishes
+  (on every exit path, including early failures while assembling the `docker run` command).
+
+### Environment contract
+
+| Variable             | Effect                                                                                                                                                    |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HOLON_TOKEN_REDUCE` | Opt-in without the flag (`1`, `true`, `yes`, `on`). Attaches to an already-running proxy; never starts one.                                               |
+| `HOLON_PROXY_URL`    | Proxy URL used in the `HOLON_TOKEN_REDUCE` path. Defaults to the host gateway (`host.docker.internal:8080` on macOS/Windows, `172.17.0.1:8080` on Linux). |
+
+> [!IMPORTANT] Host `HTTP_PROXY` / `HTTPS_PROXY` are **never** interpreted as opt-in. Sandbox networking is only changed
+> when you pass `--token-reduce` or set `HOLON_TOKEN_REDUCE` explicitly.
+
+---
+
 ## Low-Level Execution (Manual `docker run`)
 
 If you need to invoke Docker manually, run the following command to start the planner container, replacing arguments as

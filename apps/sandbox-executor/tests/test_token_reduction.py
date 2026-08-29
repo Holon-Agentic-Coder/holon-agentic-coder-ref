@@ -1,0 +1,558 @@
+"""Unit tests for AI Agent Token Reduction Architecture - Phase 1."""
+
+import logging
+import os
+import stat
+import subprocess
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+from sandbox_executor import cli
+from sandbox_executor.cli import (
+    CONTAINER_CA_BUNDLE_PATH,
+    NO_PROXY_HOSTS,
+    _build_proxy_envs,
+    _ca_mount_args,
+    _container_ca_path,
+    _gateway_host_args,
+    _proxy_gateway_url,
+    get_token_reduction_mounts_and_envs,
+    setup_token_reduction_proxy,
+    teardown_token_reduction_proxy,
+)
+from sandbox_executor.token_reduction import ca_generator
+from sandbox_executor.token_reduction.ca_generator import generate_root_ca
+
+_THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60
+
+
+def _read_text(path: str) -> str:
+    with open(path) as handle:
+        return handle.read()
+
+
+def _openssl_text(cert_path: str) -> str:
+    """Return ``openssl x509 -noout -text`` output for ``cert_path``."""
+    result = subprocess.run(["openssl", "x509", "-in", cert_path, "-noout", "-text"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _expires_within(cert_path: str, window_seconds: int = _THIRTY_DAYS_SECONDS) -> bool:
+    """True when ``cert_path`` expires inside ``window_seconds`` (openssl -checkend semantics)."""
+    result = subprocess.run(
+        ["openssl", "x509", "-in", cert_path, "-noout", "-checkend", str(window_seconds)], capture_output=True
+    )
+    assert result.returncode in (0, 1), result
+    return result.returncode == 1
+
+
+def _make_ca_with_validity(cert_dir, days: int) -> tuple[str, str]:
+    """Write a throwaway CA pair valid for ``days`` at the cached-CA filenames."""
+    cert_path = cert_dir / "holon-root-ca.crt"
+    key_path = cert_dir / "holon-root-ca.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            str(days),
+            "-nodes",
+            "-subj",
+            "/CN=Holon Agent Root CA/O=Holon Agentic Coder",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return str(cert_path), str(key_path)
+
+
+def _completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
+    return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class FakeDocker:
+    """Records docker invocations and replays canned results for the token-reduction flow."""
+
+    def __init__(self, spawn=None, port_stdout="127.0.0.1:32768\n", network_stderr=""):
+        self.calls: list[list[str]] = []
+        self.spawn = spawn if spawn is not None else _completed(stdout="containerid")
+        self.port_stdout = port_stdout
+        self.network_stderr = network_stderr
+
+    def __call__(self, cmd, *args, **kwargs):
+        self.calls.append(list(cmd))
+        head = cmd[:3] if len(cmd) >= 3 else list(cmd)
+        if head == ["docker", "network", "create"]:
+            return _completed(returncode=1 if self.network_stderr else 0, stderr=self.network_stderr)
+        if head == ["docker", "network", "rm"]:
+            return _completed()
+        if head[:2] == ["docker", "run"]:
+            return self.spawn
+        if head[:2] == ["docker", "port"]:
+            return _completed(stdout=self.port_stdout)
+        return _completed()
+
+    def joined(self) -> str:
+        return "\n".join(" ".join(call) for call in self.calls)
+
+
+@pytest.fixture(autouse=True)
+def reset_sidecar_state():
+    cli._sidecar_state.container_name = None
+    cli._sidecar_state.network_name = None
+    cli._sidecar_state.network_created = False
+    yield
+    cli._sidecar_state.container_name = None
+    cli._sidecar_state.network_name = None
+    cli._sidecar_state.network_created = False
+
+
+@pytest.fixture
+def host_paths(tmp_path, monkeypatch):
+    """Keep every host-side write (CA dir, proxy cache) inside tmp_path and hand out a real CA."""
+    monkeypatch.setattr(cli.os.path, "expanduser", lambda path: str(tmp_path / "home" / path.lstrip("~/")))
+    ca_dir = tmp_path / "certs"
+    monkeypatch.setattr(cli, "generate_root_ca", lambda *a, **k: generate_root_ca(cert_dir=str(ca_dir)))
+    return tmp_path
+
+
+# --------------------------------------------------------------------------------------
+# ca_generator
+# --------------------------------------------------------------------------------------
+
+
+def test_ca_generator(tmp_path):
+    cert_path, key_path = generate_root_ca(cert_dir=str(tmp_path))
+    assert os.path.exists(cert_path)
+    assert os.path.exists(key_path)
+    assert cert_path.endswith("holon-root-ca.crt")
+    assert key_path.endswith("holon-root-ca.key")
+
+    # Second call should reuse existing cert
+    c2, k2 = generate_root_ca(cert_dir=str(tmp_path))
+    assert c2 == cert_path
+    assert k2 == key_path
+
+
+def test_ca_generator_produces_parseable_cert_and_private_key_mode(tmp_path):
+    cert_path, key_path = generate_root_ca(cert_dir=str(tmp_path))
+
+    result = subprocess.run(["openssl", "x509", "-in", cert_path, "-noout", "-text"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with open(cert_path) as handle:
+        assert "BEGIN CERTIFICATE" in handle.read()
+
+    assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
+
+
+def test_ca_generator_emits_ca_key_usage_basic_constraints_and_validity(tmp_path):
+    """A CA without keyUsage is refused as a trust anchor by BoringSSL/Node, Go and strict OpenSSL."""
+    cert_path, _ = generate_root_ca(cert_dir=str(tmp_path))
+    text = _openssl_text(cert_path)
+
+    assert "X509v3 Basic Constraints: critical" in text
+    assert "CA:TRUE" in text
+    assert "X509v3 Key Usage: critical" in text
+    assert "Certificate Sign" in text
+    assert "CRL Sign" in text
+    assert "X509v3 Subject Key Identifier" in text
+    # Not expiring inside the 30 day renewal window.
+    assert _expires_within(cert_path) is False
+
+
+def test_ca_generator_reuses_a_valid_cached_ca(tmp_path):
+    cert_path, _ = generate_root_ca(cert_dir=str(tmp_path))
+    cached_pem = _read_text(cert_path)
+
+    cert_path_2, key_path_2 = generate_root_ca(cert_dir=str(tmp_path))
+
+    assert cert_path_2 == cert_path
+    assert _read_text(cert_path_2) == cached_pem
+    assert stat.S_IMODE(os.stat(key_path_2).st_mode) == 0o600
+
+
+def test_ca_generator_regenerates_near_expiry_cached_ca(tmp_path):
+    """`openssl x509 -noout` exits 0 for expired certs, so expiry needs its own check + rotation."""
+    cert_path, key_path = _make_ca_with_validity(tmp_path, days=5)
+    stale_pem = _read_text(cert_path)
+    assert _expires_within(cert_path) is True
+
+    new_cert_path, new_key_path = generate_root_ca(cert_dir=str(tmp_path))
+
+    assert new_cert_path == cert_path
+    assert new_key_path == key_path
+    assert _read_text(cert_path) != stale_pem
+    assert _expires_within(cert_path) is False
+    text = _openssl_text(cert_path)
+    assert "X509v3 Key Usage: critical" in text
+    assert "CA:TRUE" in text
+    assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
+
+
+def test_ca_generator_raises_without_openssl(tmp_path, monkeypatch):
+    monkeypatch.setattr(ca_generator, "shutil", SimpleNamespace(which=lambda _: None))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        generate_root_ca(cert_dir=str(tmp_path))
+
+    assert "openssl" in str(excinfo.value).lower()
+    assert "brew install openssl" in str(excinfo.value)
+    # Nothing bogus may be cached when generation never started.
+    assert os.listdir(str(tmp_path)) == []
+
+
+def test_ca_generator_raises_on_openssl_failure_without_caching_junk(tmp_path, monkeypatch):
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["openssl"], stderr="req failed")
+
+    monkeypatch.setattr(
+        ca_generator,
+        "subprocess",
+        SimpleNamespace(
+            run=boom,
+            CalledProcessError=subprocess.CalledProcessError,
+            TimeoutExpired=subprocess.TimeoutExpired,
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        generate_root_ca(cert_dir=str(tmp_path))
+
+    assert "req failed" in str(excinfo.value)
+    assert not os.path.exists(os.path.join(str(tmp_path), "holon-root-ca.crt"))
+
+
+def test_ca_generator_detects_poisoned_cache(tmp_path):
+    cert_path = tmp_path / "holon-root-ca.crt"
+    key_path = tmp_path / "holon-root-ca.key"
+    cert_path.write_text("-----BEGIN CERTIFICATE-----\nnot a real cert\n-----END CERTIFICATE-----\n")
+    key_path.write_text("-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----\n")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        generate_root_ca(cert_dir=str(tmp_path))
+
+    assert "not a parseable X.509 certificate" in str(excinfo.value)
+    assert "Delete" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------------------
+# setup_token_reduction_proxy
+# --------------------------------------------------------------------------------------
+
+
+def test_setup_proxy_addon_missing_raises_file_not_found(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        setup_token_reduction_proxy()
+
+    assert "mitm_addon.py" in str(excinfo.value)
+    assert fake.calls == []  # nothing is launched against a non-existent addon
+
+
+def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    fake = FakeDocker(spawn=_completed(returncode=125, stderr="docker: error: image not found"))
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        setup_token_reduction_proxy()
+
+    message = str(excinfo.value)
+    assert "image not found" in message
+    assert "Re-run without --token-reduce" in message
+    # The failed sidecar this run started is cleaned up; no proxy envs are returned.
+    assert "docker rm -f" in fake.joined()
+    assert "docker network rm" in fake.joined()
+
+
+def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        setup_token_reduction_proxy()
+
+    assert "never accepted connections" in str(excinfo.value)
+    assert "Re-run without --token-reduce" in str(excinfo.value)
+    assert "docker rm -f" in fake.joined()
+    assert "docker network rm" in fake.joined()
+
+
+def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    fake = FakeDocker(port_stdout="")
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        setup_token_reduction_proxy()
+
+    assert "published no host loopback port" in str(excinfo.value)
+
+
+def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    mounts, envs = setup_token_reduction_proxy()
+
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    joined_run = " ".join(run_cmd)
+
+    # C1: only the narrow proxy cache is shared, read-only; never ~/.holon wholesale.
+    assert f"{host_paths / 'home' / '.holon' / 'proxy-cache'}:/home/mitmproxy/.holon/proxy-cache:ro" in joined_run
+    assert ":/home/mitmproxy/.holon " not in joined_run
+    assert "holon-root-ca.key" not in joined_run
+
+    # I11: mitmproxy needs the CA private key to sign leaves, so exactly the two files it expects
+    # are mounted read-only into /home/mitmproxy/.mitmproxy — never the whole certificate dir.
+    proxy_ca_dir = host_paths / "home" / ".holon" / "proxy-ca"
+    assert f"{proxy_ca_dir / 'mitmproxy-ca.pem'}:/home/mitmproxy/.mitmproxy/mitmproxy-ca.pem:ro" in joined_run
+    assert f"{proxy_ca_dir / 'mitmproxy-ca-cert.pem'}:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem:ro" in joined_run
+    assert f"{proxy_ca_dir}:/home/mitmproxy" not in joined_run
+    assert f"{proxy_ca_dir / 'mitmproxy-ca.pem'}:/home/mitmproxy/.mitmproxy:ro" not in joined_run
+    combined = (proxy_ca_dir / "mitmproxy-ca.pem").read_text()
+    cert_only = (proxy_ca_dir / "mitmproxy-ca-cert.pem").read_text()
+    assert "BEGIN PRIVATE KEY" in combined and "BEGIN CERTIFICATE" in combined
+    assert "BEGIN PRIVATE KEY" not in cert_only
+    assert stat.S_IMODE(os.stat(proxy_ca_dir / "mitmproxy-ca.pem").st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(proxy_ca_dir).st_mode) == 0o700
+
+    # I3: containment + streaming posture.
+    for flag in ["--memory=256m", "--cpus=0.5", "max-size=5m", "max-file=2", "--restart=no", "stream_large_bodies=1m"]:
+        assert flag in joined_run
+
+    # I2: per-run resource names.
+    assert "--network" in mounts
+    network_name = mounts[mounts.index("--network") + 1]
+    assert network_name.startswith("holon-net-")
+    assert network_name not in ("holon-net",)
+    assert envs["HTTP_PROXY"].startswith(f"http://holon-proxy-{os.getpid()}")
+    assert envs["HTTPS_PROXY"] == envs["HTTP_PROXY"]
+    # C6: the trust-store overrides point at the merged bundle, never at the single-cert mount.
+    assert envs["SSL_CERT_FILE"] == CONTAINER_CA_BUNDLE_PATH
+    assert envs["NODE_EXTRA_CA_CERTS"] == _container_ca_path(str(host_paths / "certs" / "holon-root-ca.crt"))
+    assert cli._sidecar_state.network_created is True
+
+
+def test_setup_proxy_network_already_exists_is_not_owned(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker(network_stderr="Error response from daemon: network with name x already exists")
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    setup_token_reduction_proxy()
+
+    assert cli._sidecar_state.network_created is False
+    teardown_token_reduction_proxy()
+    assert "docker network rm" not in fake.joined()
+    assert "docker rm -f" in fake.joined()
+
+
+def test_teardown_is_noop_when_this_run_created_nothing(monkeypatch):
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    teardown_token_reduction_proxy()
+
+    assert fake.calls == []
+
+
+# --------------------------------------------------------------------------------------
+# opt-in contract
+# --------------------------------------------------------------------------------------
+
+
+def test_host_proxy_env_alone_never_rewrites_sandbox_networking(monkeypatch):
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://unrelated-host-proxy:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://unrelated-host-proxy:3128")
+
+    assert get_token_reduction_mounts_and_envs(token_reduce=False) == ([], {})
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_env_var_opt_in_attempts_configuration(monkeypatch, value):
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", value)
+    calls = []
+    monkeypatch.setattr(cli, "_attach_external_proxy", lambda: calls.append(True) or (["--network", "x"], {}))
+
+    mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=False)
+
+    assert calls == [True]
+    assert mounts == ["--network", "x"]
+    assert envs == {}
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "off", "http_proxy"])
+def test_env_var_opt_in_requires_truthy_value(monkeypatch, value):
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", value)
+    monkeypatch.setattr(cli, "_attach_external_proxy", lambda: pytest.fail("must not configure"))
+
+    assert get_token_reduction_mounts_and_envs(token_reduce=False) == ([], {})
+
+
+def test_env_var_opt_in_unreachable_proxy_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", "1")
+    monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
+
+    with caplog.at_level(logging.ERROR, logger="sandbox_executor.cli"):
+        mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=False)
+
+    assert (mounts, envs) == ([], {})
+    assert "DIRECT egress" in caplog.text
+    assert "127.0.0.1" in caplog.text
+
+
+def test_attach_external_proxy_probes_before_generating_a_ca(host_paths, monkeypatch):
+    """An unreachable proxy must not leave a freshly generated CA behind on a direct-egress run."""
+    events: list[str] = []
+    monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(cli, "generate_root_ca", lambda: events.append("generate") or ("/host/ca.crt", "/host/ca.key"))
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: events.append("probe") or False)
+
+    assert cli._attach_external_proxy() == ([], {})
+    assert events == ["probe"]
+
+
+def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
+
+    with caplog.at_level(logging.ERROR, logger="sandbox_executor.cli"):
+        mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=True)
+
+    assert (mounts, envs) == ([], {})
+    assert "DIRECT egress" in caplog.text
+    assert "FileNotFoundError" in caplog.text
+
+
+# --------------------------------------------------------------------------------------
+# platform + de-duplication helpers
+# --------------------------------------------------------------------------------------
+
+
+def test_proxy_gateway_url_is_platform_correct(monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    assert _proxy_gateway_url() == "http://host.docker.internal:8080"
+    assert _gateway_host_args() == []
+
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    assert _proxy_gateway_url() == "http://172.17.0.1:8080"
+    assert _gateway_host_args() == ["--add-host", "host.docker.internal:host-gateway"]
+
+
+def test_ca_mount_and_env_helpers_agree():
+    host_ca = "/host/.holon/certs/holon-root-ca.crt"
+    container_ca = _container_ca_path(host_ca)
+
+    assert _ca_mount_args(host_ca) == ["-v", f"{host_ca}:{container_ca}:ro"]
+    envs = _build_proxy_envs(host_ca, "http://holon-proxy-1:8080")
+    assert envs["HTTP_PROXY"] == envs["HTTPS_PROXY"] == "http://holon-proxy-1:8080"
+    assert envs["NODE_EXTRA_CA_CERTS"] == container_ca
+    assert envs["REQUESTS_CA_BUNDLE"] == CONTAINER_CA_BUNDLE_PATH
+    assert envs["CURL_CA_BUNDLE"] == CONTAINER_CA_BUNDLE_PATH
+    assert envs["SSL_CERT_FILE"] == CONTAINER_CA_BUNDLE_PATH
+
+
+def test_build_proxy_envs_never_replaces_the_trust_store_with_the_holon_ca():
+    """SSL_CERT_FILE/REQUESTS_CA_BUNDLE replace the store, so they must point at the merged bundle."""
+    host_ca = "/host/.holon/certs/holon-root-ca.crt"
+    single_cert_mount = _container_ca_path(host_ca)
+    envs = _build_proxy_envs(host_ca, "http://holon-proxy-1:8080")
+
+    for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        assert envs[name] == CONTAINER_CA_BUNDLE_PATH
+        assert envs[name] != single_cert_mount
+        assert not envs[name].startswith("/usr/local/share/ca-certificates")
+
+    # NODE_EXTRA_CA_CERTS augments Node's built-in roots, so the single-cert mount is correct there.
+    assert envs["NODE_EXTRA_CA_CERTS"] == single_cert_mount
+
+
+def test_build_proxy_envs_emits_lowercase_proxy_vars_and_no_proxy():
+    envs = _build_proxy_envs("/host/.holon/certs/holon-root-ca.crt", "http://holon-proxy-1:8080")
+
+    for name in ("http_proxy", "https_proxy"):
+        assert envs[name] == "http://holon-proxy-1:8080"
+
+    assert envs["NO_PROXY"] == NO_PROXY_HOSTS
+    assert envs["no_proxy"] == NO_PROXY_HOSTS
+    for host in ("localhost", "127.0.0.1", "::1", "169.254.169.254"):
+        assert host in envs["NO_PROXY"]
+        assert host in envs["no_proxy"]
+
+
+# --------------------------------------------------------------------------------------
+# teardown coverage (I14)
+# --------------------------------------------------------------------------------------
+
+
+def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
+    """Neutralise host discovery and record teardown calls for run_docker_container tests."""
+    monkeypatch.setattr(
+        cli, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
+    )
+    monkeypatch.setattr(cli, "find_github_token", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "get_token_reduction_mounts_and_envs",
+        lambda **kwargs: (["--network", "holon-net-x"], {"HTTP_PROXY": "http://holon-proxy-x:8080"}),
+    )
+    monkeypatch.setattr(cli, "teardown_token_reduction_proxy", lambda: teardowns.append(True))
+
+
+def test_run_docker_container_tears_down_sidecar_on_early_return(monkeypatch, tmp_path):
+    teardowns: list[bool] = []
+    _stub_run_preconditions(monkeypatch, teardowns)
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: pytest.fail("docker must not run")))
+
+    rc = cli.run_docker_container(
+        "intent-creator", "holon/orchestrator", [], intent_file=str(tmp_path / "missing-intent.json")
+    )
+
+    assert rc == 1
+    assert teardowns == [True]
+
+
+def test_run_docker_container_tears_down_sidecar_when_body_raises(monkeypatch):
+    teardowns: list[bool] = []
+    _stub_run_preconditions(monkeypatch, teardowns)
+
+    def boom(agent_id):
+        raise RuntimeError("session mount exploded")
+
+    monkeypatch.setattr(cli, "get_agent_session_mounts", boom)
+
+    with pytest.raises(RuntimeError, match="session mount exploded"):
+        cli.run_docker_container("executor", "holon/agent-pi", [], agent_id="pi")
+
+    assert teardowns == [True]
+
+
+def test_run_docker_container_tears_down_sidecar_after_the_run(monkeypatch):
+    teardowns: list[bool] = []
+    _stub_run_preconditions(monkeypatch, teardowns)
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: _completed(returncode=7)))
+
+    assert cli.run_docker_container("executor", "holon/agent-pi", [], agent_id="pi") == 7
+    assert teardowns == [True]
