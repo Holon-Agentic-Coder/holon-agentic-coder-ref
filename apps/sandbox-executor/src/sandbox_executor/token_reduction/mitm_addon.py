@@ -2,13 +2,9 @@
 
 import json
 import logging
-import sys
 from typing import Any
 
-# Ensure the mounted src directory is in Python path so we can import sandbox_executor
-sys.path.insert(0, "/tmp/src")
-
-from sandbox_executor.token_reduction.payload_cleaner import ContextCleaner
+from sandbox_executor.token_reduction.payload_cleaner import JSONContextCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +16,7 @@ class MITMProxyInterceptor:
     """
 
     def __init__(self):
-        self.cleaner = ContextCleaner()
+        self.cleaner = JSONContextCleaner()
 
     def detect_provider(self, url_or_path: str) -> str:
         """Determines the provider based on target URL or endpoint path."""

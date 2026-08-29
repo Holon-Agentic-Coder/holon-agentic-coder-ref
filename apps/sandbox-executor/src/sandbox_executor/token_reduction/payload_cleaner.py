@@ -1,14 +1,17 @@
 """Context cleaning, tool output deduplication, and prompt cache optimization for LLM payloads."""
 
+import copy
 import hashlib
-import json
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_RECENT_TURNS_TO_KEEP = 6
+"""Number of recent conversation turns preserved verbatim at the end of the history during summarization."""
 
-class ContextCleaner:
+
+class JSONContextCleaner:
     """Cleans JSON LLM payloads by deduplicating tool outputs, summarizing history,
 
     and inserting prompt cache control breakpoints for Anthropic API schemas.
@@ -23,7 +26,6 @@ class ContextCleaner:
         self.enable_deduplication = enable_deduplication
         self.enable_prompt_caching = enable_prompt_caching
         self.max_turns = max_turns
-        self.seen_content_hashes: dict[str, tuple[int, str]] = {}  # hash -> (turn_index, resource_name)
 
     def process_payload(self, payload: dict[str, Any], provider: str = "anthropic") -> dict[str, Any]:
         """Processes and optimizes an outgoing LLM JSON request payload.
@@ -35,26 +37,28 @@ class ContextCleaner:
         Returns:
             dict[str, Any]: Optimized JSON payload dictionary.
         """
-        self.seen_content_hashes = {}
-        cleaned_payload = json.loads(json.dumps(payload))  # deep copy
+        seen_content_hashes: dict[str, tuple[int, str]] = {}
+        cleaned_payload = copy.deepcopy(payload)
 
         if provider == "anthropic":
-            cleaned_payload = self._clean_anthropic(cleaned_payload)
+            cleaned_payload = self._clean_anthropic(cleaned_payload, seen_content_hashes)
         elif provider == "openai":
-            cleaned_payload = self._clean_openai(cleaned_payload)
+            cleaned_payload = self._clean_openai(cleaned_payload, seen_content_hashes)
         elif provider == "gemini":
-            cleaned_payload = self._clean_gemini(cleaned_payload)
+            cleaned_payload = self._clean_gemini(cleaned_payload, seen_content_hashes)
 
         return cleaned_payload
 
-    def _clean_anthropic(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _clean_anthropic(
+        self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]
+    ) -> dict[str, Any]:
         messages = payload.get("messages", [])
         if not isinstance(messages, list):
             return payload
 
         # 1. Deduplicate tool outputs in history turns
         if self.enable_deduplication:
-            messages = self._deduplicate_anthropic_tool_outputs(messages)
+            messages = self._deduplicate_anthropic_tool_outputs(messages, seen_content_hashes)
 
         # 2. History summarization if message turns exceed max_turns
         if len(messages) > self.max_turns:
@@ -69,48 +73,51 @@ class ContextCleaner:
 
         return payload
 
-    def _deduplicate_anthropic_tool_outputs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _deduplicate_anthropic_tool_outputs(
+        self, messages: list[dict[str, Any]], seen_content_hashes: dict[str, tuple[int, str]]
+    ) -> list[dict[str, Any]]:
         cleaned_messages = []
         turn_count = len(messages)
 
         for turn_idx, msg in enumerate(messages):
+            msg_copy = copy.deepcopy(msg)
             # Only deduplicate in older history turns (leave current turn intact)
             is_older_turn = turn_idx < (turn_count - 2)
-            content = msg.get("content")
+            content = msg_copy.get("content")
 
             if isinstance(content, list):
                 cleaned_content = []
                 for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        tool_out = item.get("content", "")
-                        resource_name = item.get("tool_use_id", f"tool_result_{turn_idx}")
+                    item_copy = copy.deepcopy(item)
+                    if isinstance(item_copy, dict) and item_copy.get("type") == "tool_result":
+                        tool_out = item_copy.get("content", "")
+                        resource_name = item_copy.get("tool_use_id", f"tool_result_{turn_idx}")
 
                         if isinstance(tool_out, str) and len(tool_out) > 100:
                             content_hash = hashlib.sha256(tool_out.encode("utf-8")).hexdigest()
-                            if content_hash in self.seen_content_hashes and is_older_turn:
-                                prev_turn, prev_res = self.seen_content_hashes[content_hash]
-                                item = dict(item)
-                                item["content"] = (
+                            if content_hash in seen_content_hashes and is_older_turn:
+                                prev_turn, prev_res = seen_content_hashes[content_hash]
+                                item_copy["content"] = (
                                     f"[Omitted: Tool result content is identical to Turn {prev_turn} ({prev_res})]"
                                 )
                             else:
-                                self.seen_content_hashes[content_hash] = (
+                                seen_content_hashes[content_hash] = (
                                     turn_idx,
                                     resource_name,
                                 )
 
-                    cleaned_content.append(item)
-                msg["content"] = cleaned_content
+                    cleaned_content.append(item_copy)
+                msg_copy["content"] = cleaned_content
 
             elif isinstance(content, str) and len(content) > 200:
                 content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                if content_hash in self.seen_content_hashes and is_older_turn:
-                    prev_turn, prev_res = self.seen_content_hashes[content_hash]
-                    msg["content"] = f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
+                if content_hash in seen_content_hashes and is_older_turn:
+                    prev_turn, prev_res = seen_content_hashes[content_hash]
+                    msg_copy["content"] = f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
                 else:
-                    self.seen_content_hashes[content_hash] = (turn_idx, f"turn_{turn_idx}")
+                    seen_content_hashes[content_hash] = (turn_idx, f"turn_{turn_idx}")
 
-            cleaned_messages.append(msg)
+            cleaned_messages.append(msg_copy)
 
         return cleaned_messages
 
@@ -130,7 +137,7 @@ class ContextCleaner:
         return False
 
     def _summarize_anthropic_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        target_idx = len(messages) - 6
+        target_idx = len(messages) - _RECENT_TURNS_TO_KEEP
         suffix_idx = None
         for i in range(target_idx, 0, -1):
             if self._is_clean_user_message(messages[i], "anthropic"):
@@ -160,14 +167,13 @@ class ContextCleaner:
 
         return [*prefix, summary_msg, *suffix]
 
-
     def _merge_consecutive_roles(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not messages:
             return []
         merged = []
         for msg in messages:
             if not merged:
-                merged.append(json.loads(json.dumps(msg)))
+                merged.append(copy.deepcopy(msg))
                 continue
             prev = merged[-1]
             if prev.get("role") == msg.get("role"):
@@ -177,13 +183,13 @@ class ContextCleaner:
                 if isinstance(prev_content, list) or isinstance(curr_content, list):
                     prev_blocks = []
                     if isinstance(prev_content, list):
-                        prev_blocks.extend(prev_content)
+                        prev_blocks.extend(copy.deepcopy(prev_content))
                     elif isinstance(prev_content, str):
                         prev_blocks.append({"type": "text", "text": prev_content})
 
                     curr_blocks = []
                     if isinstance(curr_content, list):
-                        curr_blocks.extend(curr_content)
+                        curr_blocks.extend(copy.deepcopy(curr_content))
                     elif isinstance(curr_content, str):
                         curr_blocks.append({"type": "text", "text": curr_content})
 
@@ -191,7 +197,7 @@ class ContextCleaner:
                 else:
                     prev["content"] = str(prev_content) + "\n\n" + str(curr_content)
             else:
-                merged.append(json.loads(json.dumps(msg)))
+                merged.append(copy.deepcopy(msg))
         return merged
 
     def _inject_anthropic_cache_control(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -225,7 +231,7 @@ class ContextCleaner:
 
         return payload
 
-    def _clean_openai(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _clean_openai(self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]) -> dict[str, Any]:
         messages = payload.get("messages", [])
         if not isinstance(messages, list):
             return payload
@@ -234,21 +240,22 @@ class ContextCleaner:
         cleaned_messages = []
 
         for turn_idx, msg in enumerate(messages):
+            msg_copy = copy.deepcopy(msg)
             is_older_turn = turn_idx < (turn_count - 2)
-            content = msg.get("content", "")
+            content = msg_copy.get("content", "")
 
             if isinstance(content, str) and len(content) > 200:
                 content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                if content_hash in self.seen_content_hashes and is_older_turn:
-                    prev_turn, prev_res = self.seen_content_hashes[content_hash]
-                    msg["content"] = f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
+                if content_hash in seen_content_hashes and is_older_turn:
+                    prev_turn, prev_res = seen_content_hashes[content_hash]
+                    msg_copy["content"] = f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
                 else:
-                    self.seen_content_hashes[content_hash] = (turn_idx, f"turn_{turn_idx}")
+                    seen_content_hashes[content_hash] = (turn_idx, f"turn_{turn_idx}")
 
-            cleaned_messages.append(msg)
+            cleaned_messages.append(msg_copy)
 
         if len(cleaned_messages) > self.max_turns:
-            target_idx = len(cleaned_messages) - 6
+            target_idx = len(cleaned_messages) - _RECENT_TURNS_TO_KEEP
             suffix_idx = None
             for i in range(target_idx, 0, -1):
                 if self._is_clean_user_message(cleaned_messages[i], "openai"):
@@ -273,7 +280,7 @@ class ContextCleaner:
         payload["messages"] = cleaned_messages
         return payload
 
-    def _clean_gemini(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _clean_gemini(self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]) -> dict[str, Any]:
         contents = payload.get("contents", [])
         if not isinstance(contents, list):
             return payload
@@ -282,24 +289,26 @@ class ContextCleaner:
         cleaned_contents = []
 
         for turn_idx, turn in enumerate(contents):
+            turn_copy = copy.deepcopy(turn)
             is_older_turn = turn_idx < (turn_count - 2)
-            parts = turn.get("parts", [])
+            parts = turn_copy.get("parts", [])
             cleaned_parts = []
 
             for part in parts:
-                text = part.get("text", "")
+                part_copy = copy.deepcopy(part)
+                text = part_copy.get("text", "")
                 if isinstance(text, str) and len(text) > 200:
                     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                    if text_hash in self.seen_content_hashes and is_older_turn:
-                        prev_turn, prev_res = self.seen_content_hashes[text_hash]
-                        part["text"] = f"[Omitted: Content is identical to Turn {prev_turn} ({prev_res})]"
+                    if text_hash in seen_content_hashes and is_older_turn:
+                        prev_turn, prev_res = seen_content_hashes[text_hash]
+                        part_copy["text"] = f"[Omitted: Content is identical to Turn {prev_turn} ({prev_res})]"
                     else:
-                        self.seen_content_hashes[text_hash] = (turn_idx, f"turn_{turn_idx}")
+                        seen_content_hashes[text_hash] = (turn_idx, f"turn_{turn_idx}")
 
-                cleaned_parts.append(part)
+                cleaned_parts.append(part_copy)
 
-            turn["parts"] = cleaned_parts
-            cleaned_contents.append(turn)
+            turn_copy["parts"] = cleaned_parts
+            cleaned_contents.append(turn_copy)
 
         payload["contents"] = cleaned_contents
         return payload
