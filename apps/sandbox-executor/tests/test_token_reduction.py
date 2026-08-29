@@ -844,4 +844,150 @@ def test_mitm_addon_null_request_flow():
     addon.response(flow)
 
 
+def test_mitm_addon_error_response_caching_bypass(tmp_path):
+    import json
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
+
+    cache_dir = tmp_path / "cache"
+    interceptor = MITMProxyInterceptor(cache_dir=str(cache_dir), enable_caching=True)
+    endpoint = "https://api.anthropic.com/v1/messages"
+    req_json = {"system": "System prompt", "messages": [{"role": "user", "content": "Trigger error test"}]}
+
+    # 1. Non-200 HTTP status code should NOT be stored by intercept_response
+    err_resp_500 = {"error": {"type": "api_error", "message": "Internal Server Error"}}
+    interceptor.intercept_response(endpoint, req_json, err_resp_500, status_code=500)
+    _, cached_500 = interceptor.intercept_request(endpoint, req_json)
+    assert cached_500 is None
+
+    # 2. HTTP 200 with top-level "error" payload should NOT be stored
+    err_resp_200 = {"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}
+    interceptor.intercept_response(endpoint, req_json, err_resp_200, status_code=200)
+    _, cached_200 = interceptor.intercept_request(endpoint, req_json)
+    assert cached_200 is None
+
+    # 3. HTTP 200 with type == "error" payload should NOT be stored
+    type_err_resp = {"type": "error", "error": {"type": "invalid_request_error", "message": "Bad request"}}
+    interceptor.intercept_response(endpoint, req_json, type_err_resp, status_code=200)
+    _, cached_type_err = interceptor.intercept_request(endpoint, req_json)
+    assert cached_type_err is None
+
+    # 4. Test MitmproxyAddon callback skips non-200 flow
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(cache_dir)
+
+    class FakeRequest:
+        pretty_url = endpoint
+        def get_text(self):
+            return json.dumps(req_json)
+
+    class FakeResponse:
+        status_code = 429
+        def get_text(self):
+            return json.dumps({"error": "Rate limit exceeded"})
+
+    class FakeFlow:
+        request = FakeRequest()
+        response = FakeResponse()
+
+    flow = FakeFlow()
+    addon.response(flow)
+    _, cached_flow = interceptor.intercept_request(endpoint, req_json)
+    assert cached_flow is None
+
+
+def test_hybrid_cache_anthropic_tool_result_content_block_extraction(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+    sys_prompt = "You are a coding assistant with tool support."
+
+    req_1 = {
+        "system": sys_prompt,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_123",
+                        "content": [
+                            {"type": "text", "text": "Successfully compiled binary target main without any compilation warnings"}
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    resp_1 = {"content": [{"type": "text", "text": "Compilation completed successfully."}]}
+    cache.put(req_1, resp_1, provider="anthropic")
+
+    # Query with semantically similar tool_result text content
+    req_2 = {
+        "system": sys_prompt,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_456",
+                        "content": "Successfully compiled binary target main without any build warnings",
+                    }
+                ],
+            }
+        ],
+    }
+    cached = cache.get(req_2, provider="anthropic")
+    assert cached is not None
+    assert cached["content"][0]["text"] == "Compilation completed successfully."
+
+
+def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.85)
+    sys_prompt = "You are a coding agent working on repo refactoring."
+
+    # Turn 9 in a long conversation history (turns 1..8 share setup words)
+    long_history_turn9 = [
+        {"role": "user", "content": "Turn 1: Initialize project setup and environment verification"},
+        {"role": "assistant", "content": "Turn 1 done"},
+        {"role": "user", "content": "Turn 2: Read directory structure and source files"},
+        {"role": "assistant", "content": "Turn 2 done"},
+        {"role": "user", "content": "Turn 3: Run preliminary linter and static check"},
+        {"role": "assistant", "content": "Turn 3 done"},
+        {"role": "user", "content": "Turn 9: Refactor authentication middleware in auth.py"},
+    ]
+    req_turn9 = {"system": sys_prompt, "messages": long_history_turn9}
+    resp_turn9 = {"content": [{"type": "text", "text": "Auth middleware refactored."}]}
+    cache.put(req_turn9, resp_turn9, provider="anthropic")
+
+    # Turn 10 with long history (turns 1..9) but a completely DIFFERENT instruction in turn 10:
+    long_history_turn10 = list(long_history_turn9) + [
+        {"role": "assistant", "content": "Turn 9 done"},
+        {"role": "user", "content": "Turn 10: Delete temporary log files from output build directory"},
+    ]
+    req_turn10_diff = {"system": sys_prompt, "messages": long_history_turn10}
+
+    # Should NOT hit Turn 9 cache entry because Turn 10 instruction is different!
+    assert cache.get(req_turn10_diff, provider="anthropic") is None
+
+    # Query Turn 10 with semantically SIMILAR instruction for turn 10:
+    long_history_turn10_similar = list(long_history_turn9) + [
+        {"role": "assistant", "content": "Turn 9 done"},
+        {"role": "user", "content": "Turn 10: Delete temporary log files from build output folder"},
+    ]
+    req_turn10_sim = {"system": sys_prompt, "messages": long_history_turn10_similar}
+
+    # Put Turn 10 response into cache
+    resp_turn10 = {"content": [{"type": "text", "text": "Log files deleted."}]}
+    cache.put(req_turn10_diff, resp_turn10, provider="anthropic")
+
+    # Querying with semantically similar turn 10 should hit Turn 10 cache
+    cached_turn10 = cache.get(req_turn10_sim, provider="anthropic")
+    assert cached_turn10 is not None
+    assert cached_turn10["content"][0]["text"] == "Log files deleted."
+
+
+
 

@@ -71,16 +71,32 @@ class MITMProxyInterceptor:
 
         return cleaned_request, None
 
-    def intercept_response(self, endpoint: str, request_json: dict[str, Any], response_json: dict[str, Any]) -> None:
+    def intercept_response(
+        self,
+        endpoint: str,
+        request_json: dict[str, Any],
+        response_json: dict[str, Any],
+        status_code: int = 200,
+    ) -> None:
         """Records an LLM response into the local cache.
 
         Args:
             endpoint: The API endpoint URL or path.
             request_json: Cleaned request JSON payload.
             response_json: Received response JSON from provider API.
+            status_code: HTTP status code of the response.
         """
         if not self.enable_caching:
             return
+
+        if status_code != 200:
+            logger.warning("Skipping cache put for non-200 HTTP status code (%d) on %s", status_code, endpoint)
+            return
+
+        if isinstance(response_json, dict):
+            if "error" in response_json or response_json.get("type") == "error":
+                logger.warning("Skipping cache put for API error response payload on %s", endpoint)
+                return
 
         provider = self.detect_provider(endpoint)
         if provider != "unknown":
@@ -124,14 +140,18 @@ class MitmproxyAddon:
             return
         url = getattr(flow.request, "pretty_url", "")
         provider = self.interceptor.detect_provider(url)
+        status_code = getattr(flow.response, "status_code", 200)
         if provider != "unknown" and not getattr(flow, "is_cached", False):
+            if status_code != 200:
+                logger.warning("Skipping caching response with HTTP status code %d for %s", status_code, url)
+                return
             try:
                 req_text = flow.request.get_text()
                 resp_text = flow.response.get_text()
                 if req_text and resp_text:
                     req_data = json.loads(req_text)
                     resp_data = json.loads(resp_text)
-                    self.interceptor.intercept_response(url, req_data, resp_data)
+                    self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
             except Exception:
                 logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
 

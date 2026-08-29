@@ -15,12 +15,18 @@ logger = logging.getLogger(__name__)
 class HybridCacheStore:
     """Hybrid exact prefix tree and semantic local cache store for LLM responses."""
 
-    def __init__(self, cache_dir: str | None = None, similarity_threshold: float = 0.85) -> None:
+    def __init__(
+        self,
+        cache_dir: str | None = None,
+        similarity_threshold: float = 0.85,
+        candidate_limit: int = 100,
+    ) -> None:
         """Initialize HybridCacheStore.
 
         Args:
             cache_dir: Directory path for SQLite storage. Defaults to ~/.holon/cache.
             similarity_threshold: Jaccard similarity score threshold (0.0 to 1.0) required for a semantic match hit.
+            candidate_limit: Maximum number of recent candidate cache entries to consider for semantic search.
         """
         if cache_dir is None:
             cache_dir = os.path.expanduser("~/.holon/cache")
@@ -28,6 +34,7 @@ class HybridCacheStore:
 
         self.cache_dir = cache_dir
         self.similarity_threshold = similarity_threshold
+        self.candidate_limit = candidate_limit
         self.db_path = os.path.join(cache_dir, "llm_cache.db")
         self._init_db()
 
@@ -72,40 +79,69 @@ class HybridCacheStore:
             "<UUID>",
             norm,
         )
-        # Strip random digits in task IDs
-        norm = re.sub(r"task-\d+", "task-<ID>", norm)
+        # Strip random digits in task IDs / run IDs
+        norm = re.sub(r"\b(?:task|run)[-_]\d+\b", "task-<ID>", norm)
         return norm
 
-    def _extract_user_content(self, payload: dict[str, Any]) -> str:
-        """Extracts user message content specifically to avoid system prompt and JSON key token pollution."""
+    def _extract_user_content(self, payload: dict[str, Any], max_recent_turns: int = 2) -> str:
+        """Extracts user message content specifically to avoid system prompt and JSON key token pollution.
+        Prioritizes the most recent user turns to prevent long conversation history token dilution.
+        """
+        def _extract_item_text(item: Any) -> list[str]:
+            texts: list[str] = []
+            if isinstance(item, str):
+                texts.append(item)
+            elif isinstance(item, dict):
+                if "text" in item and isinstance(item["text"], str):
+                    texts.append(item["text"])
+                if item.get("type") == "tool_result":
+                    tr_content = item.get("content")
+                    if isinstance(tr_content, str):
+                        texts.append(tr_content)
+                    elif isinstance(tr_content, list):
+                        for sub in tr_content:
+                            texts.extend(_extract_item_text(sub))
+                    elif isinstance(tr_content, dict):
+                        texts.extend(_extract_item_text(tr_content))
+            return texts
+
         user_texts = []
         messages = payload.get("messages")
         if isinstance(messages, list):
-            for msg in messages:
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    content = msg.get("content")
-                    if isinstance(content, str):
-                        user_texts.append(content)
-                    elif isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict):
-                                if "text" in item and isinstance(item["text"], str):
-                                    user_texts.append(item["text"])
-                            elif isinstance(item, str):
-                                user_texts.append(item)
-                    elif content is not None:
-                        user_texts.append(json.dumps(content))
+            user_msgs = [msg for msg in messages if isinstance(msg, dict) and msg.get("role") == "user"]
+            recent_msgs = user_msgs[-max_recent_turns:] if max_recent_turns > 0 else user_msgs
+            for msg in recent_msgs:
+                content = msg.get("content")
+                if isinstance(content, str):
+                    user_texts.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        extracted = _extract_item_text(item)
+                        if extracted:
+                            user_texts.extend(extracted)
+                        elif isinstance(item, str):
+                            user_texts.append(item)
+                elif isinstance(content, dict):
+                    extracted = _extract_item_text(content)
+                    if extracted:
+                        user_texts.extend(extracted)
+                elif content is not None:
+                    user_texts.append(json.dumps(content))
         contents = payload.get("contents")
         if isinstance(contents, list):
-            for turn in contents:
-                if isinstance(turn, dict) and turn.get("role") in ("user", None, ""):
-                    parts = turn.get("parts")
-                    if isinstance(parts, list):
-                        for part in parts:
-                            if isinstance(part, dict) and "text" in part and isinstance(part["text"], str):
-                                user_texts.append(part["text"])
-                            elif isinstance(part, str):
-                                user_texts.append(part)
+            user_turns = [
+                turn for turn in contents if isinstance(turn, dict) and turn.get("role") in ("user", None, "")
+            ]
+            recent_turns = user_turns[-max_recent_turns:] if max_recent_turns > 0 else user_turns
+            for turn in recent_turns:
+                parts = turn.get("parts")
+                if isinstance(parts, list):
+                    for part in parts:
+                        extracted = _extract_item_text(part)
+                        if extracted:
+                            user_texts.extend(extracted)
+                        elif isinstance(part, str):
+                            user_texts.append(part)
         if not user_texts and "prompt" in payload and isinstance(payload["prompt"], str):
             user_texts.append(payload["prompt"])
         return " ".join(user_texts)
@@ -200,9 +236,9 @@ class HybridCacheStore:
                 FROM prompt_cache
                 WHERE provider = ?
                 ORDER BY created_at DESC
-                LIMIT 100
+                LIMIT ?
                 """,
-                (provider,),
+                (provider, self.candidate_limit),
             )
             rows = cursor.fetchall()
 
