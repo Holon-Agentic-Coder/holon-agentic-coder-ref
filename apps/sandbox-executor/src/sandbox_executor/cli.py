@@ -135,9 +135,10 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
 
     ca_cert_path, _ = generate_root_ca()
 
-    # 4. Resolve host addon path
+    # 4. Resolve host addon path and src path
     addon_dir = os.path.dirname(os.path.abspath(__file__))
     addon_path = os.path.join(addon_dir, "token_reduction", "mitm_addon.py")
+    src_dir = os.path.abspath(os.path.join(addon_dir, ".."))
 
     # 5. Start the holon-proxy docker sidecar
     # We mount ~/.holon folder to persist cache db in /home/mitmproxy/.holon inside container
@@ -156,6 +157,8 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
         "-v",
         f"{holon_home}:/home/mitmproxy/.holon",
         "-v",
+        f"{src_dir}:/tmp/src:ro",
+        "-v",
         f"{addon_path}:/tmp/mitm_addon.py:ro",
         "mitmproxy/mitmproxy:12.2.3",
         "mitmdump",
@@ -172,8 +175,29 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
         proxy_url = "http://172.17.0.1:8080"
         mounts = []
     else:
-        # Wait a moment for proxy to initialize
-        time.sleep(1.0)
+        # Wait for proxy to initialize via a TCP probe inside the container
+        initialized = False
+        start_time = time.time()
+        while time.time() - start_time < 5.0:
+            probe = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "holon-proxy",
+                    "python3",
+                    "-c",
+                    "import socket; s = socket.socket(); s.connect(('127.0.0.1', 8080))",
+                ],
+                capture_output=True,
+            )
+            if probe.returncode == 0:
+                initialized = True
+                break
+            time.sleep(0.1)
+
+        if not initialized:
+            logger.warning("Proxy sidecar container started but failed to bind to port 8080 within timeout.")
+
         proxy_url = "http://holon-proxy:8080"
         mounts = ["--network", "holon-net"]
 

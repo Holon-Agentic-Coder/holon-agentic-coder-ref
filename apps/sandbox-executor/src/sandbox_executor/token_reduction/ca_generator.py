@@ -52,29 +52,16 @@ def generate_root_ca(cert_dir: str | None = None) -> tuple[str, str]:
             text=True,
         )
     except Exception as exc:
-        logger.warning(
-            "OpenSSL CA generation failed or openssl not found: %s. Generating fallback cert.",
-            exc,
+        logger.error(
+            "OpenSSL Root CA generation failed. "
+            "Please ensure the 'openssl' command line utility is installed and functional."
         )
-        _generate_fallback_cert(ca_cert_path, ca_key_path)
+        raise RuntimeError(
+            "OpenSSL is required to generate Root CA certificates for the token reduction proxy, "
+            "but it is not installed or failed to execute."
+        ) from exc
 
     return ca_cert_path, ca_key_path
-
-
-def _generate_fallback_cert(cert_path: str, key_path: str) -> None:
-    """Fallback generator writing basic PEM files if openssl binary is missing."""
-    dummy_key = (
-        "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC5\n-----END PRIVATE KEY-----\n"
-    )
-    dummy_cert = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "MIIDdTCCAl2gAwIBAgIUHOLONROOTCA00000000000000000001MA0GCSqGSIb3\n"
-        "-----END CERTIFICATE-----\n"
-    )
-    with open(key_path, "w") as kf:
-        kf.write(dummy_key)
-    with open(cert_path, "w") as cf:
-        cf.write(dummy_cert)
 
 
 if __name__ == "__main__":

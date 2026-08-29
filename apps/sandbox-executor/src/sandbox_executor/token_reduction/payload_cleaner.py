@@ -35,6 +35,7 @@ class ContextCleaner:
         Returns:
             dict[str, Any]: Optimized JSON payload dictionary.
         """
+        self.seen_content_hashes = {}
         cleaned_payload = json.loads(json.dumps(payload))  # deep copy
 
         if provider == "anthropic":
@@ -58,6 +59,7 @@ class ContextCleaner:
         # 2. History summarization if message turns exceed max_turns
         if len(messages) > self.max_turns:
             messages = self._summarize_anthropic_history(messages)
+            messages = self._merge_consecutive_roles(messages)
 
         payload["messages"] = messages
 
@@ -128,6 +130,39 @@ class ContextCleaner:
 
         return [*prefix, summary_msg, *suffix]
 
+    def _merge_consecutive_roles(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not messages:
+            return []
+        merged = []
+        for msg in messages:
+            if not merged:
+                merged.append(json.loads(json.dumps(msg)))
+                continue
+            prev = merged[-1]
+            if prev.get("role") == msg.get("role"):
+                prev_content = prev.get("content")
+                curr_content = msg.get("content")
+
+                if isinstance(prev_content, list) or isinstance(curr_content, list):
+                    prev_blocks = []
+                    if isinstance(prev_content, list):
+                        prev_blocks.extend(prev_content)
+                    elif isinstance(prev_content, str):
+                        prev_blocks.append({"type": "text", "text": prev_content})
+
+                    curr_blocks = []
+                    if isinstance(curr_content, list):
+                        curr_blocks.extend(curr_content)
+                    elif isinstance(curr_content, str):
+                        curr_blocks.append({"type": "text", "text": curr_content})
+
+                    prev["content"] = prev_blocks + curr_blocks
+                else:
+                    prev["content"] = str(prev_content) + "\n\n" + str(curr_content)
+            else:
+                merged.append(json.loads(json.dumps(msg)))
+        return merged
+
     def _inject_anthropic_cache_control(self, payload: dict[str, Any]) -> dict[str, Any]:
         # Inject cache_control on system prompt block
         system = payload.get("system")
@@ -154,6 +189,8 @@ class ContextCleaner:
                 last_block = content[-1]
                 if isinstance(last_block, dict) and "cache_control" not in last_block:
                     last_block["cache_control"] = {"type": "ephemeral"}
+            elif isinstance(content, str):
+                target_msg["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
 
         return payload
 
