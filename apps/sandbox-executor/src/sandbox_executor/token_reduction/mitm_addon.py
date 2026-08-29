@@ -25,13 +25,13 @@ class MITMProxyInterceptor:
     def detect_provider(self, url_or_path: str) -> str:
         """Determines the provider based on target URL or endpoint path."""
         url_lower = url_or_path.lower()
-        if "anthropic" in url_lower:
+        if "anthropic" in url_lower or "v1/messages" in url_lower:
             return "anthropic"
-        if "openai" in url_lower:
+        if "openai" in url_lower or "chat/completions" in url_lower:
             return "openai"
         if "googleapis" in url_lower or "gemini" in url_lower:
             return "gemini"
-        return "anthropic"
+        return "unknown"
 
     def intercept_request(self, endpoint: str, request_json: dict[str, Any]) -> dict[str, Any]:
         """Intercepts and cleans an outgoing JSON API request payload.
@@ -44,6 +44,9 @@ class MITMProxyInterceptor:
             dict[str, Any]: Cleaned request JSON payload.
         """
         provider = self.detect_provider(endpoint)
+        if provider == "unknown":
+            logger.warning("Unknown LLM provider for endpoint: %s. Bypassing payload cleaning.", endpoint)
+            return request_json
         return self.cleaner.process_payload(request_json, provider=provider)
 
 
@@ -55,9 +58,9 @@ class MitmproxyAddon:
         self.interceptor = MITMProxyInterceptor()
 
     def request(self, flow: Any) -> None:
-        """Mitmproxy request callback."""
         url = getattr(flow.request, "pretty_url", "")
-        if any(p in url for p in ("anthropic.com", "openai.com", "googleapis.com")):
+        provider = self.interceptor.detect_provider(url)
+        if provider != "unknown":
             try:
                 content = flow.request.get_text()
                 if content:

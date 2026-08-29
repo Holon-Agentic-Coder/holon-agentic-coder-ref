@@ -194,3 +194,83 @@ def test_payload_cleaner_alternating_roles_after_summarization():
             f"Consecutive roles found at index {i}: "
             f"{cleaned['messages'][i]['role']} and {cleaned['messages'][i + 1]['role']}"
         )
+
+
+def test_anthropic_history_truncation_boundary():
+    cleaner = ContextCleaner(max_turns=6, enable_prompt_caching=False)
+    messages = [
+        {"role": "user", "content": "Initial prompt"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "foo", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "result1"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "bar", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "result2"}]},
+        {"role": "assistant", "content": "Let me think"},
+        {"role": "user", "content": "A clean user query without tool results"},  # clean boundary!
+        {"role": "assistant", "content": "Final response"},
+    ]
+    payload = {"messages": messages}
+    cleaned = cleaner.process_payload(payload, provider="anthropic")
+    
+    # We should have truncated the middle. Let's make sure it kept the clean boundary and the final message.
+    # The output messages: prefix (messages[0]), summary_msg, and suffix (starting at clean boundary).
+    # Since prefix (user), summary_msg (user), and suffix[0] (user) are consecutive, they are merged.
+    # The clean boundary message content "A clean user query without tool results" should be merged in.
+    merged_user_msg = cleaned["messages"][0]
+    assert merged_user_msg["role"] == "user"
+    assert "A clean user query without tool results" in merged_user_msg["content"]
+    assert cleaned["messages"][-1]["content"] == "Final response"
+
+
+def test_openai_history_truncation_boundary():
+    cleaner = ContextCleaner(max_turns=5)
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "Hello 1"},
+        {"role": "assistant", "content": "Hi 1"},
+        {"role": "user", "content": "Hello 2"},
+        {"role": "assistant", "content": "Hi 2"},
+        {"role": "user", "content": "Hello 3"},
+        {"role": "assistant", "content": "Hi 3"},
+        {"role": "user", "content": "Hello 4"},
+        {"role": "assistant", "content": "Hi, what tool?"},
+        {"role": "tool", "content": "tool output", "tool_call_id": "tc1"},
+        {"role": "user", "content": "How about now?"},  # clean boundary!
+        {"role": "assistant", "content": "Success!"},
+    ]
+    payload = {"messages": messages}
+    cleaned = cleaner.process_payload(payload, provider="openai")
+    
+    # Prefix: index 0 (system)
+    # Suffix: index 5 onwards (7 messages)
+    # Middle: index 1 to 4 (4 messages) replaced by 1 summary message
+    # Total messages: 9
+    assert len(cleaned["messages"]) == 9
+    assert cleaned["messages"][0]["role"] == "system"
+    assert "Summary of omitted 4" in cleaned["messages"][1]["content"]
+    assert cleaned["messages"][2]["content"] == "Hello 3"
+    assert cleaned["messages"][-2]["content"] == "How about now?"
+    assert cleaned["messages"][-1]["content"] == "Success!"
+
+
+def test_mitm_addon_provider_detection_and_unknown_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+    
+    interceptor = MITMProxyInterceptor()
+    
+    # Standard endpoints
+    assert interceptor.detect_provider("https://api.openai.com/v1/chat/completions") == "openai"
+    assert interceptor.detect_provider("https://api.anthropic.com/v1/messages") == "anthropic"
+    assert interceptor.detect_provider("https://generativelanguage.googleapis.com/v1beta/models") == "gemini"
+    
+    # Custom endpoints with standard paths
+    assert interceptor.detect_provider("http://localhost:8000/v1/chat/completions") == "openai"
+    assert interceptor.detect_provider("http://localhost:8000/v1/messages") == "anthropic"
+    
+    # Unknown provider URL/path
+    assert interceptor.detect_provider("https://example.com/custom/api") == "unknown"
+    
+    # Intercepting request with unknown provider should leave payload unmodified
+    payload = {"messages": [{"role": "user", "content": "hello"}]}
+    res = interceptor.intercept_request("https://example.com/custom/api", payload)
+    assert res == payload
+

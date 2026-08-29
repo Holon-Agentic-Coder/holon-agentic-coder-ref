@@ -114,10 +114,40 @@ class ContextCleaner:
 
         return cleaned_messages
 
+    def _is_clean_user_message(self, msg: dict[str, Any], provider: str) -> bool:
+        if msg.get("role") != "user":
+            return False
+
+        content = msg.get("content")
+        if provider == "anthropic":
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
+                        return False
+            return True
+        elif provider == "openai":
+            return True
+        return False
+
     def _summarize_anthropic_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        target_idx = len(messages) - 6
+        suffix_idx = None
+        for i in range(target_idx, 0, -1):
+            if self._is_clean_user_message(messages[i], "anthropic"):
+                suffix_idx = i
+                break
+        if suffix_idx is None:
+            for i in range(target_idx + 1, len(messages)):
+                if self._is_clean_user_message(messages[i], "anthropic"):
+                    suffix_idx = i
+                    break
+
+        if suffix_idx is None or suffix_idx <= 1:
+            return messages
+
         prefix = messages[:1]
-        suffix = messages[-6:]
-        middle = messages[1:-6]
+        suffix = messages[suffix_idx:]
+        middle = messages[1:suffix_idx]
 
         summary_text = (
             f"[Summary of omitted {len(middle)} intermediate conversation turns: "
@@ -129,6 +159,7 @@ class ContextCleaner:
         }
 
         return [*prefix, summary_msg, *suffix]
+
 
     def _merge_consecutive_roles(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not messages:
@@ -217,14 +248,27 @@ class ContextCleaner:
             cleaned_messages.append(msg)
 
         if len(cleaned_messages) > self.max_turns:
-            prefix = cleaned_messages[:1]
-            suffix = cleaned_messages[-6:]
-            middle_count = len(cleaned_messages) - 7
-            summary_msg = {
-                "role": "user",
-                "content": f"[Summary of omitted {middle_count} intermediate conversation turns]",
-            }
-            cleaned_messages = [*prefix, summary_msg, *suffix]
+            target_idx = len(cleaned_messages) - 6
+            suffix_idx = None
+            for i in range(target_idx, 0, -1):
+                if self._is_clean_user_message(cleaned_messages[i], "openai"):
+                    suffix_idx = i
+                    break
+            if suffix_idx is None:
+                for i in range(target_idx + 1, len(cleaned_messages)):
+                    if self._is_clean_user_message(cleaned_messages[i], "openai"):
+                        suffix_idx = i
+                        break
+
+            if suffix_idx is not None and suffix_idx > 1:
+                prefix = cleaned_messages[:1]
+                suffix = cleaned_messages[suffix_idx:]
+                middle_count = len(cleaned_messages) - len(prefix) - len(suffix)
+                summary_msg = {
+                    "role": "user",
+                    "content": f"[Summary of omitted {middle_count} intermediate conversation turns]",
+                }
+                cleaned_messages = [*prefix, summary_msg, *suffix]
 
         payload["messages"] = cleaned_messages
         return payload
