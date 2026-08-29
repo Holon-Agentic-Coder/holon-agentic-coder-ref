@@ -806,3 +806,42 @@ def test_mitm_addon_null_response_flow():
     addon.response(flow)
 
 
+def test_hybrid_cache_cross_provider_exact_match_isolation(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    payload = {
+        "system": "You are a coding assistant.",
+        "messages": [{"role": "user", "content": "Write a python function to compute fibonacci numbers."}],
+    }
+    response = {"content": "def fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)"}
+
+    # Store payload under anthropic provider
+    cache.put(payload, response, provider="anthropic")
+
+    # Exact lookup for anthropic returns the cached response
+    assert cache.get(payload, provider="anthropic") == response
+
+    # Exact lookup for openai with identical payload returns None due to provider isolation
+    assert cache.get(payload, provider="openai") is None
+
+
+def test_mitm_addon_null_request_flow():
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeFlowNullRequest:
+        def __init__(self):
+            self.request = None
+            self.response = None
+            self.is_cached = False
+
+    flow = FakeFlowNullRequest()
+    # Call request and response callbacks on flow with request=None should return cleanly
+    addon.request(flow)
+    addon.response(flow)
+
+
+

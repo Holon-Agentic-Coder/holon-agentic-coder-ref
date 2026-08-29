@@ -55,7 +55,7 @@ class HybridCacheStore:
     def generate_prefix_key(self, payload: dict[str, Any], provider: str = "anthropic") -> str:
         """Generates a stable prefix-tree hash key from the payload system and message turns."""
         normalized_str = self.normalize_payload(payload, provider)
-        return hashlib.sha256(normalized_str.encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{provider}:{normalized_str}".encode("utf-8")).hexdigest()
 
     def normalize_payload(self, payload: dict[str, Any], provider: str = "anthropic") -> str:
         """Normalizes payload by stripping transient variables like timestamps, run IDs, and temporary tokens."""
@@ -163,15 +163,15 @@ class HybridCacheStore:
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT response_json FROM prompt_cache WHERE key = ?",
-                (prefix_key,),
+                "SELECT response_json FROM prompt_cache WHERE key = ? AND provider = ?",
+                (prefix_key, provider),
             )
             row = cursor.fetchone()
             if row:
                 (resp_json,) = row
                 cursor.execute(
-                    "UPDATE prompt_cache SET hit_count = hit_count + 1 WHERE key = ?",
-                    (prefix_key,),
+                    "UPDATE prompt_cache SET hit_count = hit_count + 1 WHERE key = ? AND provider = ?",
+                    (prefix_key, provider),
                 )
                 conn.commit()
                 logger.info("Exact cache hit for key %s", prefix_key[:10])
@@ -189,6 +189,8 @@ class HybridCacheStore:
 
         if not target_tokens:
             return None
+
+        target_system_prompt = self._extract_system_prompt(target_payload)
 
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
@@ -211,7 +213,7 @@ class HybridCacheStore:
                     continue
 
                 # Require exact match on system prompt before evaluating user turn similarity
-                if self._extract_system_prompt(target_payload) != self._extract_system_prompt(stored_payload):
+                if target_system_prompt != self._extract_system_prompt(stored_payload):
                     continue
 
                 stored_user_content = self._extract_user_content(stored_payload)

@@ -99,6 +99,8 @@ class MitmproxyAddon:
 
     def request(self, flow: Any) -> None:
         """Mitmproxy request callback."""
+        if getattr(flow, "request", None) is None:
+            return
         url = getattr(flow.request, "pretty_url", "")
         provider = self.interceptor.detect_provider(url)
         if provider != "unknown":
@@ -118,7 +120,7 @@ class MitmproxyAddon:
 
     def response(self, flow: Any) -> None:
         """Mitmproxy response callback."""
-        if getattr(flow, "response", None) is None:
+        if getattr(flow, "request", None) is None or getattr(flow, "response", None) is None:
             return
         url = getattr(flow.request, "pretty_url", "")
         provider = self.interceptor.detect_provider(url)
