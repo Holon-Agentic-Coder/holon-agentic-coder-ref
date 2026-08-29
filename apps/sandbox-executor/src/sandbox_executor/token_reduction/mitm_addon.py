@@ -4,6 +4,11 @@ import json
 import logging
 from typing import Any
 
+try:
+    from mitmproxy import http
+except ImportError:
+    http = None
+
 from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
 from sandbox_executor.token_reduction.payload_cleaner import JSONContextCleaner
 
@@ -129,7 +134,13 @@ class MitmproxyAddon:
 
                     if cached_resp:
                         headers = {"Content-Type": "application/json"}
-                        flow.response = flow.Response.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
+                        response_cls = (
+                            getattr(http, "Response", None)
+                            or getattr(flow, "Response", None)
+                            or globals().get("Response")
+                        )
+                        if response_cls and hasattr(response_cls, "make"):
+                            flow.response = response_cls.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
                         setattr(flow, "is_cached", True)
             except Exception:
                 logger.exception("Mitmproxy request intercept error for endpoint: %s", url)

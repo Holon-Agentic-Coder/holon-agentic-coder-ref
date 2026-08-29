@@ -287,9 +287,12 @@ class HybridCacheStore:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO prompt_cache
+                INSERT INTO prompt_cache
                 (key, provider, prompt_normalized, response_json, created_at, hit_count)
                 VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT(key) DO UPDATE SET
+                    response_json = excluded.response_json,
+                    created_at = excluded.created_at
                 """,
                 (prefix_key, provider, norm_prompt, resp_json, now),
             )

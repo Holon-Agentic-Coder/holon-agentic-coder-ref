@@ -989,5 +989,110 @@ def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
     assert cached_turn10["content"][0]["text"] == "Log files deleted."
 
 
+def test_mitm_addon_response_make_import_fallback(monkeypatch):
+    import json
+    from sandbox_executor.token_reduction import mitm_addon
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    url = "https://api.anthropic.com/v1/messages"
+    req_payload = {"system": "Sys", "messages": [{"role": "user", "content": "Hi"}]}
+    cached_payload = {"id": "cached_resp_123"}
+    monkeypatch.setattr(addon.interceptor, "intercept_request", lambda u, d: (d, cached_payload))
+
+    class MockHttpResponse:
+        @classmethod
+        def make(cls, status_code, content, headers):
+            return {
+                "mock_http": True,
+                "status_code": status_code,
+                "content": json.loads(content.decode("utf-8")),
+                "headers": headers,
+            }
+
+    class MockHttpModule:
+        Response = MockHttpResponse
+
+    monkeypatch.setattr(mitm_addon, "http", MockHttpModule)
+
+    class FakeRequest:
+        pretty_url = url
+        def get_text(self):
+            return json.dumps(req_payload)
+        def set_text(self, text):
+            pass
+
+    class FakeFlowWithoutResponseAttr:
+        request = FakeRequest()
+        response = None
+        is_cached = False
+
+    flow_a = FakeFlowWithoutResponseAttr()
+    addon.request(flow_a)
+    assert getattr(flow_a, "is_cached", False) is True
+    assert flow_a.response == {
+        "mock_http": True,
+        "status_code": 200,
+        "content": cached_payload,
+        "headers": {"Content-Type": "application/json"},
+    }
+
+    monkeypatch.setattr(mitm_addon, "http", None)
+
+    class FakeFlowWithResponseAttr:
+        request = FakeRequest()
+        response = None
+        is_cached = False
+        class Response:
+            @classmethod
+            def make(cls, status_code, content, headers):
+                return {
+                    "mock_flow_response": True,
+                    "status_code": status_code,
+                    "content": json.loads(content.decode("utf-8")),
+                }
+
+    flow_b = FakeFlowWithResponseAttr()
+    addon.request(flow_b)
+    assert getattr(flow_b, "is_cached", False) is True
+    assert flow_b.response == {
+        "mock_flow_response": True,
+        "status_code": 200,
+        "content": cached_payload,
+    }
+
+
+def test_hybrid_cache_put_upsert_preserves_hit_count(tmp_path):
+    import sqlite3
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path))
+    req = {
+        "system": "System prompt",
+        "messages": [{"role": "user", "content": "Test hit count preservation"}],
+    }
+    resp1 = {"output": "Initial response"}
+    cache.put(req, resp1, provider="anthropic")
+
+    cache.get(req, provider="anthropic")
+    cache.get(req, provider="anthropic")
+
+    db_path = tmp_path / "llm_cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count, response_json FROM prompt_cache").fetchone()
+        assert row[0] == 2
+        assert "Initial response" in row[1]
+
+    resp2 = {"output": "Updated response"}
+    cache.put(req, resp2, provider="anthropic")
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count, response_json FROM prompt_cache").fetchone()
+        assert row[0] == 2
+        assert "Updated response" in row[1]
+
+
+
 
 
