@@ -28,6 +28,7 @@ format = "ruff format --check ."
 auto-format = "ruff format . && ruff check --fix ."
 
 [tool.pytest.ini_options]
+testpaths = ["apps/sandbox-executor/tests"]
 markers = [
     "integration_test: marks tests as integration tests",
 ]
