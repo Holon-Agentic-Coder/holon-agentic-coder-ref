@@ -443,6 +443,33 @@ def test_openai_role_merging_and_summarization() -> None:
         assert roles[i] != roles[i + 1]
 
 
+def test_openai_turn0_preservation_during_summarization() -> None:
+    cleaner = JSONContextCleaner(enable_deduplication=False, max_turns=4)
+
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Initial user task prompt (Turn 0)"},
+        {"role": "assistant", "content": "Turn 1 response"},
+        {"role": "user", "content": "Turn 2 query"},
+        {"role": "assistant", "content": "Turn 2 response"},
+        {"role": "user", "content": "Turn 3 query"},
+        {"role": "assistant", "content": "Turn 3 response"},
+        {"role": "user", "content": "Recent user prompt"},
+    ]
+
+    cleaned = cleaner.process_payload({"messages": messages}, provider="openai")
+    cleaned_msgs = cleaned["messages"]
+
+    # Verify initial system prompt (index 0) and initial user prompt (index 1) are preserved
+    assert cleaned_msgs[0] == {"role": "system", "content": "You are a helpful assistant."}
+    assert cleaned_msgs[1] == {"role": "user", "content": "Initial user task prompt (Turn 0)"}
+    # Verify summary message inserted
+    assert cleaned_msgs[2]["role"] == "assistant"
+    assert "[Summary of omitted" in cleaned_msgs[2]["content"]
+    # Verify suffix preserved
+    assert cleaned_msgs[-1] == {"role": "user", "content": "Recent user prompt"}
+
+
 def test_gemini_history_truncation_and_summarization() -> None:
     cleaner = JSONContextCleaner(enable_deduplication=False, max_turns=6)
 
@@ -466,9 +493,7 @@ def test_gemini_history_truncation_and_summarization() -> None:
 
     assert len(cleaned_contents) < len(contents)
     summary_found = any(
-        "[Summary of omitted" in p.get("text", "")
-        for turn in cleaned_contents
-        for p in turn.get("parts", [])
+        "[Summary of omitted" in p.get("text", "") for turn in cleaned_contents for p in turn.get("parts", [])
     )
     assert summary_found is True
 
@@ -591,5 +616,3 @@ def test_non_dict_payload_items_handling() -> None:
     assert cleaned_gemini["contents"][0] == "invalid_turn"
     assert cleaned_gemini["contents"][1] is None
     assert cleaned_gemini["contents"][2]["parts"][0] == "invalid_part"
-
-

@@ -356,28 +356,42 @@ class JSONContextCleaner:
             cleaned_messages.append(msg_copy)
 
         if len(cleaned_messages) > self.max_turns:
-            target_idx = len(cleaned_messages) - _RECENT_TURNS_TO_KEEP
+            prefix_len = (
+                2
+                if (
+                    len(cleaned_messages) > 1
+                    and isinstance(cleaned_messages[0], dict)
+                    and cleaned_messages[0].get("role") == "system"
+                    and isinstance(cleaned_messages[1], dict)
+                    and cleaned_messages[1].get("role") == "user"
+                )
+                else 1
+            )
+            target_idx = max(prefix_len + 1, len(cleaned_messages) - _RECENT_TURNS_TO_KEEP)
             suffix_idx = None
-            for i in range(target_idx, 0, -1):
+            # Search forward first from target_idx to find clean user message that leaves middle turns to summarize
+            for i in range(target_idx, len(cleaned_messages)):
                 if self._is_clean_user_message(cleaned_messages[i], "openai"):
                     suffix_idx = i
                     break
+            # Fallback: search backward down to prefix_len + 1
             if suffix_idx is None:
-                for i in range(target_idx + 1, len(cleaned_messages)):
+                for i in range(target_idx - 1, prefix_len, -1):
                     if self._is_clean_user_message(cleaned_messages[i], "openai"):
                         suffix_idx = i
                         break
 
-            if suffix_idx is not None and suffix_idx > 1:
-                prefix = cleaned_messages[:1]
+            if suffix_idx is not None and suffix_idx > prefix_len:
+                prefix = cleaned_messages[:prefix_len]
                 suffix = cleaned_messages[suffix_idx:]
                 middle_count = len(cleaned_messages) - len(prefix) - len(suffix)
-                summary_msg = {
-                    "role": "assistant",
-                    "content": f"[Summary of omitted {middle_count} intermediate conversation turns]",
-                }
-                cleaned_messages = [*prefix, summary_msg, *suffix]
-                cleaned_messages = self._merge_consecutive_roles(cleaned_messages)
+                if middle_count > 0:
+                    summary_msg = {
+                        "role": "assistant",
+                        "content": f"[Summary of omitted {middle_count} intermediate conversation turns]",
+                    }
+                    cleaned_messages = [*prefix, summary_msg, *suffix]
+                    cleaned_messages = self._merge_consecutive_roles(cleaned_messages)
 
         payload["messages"] = cleaned_messages
         return payload
