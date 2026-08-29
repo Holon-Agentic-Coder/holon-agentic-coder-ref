@@ -37,7 +37,7 @@
 
 The overall plan metrics were derived from the individual step-level metrics as follows:
 
-- **p_success_pred:** 0.82. This is the product of the probabilities of success of all steps: 0.98 * 0.90 * 0.95 * 0.98
+- **p_success_pred:** 0.82. This is the product of the probabilities of success of all steps: 0.98 _ 0.90 _ 0.95 \* 0.98
   = 0.82. The implementation of the core deduplication and cache control logic in Step 2 acts as the bottleneck.
 - **entropy_pred:** 7.7. Aggregated as the sum of predicted step entropies: 1.0 + 3.5 + 2.0 + 1.2 = 7.7.
 - **impact_pred:** 65.0. Taken as the maximum impact of the steps, since the primary benefit is realized by the
@@ -45,8 +45,8 @@ The overall plan metrics were derived from the individual step-level metrics as 
 - **cost_pred:** 18.0. Aggregated as the sum of individual step costs: 2.0 + 8.0 + 5.0 + 3.0 = 18.0.
 - **learning_value_pred:** 4.5. Represents the combined epistemic value of implementing the cache breakpoint heuristics
   and documenting edge case patterns.
-- **ev_pred:** 35.24. Calculated directly using the overall metrics under EV physics: EV = 0.82 * 65.0 + 0.5 * 4.5 -
-  0.3 * 7.7 - 18.0 = 35.24.
+- **ev_pred:** 35.24. Calculated directly using the overall metrics under EV physics: EV = 0.82 _ 65.0 + 0.5 _ 4.5 - 0.3
+  \* 7.7 - 18.0 = 35.24.
 
 ## Safety & Constraint Alignment
 
