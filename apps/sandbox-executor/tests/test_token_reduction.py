@@ -753,3 +753,56 @@ def test_hybrid_cache_atomic_hit_count_and_system_prompt_normalization(tmp_path)
         row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
         assert row[0] == 2
 
+
+def test_hybrid_cache_openai_system_prompt_isolation(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    stored_openai_req = {
+        "messages": [
+            {"role": "system", "content": "You are a specialized code review bot."},
+            {"role": "user", "content": "Analyze performance and optimization of database queries in repository"},
+        ]
+    }
+    stored_resp = {"choices": [{"message": {"content": "DB queries look optimized."}}]}
+
+    cache.put(stored_openai_req, stored_resp, provider="openai")
+
+    # 1. Query with different OpenAI system prompt but identical user message -> Cache miss
+    diff_sys_req = {
+        "messages": [
+            {"role": "system", "content": "You are a code formatter bot."},
+            {"role": "user", "content": "Analyze performance and optimization of database queries in repository"},
+        ]
+    }
+    assert cache.get(diff_sys_req, provider="openai") is None
+
+    # 2. Query with same OpenAI system prompt and high token overlap user message -> Cache hit
+    same_sys_req = {
+        "messages": [
+            {"role": "system", "content": "You are a specialized code review bot."},
+            {"role": "user", "content": "Analyze performance and efficiency of database queries in repository"},
+        ]
+    }
+    hit_resp = cache.get(same_sys_req, provider="openai")
+    assert hit_resp is not None
+    assert hit_resp["choices"][0]["message"]["content"] == "DB queries look optimized."
+
+
+def test_mitm_addon_null_response_flow():
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeFlowNullResponse:
+        def __init__(self):
+            self.request = MagicMock(pretty_url="https://api.openai.com/v1/chat/completions")
+            self.response = None
+            self.is_cached = False
+
+    flow = FakeFlowNullResponse()
+    # Call response on flow with response=None should return cleanly without raising AttributeError
+    addon.response(flow)
+
+

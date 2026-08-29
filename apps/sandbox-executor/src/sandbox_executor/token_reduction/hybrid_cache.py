@@ -110,6 +110,47 @@ class HybridCacheStore:
             user_texts.append(payload["prompt"])
         return " ".join(user_texts)
 
+    def _extract_system_prompt(self, payload: dict[str, Any]) -> str:
+        """Extracts normalized system instructions from Anthropic/Gemini/OpenAI payload schemas."""
+        system_texts: list[str] = []
+
+        # 1. Top-level 'system' or 'system_instruction' field (Anthropic/Gemini)
+        system_val = payload.get("system") or payload.get("system_instruction")
+        if system_val is not None:
+            if isinstance(system_val, str):
+                system_texts.append(system_val)
+            elif isinstance(system_val, list):
+                for item in system_val:
+                    if isinstance(item, str):
+                        system_texts.append(item)
+                    elif isinstance(item, dict):
+                        if "text" in item and isinstance(item["text"], str):
+                            system_texts.append(item["text"])
+            elif isinstance(system_val, dict):
+                if "text" in system_val and isinstance(system_val["text"], str):
+                    system_texts.append(system_val["text"])
+                elif "parts" in system_val and isinstance(system_val["parts"], list):
+                    for part in system_val["parts"]:
+                        if isinstance(part, dict) and "text" in part and isinstance(part["text"], str):
+                            system_texts.append(part["text"])
+
+        # 2. System messages in 'messages' array (OpenAI schema)
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("role") == "system":
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        system_texts.append(content)
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, str):
+                                system_texts.append(item)
+                            elif isinstance(item, dict) and "text" in item and isinstance(item["text"], str):
+                                system_texts.append(item["text"])
+
+        return " ".join(system_texts).strip()
+
     def get(self, payload: dict[str, Any], provider: str = "anthropic") -> dict[str, Any] | None:
         """Looks up cached response by exact prefix match or semantic similarity match.
 
@@ -170,7 +211,7 @@ class HybridCacheStore:
                     continue
 
                 # Require exact match on system prompt before evaluating user turn similarity
-                if target_payload.get("system") != stored_payload.get("system"):
+                if self._extract_system_prompt(target_payload) != self._extract_system_prompt(stored_payload):
                     continue
 
                 stored_user_content = self._extract_user_content(stored_payload)
