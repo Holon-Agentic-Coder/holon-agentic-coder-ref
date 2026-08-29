@@ -581,6 +581,17 @@ def test_hybrid_cache(tmp_path):
     assert cached_resp["result"] == "Fixed bug in task-1234"
 
 
+def test_hybrid_cache_dissimilar_user_prompts(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.85)
+    sys_prompt = "You are a helpful coding assistant."
+    req_1 = {"system": sys_prompt, "messages": [{"role": "user", "content": "Fix bug in authentication module"}]}
+    req_2 = {"system": sys_prompt, "messages": [{"role": "user", "content": "Delete production database records"}]}
+    cache.put(req_1, {"result": "Bug fixed"}, provider="anthropic")
+    assert cache.get(req_2, provider="anthropic") is None
+
+
 def test_mitm_interceptor(tmp_path):
     from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
 

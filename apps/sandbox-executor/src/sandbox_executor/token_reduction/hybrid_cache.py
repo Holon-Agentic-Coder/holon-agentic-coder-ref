@@ -15,7 +15,13 @@ logger = logging.getLogger(__name__)
 class HybridCacheStore:
     """Hybrid exact prefix tree and semantic local cache store for LLM responses."""
 
-    def __init__(self, cache_dir: str | None = None, similarity_threshold: float = 0.85):
+    def __init__(self, cache_dir: str | None = None, similarity_threshold: float = 0.85) -> None:
+        """Initialize HybridCacheStore.
+
+        Args:
+            cache_dir: Directory path for SQLite storage. Defaults to ~/.holon/cache.
+            similarity_threshold: Jaccard similarity score threshold (0.0 to 1.0) required for a semantic match hit.
+        """
         if cache_dir is None:
             cache_dir = os.path.expanduser("~/.holon/cache")
         os.makedirs(cache_dir, exist_ok=True)
@@ -26,8 +32,9 @@ class HybridCacheStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS prompt_cache (
@@ -39,6 +46,9 @@ class HybridCacheStore:
                     hit_count INTEGER DEFAULT 0
                 )
                 """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prompt_cache_provider_created ON prompt_cache (provider, created_at DESC)"
             )
             conn.commit()
 
@@ -66,6 +76,40 @@ class HybridCacheStore:
         norm = re.sub(r"task-\d+", "task-<ID>", norm)
         return norm
 
+    def _extract_user_content(self, payload: dict[str, Any]) -> str:
+        """Extracts user message content specifically to avoid system prompt and JSON key token pollution."""
+        user_texts = []
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        user_texts.append(content)
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict):
+                                if "text" in item and isinstance(item["text"], str):
+                                    user_texts.append(item["text"])
+                            elif isinstance(item, str):
+                                user_texts.append(item)
+                    elif content is not None:
+                        user_texts.append(json.dumps(content))
+        contents = payload.get("contents")
+        if isinstance(contents, list):
+            for turn in contents:
+                if isinstance(turn, dict) and turn.get("role") in ("user", None, ""):
+                    parts = turn.get("parts")
+                    if isinstance(parts, list):
+                        for part in parts:
+                            if isinstance(part, dict) and "text" in part and isinstance(part["text"], str):
+                                user_texts.append(part["text"])
+                            elif isinstance(part, str):
+                                user_texts.append(part)
+        if not user_texts and "prompt" in payload and isinstance(payload["prompt"], str):
+            user_texts.append(payload["prompt"])
+        return " ".join(user_texts)
+
     def get(self, payload: dict[str, Any], provider: str = "anthropic") -> dict[str, Any] | None:
         """Looks up cached response by exact prefix match or semantic similarity match.
 
@@ -75,7 +119,7 @@ class HybridCacheStore:
         prefix_key = self.generate_prefix_key(payload, provider)
 
         # 1. Exact Prefix Matching
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT response_json, hit_count FROM prompt_cache WHERE key = ?",
@@ -94,21 +138,43 @@ class HybridCacheStore:
 
         # 2. Semantic Similarity Matching
         target_norm = self.normalize_payload(payload, provider)
-        target_tokens = set(re.findall(r"\w+", target_norm.lower()))
+        try:
+            target_payload = json.loads(target_norm)
+        except Exception:
+            target_payload = payload
+
+        target_user_content = self._extract_user_content(target_payload)
+        target_tokens = set(re.findall(r"\w+", target_user_content.lower()))
 
         if not target_tokens:
             return None
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT key, prompt_normalized, response_json, hit_count FROM prompt_cache WHERE provider = ?",
+                """
+                SELECT key, prompt_normalized, response_json, hit_count
+                FROM prompt_cache
+                WHERE provider = ?
+                ORDER BY created_at DESC
+                LIMIT 100
+                """,
                 (provider,),
             )
             rows = cursor.fetchall()
 
             for key, stored_norm, resp_json, hit_count in rows:
-                stored_tokens = set(re.findall(r"\w+", stored_norm.lower()))
+                try:
+                    stored_payload = json.loads(stored_norm)
+                except Exception:
+                    continue
+
+                # Require exact match on system prompt before evaluating user turn similarity
+                if payload.get("system") != stored_payload.get("system"):
+                    continue
+
+                stored_user_content = self._extract_user_content(stored_payload)
+                stored_tokens = set(re.findall(r"\w+", stored_user_content.lower()))
                 if not stored_tokens:
                     continue
 
@@ -138,7 +204,7 @@ class HybridCacheStore:
         resp_json = json.dumps(response)
         now = time.time()
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -153,7 +219,8 @@ class HybridCacheStore:
 
     def clear(self) -> None:
         """Clears all entries from the cache store."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM prompt_cache")
             conn.commit()
+

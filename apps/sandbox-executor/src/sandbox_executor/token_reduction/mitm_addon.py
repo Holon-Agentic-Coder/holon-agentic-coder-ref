@@ -54,10 +54,13 @@ class MITMProxyInterceptor:
 
         # Step 2: Check local cache if enabled
         if self.enable_caching:
-            cached_response = self.cache_store.get(cleaned_request, provider=provider)
-            if cached_response is not None:
-                logger.info("Serving response from local cache for endpoint %s", endpoint)
-                return cleaned_request, cached_response
+            try:
+                cached_response = self.cache_store.get(cleaned_request, provider=provider)
+                if cached_response is not None:
+                    logger.info("Serving response from local cache for endpoint %s", endpoint)
+                    return cleaned_request, cached_response
+            except Exception:
+                logger.exception("Cache lookup failed for endpoint %s; bypassing cache.", endpoint)
 
         return cleaned_request, None
 
@@ -74,7 +77,10 @@ class MITMProxyInterceptor:
 
         provider = self.detect_provider(endpoint)
         if provider != "unknown":
-            self.cache_store.put(request_json, response_json, provider=provider)
+            try:
+                self.cache_store.put(request_json, response_json, provider=provider)
+            except Exception:
+                logger.exception("Cache store put failed for endpoint %s.", endpoint)
 
 
 # mitmproxy addon entrypoint compatible function
