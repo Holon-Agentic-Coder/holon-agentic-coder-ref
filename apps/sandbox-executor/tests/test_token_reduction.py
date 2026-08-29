@@ -616,3 +616,140 @@ def test_mitm_interceptor(tmp_path):
     _, cached_hit = interceptor.intercept_request(endpoint, req_json)
     assert cached_hit is not None
     assert cached_hit["id"] == "msg_123"
+
+
+def test_mitm_interceptor_caching_disabled(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    cache_dir = tmp_path / "should_not_be_created"
+    interceptor = MITMProxyInterceptor(cache_dir=str(cache_dir), enable_caching=False)
+    assert interceptor._cache_store is None
+    assert not cache_dir.exists()
+
+    endpoint = "https://api.anthropic.com/v1/messages"
+    req_json = {"system": "System prompt", "messages": [{"role": "user", "content": "Hello LLM"}]}
+    cleaned_req, cached_resp = interceptor.intercept_request(endpoint, req_json)
+    assert cached_resp is None
+    assert interceptor._cache_store is None
+    assert not cache_dir.exists()
+
+
+def test_mitm_addon_lifecycle_and_hit_count(tmp_path):
+    import json
+    import sqlite3
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    cache_dir = tmp_path / "cache"
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(cache_dir)
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, text=""):
+            self.status_code = status_code
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        @classmethod
+        def make(cls, status_code, content, headers=None):
+            return cls(status_code=status_code, text=content.decode("utf-8") if isinstance(content, bytes) else content)
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.Response = FakeResponse
+
+    url = "https://api.anthropic.com/v1/messages"
+    req_body = json.dumps({"system": "System prompt", "messages": [{"role": "user", "content": "Test mitm flow"}]})
+
+    # Flow 1: Initial request (cache miss) -> backend response -> response callback stores in cache
+    flow1 = FakeFlow(FakeRequest(url, req_body), FakeResponse(200, json.dumps({"id": "resp_1"})))
+    addon.request(flow1)
+    assert getattr(flow1, "is_cached", False) is False
+
+    addon.response(flow1)
+
+    # Check cache table hit_count (should be 0)
+    db_path = cache_dir / "llm_cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
+        assert row[0] == 0
+
+    # Flow 2: Subsequent request (cache hit)
+    flow2 = FakeFlow(FakeRequest(url, req_body))
+    addon.request(flow2)
+    assert getattr(flow2, "is_cached", False) is True
+    assert flow2.response is not None
+    assert json.loads(flow2.response.get_text()) == {"id": "resp_1"}
+
+    # Call response callback on cached flow -> should not re-put or reset hit_count to 0
+    addon.response(flow2)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
+        assert row[0] == 1
+
+
+def test_hybrid_cache_atomic_hit_count_and_system_prompt_normalization(tmp_path):
+    import sqlite3
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    req_1 = {
+        "system": "You are assistant at 2026-08-30T00:00:00Z with task-100",
+        "messages": [
+            {
+                "role": "user",
+                "content": "word1 word2 word3 word4 word5 word6 word7 word8 word9 test",
+            }
+        ],
+    }
+    resp_1 = {"output": "Refactored auth"}
+    cache.put(req_1, resp_1, provider="anthropic")
+
+    # 1. Exact match (with normalized timestamps/task IDs)
+    req_exact = {
+        "system": "You are assistant at 2026-08-30T01:00:00Z with task-200",
+        "messages": [
+            {
+                "role": "user",
+                "content": "word1 word2 word3 word4 word5 word6 word7 word8 word9 test",
+            }
+        ],
+    }
+    resp = cache.get(req_exact, provider="anthropic")
+    assert resp == resp_1
+
+    # 2. Semantic match with transient tokens in system prompt (9 shared out of 11 union = 0.818 >= 0.8)
+    req_semantic = {
+        "system": "You are assistant at 2026-08-30T02:00:00Z with task-300",
+        "messages": [
+            {
+                "role": "user",
+                "content": "word1 word2 word3 word4 word5 word6 word7 word8 word9 check",
+            }
+        ],
+    }
+    resp_sem = cache.get(req_semantic, provider="anthropic")
+    assert resp_sem == resp_1
+
+    # Verify hit_count incremented to 2 (1 exact hit + 1 semantic hit)
+    db_path = tmp_path / "llm_cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
+        assert row[0] == 2
+

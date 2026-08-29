@@ -122,15 +122,15 @@ class HybridCacheStore:
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT response_json, hit_count FROM prompt_cache WHERE key = ?",
+                "SELECT response_json FROM prompt_cache WHERE key = ?",
                 (prefix_key,),
             )
             row = cursor.fetchone()
             if row:
-                resp_json, hit_count = row
+                (resp_json,) = row
                 cursor.execute(
-                    "UPDATE prompt_cache SET hit_count = ? WHERE key = ?",
-                    (hit_count + 1, prefix_key),
+                    "UPDATE prompt_cache SET hit_count = hit_count + 1 WHERE key = ?",
+                    (prefix_key,),
                 )
                 conn.commit()
                 logger.info("Exact cache hit for key %s", prefix_key[:10])
@@ -153,7 +153,7 @@ class HybridCacheStore:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT key, prompt_normalized, response_json, hit_count
+                SELECT key, prompt_normalized, response_json
                 FROM prompt_cache
                 WHERE provider = ?
                 ORDER BY created_at DESC
@@ -163,14 +163,14 @@ class HybridCacheStore:
             )
             rows = cursor.fetchall()
 
-            for key, stored_norm, resp_json, hit_count in rows:
+            for key, stored_norm, resp_json in rows:
                 try:
                     stored_payload = json.loads(stored_norm)
                 except Exception:
                     continue
 
                 # Require exact match on system prompt before evaluating user turn similarity
-                if payload.get("system") != stored_payload.get("system"):
+                if target_payload.get("system") != stored_payload.get("system"):
                     continue
 
                 stored_user_content = self._extract_user_content(stored_payload)
@@ -184,8 +184,8 @@ class HybridCacheStore:
 
                 if similarity >= self.similarity_threshold:
                     cursor.execute(
-                        "UPDATE prompt_cache SET hit_count = ? WHERE key = ?",
-                        (hit_count + 1, key),
+                        "UPDATE prompt_cache SET hit_count = hit_count + 1 WHERE key = ?",
+                        (key,),
                     )
                     conn.commit()
                     logger.info(

@@ -17,8 +17,15 @@ class MITMProxyInterceptor:
 
     def __init__(self, cache_dir: str | None = None, enable_caching: bool = True):
         self.cleaner = JSONContextCleaner()
-        self.cache_store = HybridCacheStore(cache_dir=cache_dir)
+        self.cache_dir = cache_dir
         self.enable_caching = enable_caching
+        self._cache_store: HybridCacheStore | None = None
+
+    @property
+    def cache_store(self) -> HybridCacheStore:
+        if self._cache_store is None:
+            self._cache_store = HybridCacheStore(cache_dir=self.cache_dir)
+        return self._cache_store
 
     def detect_provider(self, url_or_path: str) -> str:
         """Determines the provider based on target URL or endpoint path."""
@@ -105,6 +112,7 @@ class MitmproxyAddon:
                     if cached_resp:
                         headers = {"Content-Type": "application/json"}
                         flow.response = flow.Response.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
+                        setattr(flow, "is_cached", True)
             except Exception:
                 logger.exception("Mitmproxy request intercept error for endpoint: %s", url)
 
@@ -112,7 +120,7 @@ class MitmproxyAddon:
         """Mitmproxy response callback."""
         url = getattr(flow.request, "pretty_url", "")
         provider = self.interceptor.detect_provider(url)
-        if provider != "unknown":
+        if provider != "unknown" and not getattr(flow, "is_cached", False):
             try:
                 req_text = flow.request.get_text()
                 resp_text = flow.response.get_text()
