@@ -1194,3 +1194,160 @@ def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
     assert "--network" in mounts
     assert envs["HTTP_PROXY"] == "http://holon-proxy:8080"
     assert envs["HTTPS_PROXY"] == "http://holon-proxy:8080"
+
+
+def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, text=""):
+            self.status_code = status_code
+            self._text = text
+            self.headers = {}
+
+        def get_text(self):
+            return self._text
+
+        @classmethod
+        def make(cls, status_code, content, headers=None):
+            resp = cls(status_code=status_code, text=content.decode("utf-8") if isinstance(content, bytes) else content)
+            resp.headers = dict(headers) if headers else {}
+            return resp
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.Response = FakeResponse
+            self.is_cached = False
+
+    # Mock time.perf_counter to return deterministic timestamps
+    timestamps = [10.0, 12.5, 15.0]
+    ts_iter = iter(timestamps)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    # Let's test Anthropic cache miss
+    url = "https://api.anthropic.com/v1/messages"
+    req_body = {"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "Hi LLM"}]}
+    resp_body = {
+        "content": [{"type": "text", "text": "Hello human"}],
+        "usage": {"input_tokens": 100, "output_tokens": 50}
+    }
+
+    flow = FakeFlow(
+        FakeRequest(url, json.dumps(req_body)),
+        FakeResponse(200, json.dumps(resp_body))
+    )
+
+    addon.request(flow)
+    addon.responseheaders(flow)
+    addon.response(flow)
+
+    assert flow.response.headers["X-Cache-Hit-Rate"] == "0.0000"
+    assert flow.response.headers["X-TTFT"] == "2.5000"
+    assert flow.response.headers["X-Prefill-TPS"] == "40.0000"  # 100 tokens / 2.5s = 40.0
+    assert flow.response.headers["X-Output-TPS"] == "20.0000"   # 50 tokens / 2.5s = 20.0
+    assert flow.response.headers["X-Total-Time"] == "5.0000"
+
+    # Now let's test a Cache Hit flow (which will be the 2nd request)
+    ts_iter = iter([20.0, 25.0])
+    
+    flow_hit = FakeFlow(FakeRequest(url, json.dumps(req_body)))
+    addon.request(flow_hit)
+
+    assert flow_hit.is_cached is True
+    assert flow_hit.response.headers["X-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
+    assert flow_hit.response.headers["X-TTFT"] == "0.0000"
+    assert flow_hit.response.headers["X-Prefill-TPS"] == "0.0000"
+    assert flow_hit.response.headers["X-Output-TPS"] == "0.0000"
+    assert flow_hit.response.headers["X-Total-Time"] == "0.0000"
+
+
+def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
+    import json
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+        def get_text(self):
+            return self._text
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.status_code = 200
+            self._text = text
+            self.headers = {}
+        def get_text(self):
+            return self._text
+
+    class FakeFlow:
+        def __init__(self, request, response):
+            self.request = request
+            self.response = response
+            self.is_cached = False
+
+    # 1. OpenAI provider check
+    ts_iter = iter([10.0, 12.0, 14.0])
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    flow_openai = FakeFlow(
+        FakeRequest("https://api.openai.com/v1/chat/completions", json.dumps({"messages": []})),
+        FakeResponse(json.dumps({"usage": {"prompt_tokens": 8, "completion_tokens": 6}}))
+    )
+    addon.request(flow_openai)
+    addon.responseheaders(flow_openai)
+    addon.response(flow_openai)
+
+    assert flow_openai.response.headers["X-Prefill-TPS"] == "4.0000"
+    assert flow_openai.response.headers["X-Output-TPS"] == "3.0000"
+
+    # 2. Gemini provider check
+    ts_iter = iter([10.0, 12.0, 14.0])
+    flow_gemini = FakeFlow(
+        FakeRequest("https://generativelanguage.googleapis.com/v1beta/models/gemini", json.dumps({"contents": []})),
+        FakeResponse(json.dumps({"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 8}}))
+    )
+    addon.request(flow_gemini)
+    addon.responseheaders(flow_gemini)
+    addon.response(flow_gemini)
+
+    assert flow_gemini.response.headers["X-Prefill-TPS"] == "5.0000"
+    assert flow_gemini.response.headers["X-Output-TPS"] == "4.0000"
+
+    # 3. Fallback character-based estimation check
+    ts_iter = iter([10.0, 12.0, 14.0])
+    req_body = {"messages": [{"content": "A" * 40}]}
+    resp_body = {"choices": [{"message": {"content": "B" * 24}}]}
+
+    flow_fallback = FakeFlow(
+        FakeRequest("https://api.openai.com/v1/chat/completions", json.dumps(req_body)),
+        FakeResponse(json.dumps(resp_body))
+    )
+    addon.request(flow_fallback)
+    addon.responseheaders(flow_fallback)
+    addon.response(flow_fallback)
+
+    assert flow_fallback.response.headers["X-Prefill-TPS"] == "5.0000"
+    assert flow_fallback.response.headers["X-Output-TPS"] == "3.0000"
+

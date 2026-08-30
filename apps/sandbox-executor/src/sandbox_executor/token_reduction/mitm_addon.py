@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from typing import Any
 
 try:
@@ -120,12 +121,73 @@ class MITMProxyInterceptor:
                 logger.exception("Cache store put failed for endpoint %s.", endpoint)
 
 
+def estimate_chars(data: Any) -> int:
+    """Helper to estimate prompt/response characters from nested request/response structures."""
+    if isinstance(data, str):
+        return len(data)
+    if isinstance(data, list):
+        return sum(estimate_chars(x) for x in data)
+    if isinstance(data, dict):
+        total = 0
+        if "system" in data:
+            total += estimate_chars(data["system"])
+        found_target = False
+        for key in ("messages", "message", "contents", "parts", "choices", "candidates", "content", "text"):
+            if key in data:
+                total += estimate_chars(data[key])
+                found_target = True
+        if found_target:
+            return total
+        return sum(estimate_chars(v) for v in data.values())
+    return 0
+
+
+def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any], provider: str) -> tuple[int, int]:
+    """Extracts (input_tokens, output_tokens) from request/response data."""
+    input_tokens = 0
+    output_tokens = 0
+    parsed = False
+
+    try:
+        if isinstance(resp_data, dict):
+            if provider == "anthropic":
+                usage = resp_data.get("usage", {})
+                if "input_tokens" in usage and "output_tokens" in usage:
+                    input_tokens = int(usage["input_tokens"])
+                    output_tokens = int(usage["output_tokens"])
+                    parsed = True
+            elif provider == "openai":
+                usage = resp_data.get("usage", {})
+                if "prompt_tokens" in usage and "completion_tokens" in usage:
+                    input_tokens = int(usage["prompt_tokens"])
+                    output_tokens = int(usage["completion_tokens"])
+                    parsed = True
+            elif provider == "gemini":
+                usage = resp_data.get("usageMetadata", {})
+                if "promptTokenCount" in usage and "candidatesTokenCount" in usage:
+                    input_tokens = int(usage["promptTokenCount"])
+                    output_tokens = int(usage["candidatesTokenCount"])
+                    parsed = True
+    except Exception:
+        logger.exception("Failed to parse token counts for provider %s from response", provider)
+
+    if not parsed:
+        input_chars = estimate_chars(req_data)
+        output_chars = estimate_chars(resp_data)
+        input_tokens = max(1, input_chars // 4) if input_chars > 0 else 0
+        output_tokens = max(1, output_chars // 4) if output_chars > 0 else 0
+
+    return input_tokens, output_tokens
+
+
 # mitmproxy addon entrypoint compatible function
 class MitmproxyAddon:
     """Addon for mitmproxy command line tool."""
 
     def __init__(self):
         self.interceptor = MITMProxyInterceptor()
+        self.total_requests = 0
+        self.cache_hits = 0
 
     def request(self, flow: Any) -> None:
         """Mitmproxy request callback."""
@@ -134,6 +196,9 @@ class MitmproxyAddon:
         url = getattr(flow.request, "pretty_url", "")
         provider = self.interceptor.detect_provider(url)
         if provider != "unknown":
+            flow.request_start_time = time.perf_counter()
+            self.total_requests += 1
+
             try:
                 content = flow.request.get_text()
                 if content:
@@ -142,6 +207,9 @@ class MitmproxyAddon:
                     flow.request.set_text(json.dumps(cleaned_data))
 
                     if cached_resp:
+                        self.cache_hits += 1
+                        flow.is_cached = True
+
                         headers = {"Content-Type": "application/json"}
                         response_cls = (
                             getattr(http, "Response", None)
@@ -150,11 +218,29 @@ class MitmproxyAddon:
                         )
                         if response_cls and hasattr(response_cls, "make"):
                             flow.response = response_cls.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
-                        flow.is_cached = True
+
+                        # Inject telemetry headers on cache hit
+                        hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
+                        if getattr(flow, "response", None) is not None:
+                            if not hasattr(flow.response, "headers") or flow.response.headers is None:
+                                flow.response.headers = {}
+                            flow.response.headers["X-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                            flow.response.headers["X-TTFT"] = "0.0000"
+                            flow.response.headers["X-Prefill-TPS"] = "0.0000"
+                            flow.response.headers["X-Output-TPS"] = "0.0000"
+                            flow.response.headers["X-Total-Time"] = "0.0000"
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
                 logger.exception("Mitmproxy request intercept error for endpoint: %s", url)
+
+    def responseheaders(self, flow: Any) -> None:
+        """Mitmproxy response headers callback."""
+        if getattr(flow, "request", None) is not None:
+            url = getattr(flow.request, "pretty_url", "")
+            provider = self.interceptor.detect_provider(url)
+            if provider != "unknown":
+                flow.response_headers_time = time.perf_counter()
 
     def response(self, flow: Any) -> None:
         """Mitmproxy response callback."""
@@ -163,21 +249,52 @@ class MitmproxyAddon:
         url = getattr(flow.request, "pretty_url", "")
         provider = self.interceptor.detect_provider(url)
         status_code = getattr(flow.response, "status_code", 200)
+
         if provider != "unknown" and not getattr(flow, "is_cached", False):
-            if status_code != 200:
+            if status_code == 200:
+                try:
+                    req_text = flow.request.get_text()
+                    resp_text = flow.response.get_text()
+                    if req_text and resp_text:
+                        req_data = json.loads(req_text)
+                        resp_data = json.loads(resp_text)
+                        self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
+
+                        # Extract token counts
+                        input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider)
+
+                        # Compute timing metrics
+                        req_start = getattr(flow, "request_start_time", None)
+                        resp_headers_time = getattr(flow, "response_headers_time", None)
+                        
+                        now = time.perf_counter()
+                        if req_start is None:
+                            req_start = now
+                        if resp_headers_time is None:
+                            resp_headers_time = now
+
+                        ttft = resp_headers_time - req_start
+                        total_time = now - req_start
+                        generation_time = total_time - ttft
+
+                        prefill_tps = input_tokens / ttft if ttft > 0 else 0.0
+                        output_tps = output_tokens / generation_time if generation_time > 0 else 0.0
+                        hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
+
+                        # Inject telemetry headers on cache miss
+                        if not hasattr(flow.response, "headers") or flow.response.headers is None:
+                            flow.response.headers = {}
+                        flow.response.headers["X-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                        flow.response.headers["X-TTFT"] = f"{ttft:.4f}"
+                        flow.response.headers["X-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                        flow.response.headers["X-Output-TPS"] = f"{output_tps:.4f}"
+                        flow.response.headers["X-Total-Time"] = f"{total_time:.4f}"
+                except json.JSONDecodeError as exc:
+                    logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
+                except Exception:
+                    logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
+            else:
                 logger.warning("Skipping caching response with HTTP status code %d for %s", status_code, url)
-                return
-            try:
-                req_text = flow.request.get_text()
-                resp_text = flow.response.get_text()
-                if req_text and resp_text:
-                    req_data = json.loads(req_text)
-                    resp_data = json.loads(resp_text)
-                    self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
-            except json.JSONDecodeError as exc:
-                logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
-            except Exception:
-                logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
 
 
 addons = [MitmproxyAddon()]
