@@ -1247,13 +1247,10 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     req_body = {"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "Hi LLM"}]}
     resp_body = {
         "content": [{"type": "text", "text": "Hello human"}],
-        "usage": {"input_tokens": 100, "output_tokens": 50}
+        "usage": {"input_tokens": 100, "cache_read_input_tokens": 60, "output_tokens": 50},
     }
 
-    flow = FakeFlow(
-        FakeRequest(url, json.dumps(req_body)),
-        FakeResponse(200, json.dumps(resp_body))
-    )
+    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, json.dumps(resp_body)))
 
     addon.request(flow)
     addon.responseheaders(flow)
@@ -1261,10 +1258,10 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
 
     assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
     assert flow.response.headers["X-Holon-TTFT-Ms"] == "2500.00"
-    assert flow.response.headers["X-Holon-Prefill-TPS"] == "40.0000"  # 100 tokens / 2.5s = 40.0
-    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"
+    assert flow.response.headers["X-Holon-Prefill-TPS"] == "64.0000"  # (100 + 60) tokens / 2.5s = 64.0
+    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"  # 100 uncached tokens / 2.5s = 40.0
     assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
-    assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"   # 50 tokens / 2.5s = 20.0
+    assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"  # 50 tokens / 2.5s = 20.0
     assert flow.response.headers["X-Holon-Total-Time-Ms"] == "5000.00"
 
     # Now let's test a Cache Hit flow (which will be the 2nd request)
@@ -1295,6 +1292,7 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
         def __init__(self, url, text):
             self.pretty_url = url
             self._text = text
+
         def get_text(self):
             return self._text
 
@@ -1303,6 +1301,7 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
             self.status_code = 200
             self._text = text
             self.headers = {}
+
         def get_text(self):
             return self._text
 
@@ -1318,7 +1317,7 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
 
     flow_openai = FakeFlow(
         FakeRequest("https://api.openai.com/v1/chat/completions", json.dumps({"messages": []})),
-        FakeResponse(json.dumps({"usage": {"prompt_tokens": 8, "completion_tokens": 6}}))
+        FakeResponse(json.dumps({"usage": {"prompt_tokens": 8, "completion_tokens": 6}})),
     )
     addon.request(flow_openai)
     addon.responseheaders(flow_openai)
@@ -1331,7 +1330,7 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
     ts_iter = iter([10.0, 12.0, 14.0])
     flow_gemini = FakeFlow(
         FakeRequest("https://generativelanguage.googleapis.com/v1beta/models/gemini", json.dumps({"contents": []})),
-        FakeResponse(json.dumps({"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 8}}))
+        FakeResponse(json.dumps({"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 8}})),
     )
     addon.request(flow_gemini)
     addon.responseheaders(flow_gemini)
@@ -1347,7 +1346,7 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
 
     flow_fallback = FakeFlow(
         FakeRequest("https://api.openai.com/v1/chat/completions", json.dumps(req_body)),
-        FakeResponse(json.dumps(resp_body))
+        FakeResponse(json.dumps(resp_body)),
     )
     addon.request(flow_fallback)
     addon.responseheaders(flow_fallback)
@@ -1384,6 +1383,3 @@ def test_extract_token_counts_anthropic_prompt_caching():
     input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider="anthropic")
     assert input_tokens == 800
     assert output_tokens == 50
-
-
-

@@ -61,6 +61,8 @@ class MITMProxyInterceptor:
             return "openai"
 
         if payload and isinstance(payload, dict):
+            if "anthropic-version" in payload or "anthropic_version" in payload or "system" in payload:
+                return "anthropic"
             if "contents" in payload:
                 return "gemini"
             if "messages" in payload or "prompt" in payload:
@@ -323,7 +325,14 @@ class MitmproxyAddon:
                     total_time = now - req_start
                     generation_time = total_time - ttft
 
+                    cache_read_tokens = (
+                        int((resp_data.get("usage") or {}).get("cache_read_input_tokens", 0))
+                        if provider == "anthropic" and isinstance(resp_data, dict)
+                        else 0
+                    )
+                    uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
                     prefill_tps = input_tokens / ttft if ttft > 0 else 0.0
+                    tail_prefill_tps = uncached_input_tokens / ttft if ttft > 0 else 0.0
                     output_tps = output_tokens / generation_time if generation_time > 0 else 0.0
                     hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
 
@@ -333,7 +342,7 @@ class MitmproxyAddon:
                     flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
                     flow.response.headers["X-Holon-TTFT-Ms"] = f"{ttft * 1000:.2f}"
                     flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
-                    flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                    flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{tail_prefill_tps:.4f}"
                     flow.response.headers["X-Holon-Decode-Time-Sec"] = f"{generation_time:.3f}"
                     flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
                     flow.response.headers["X-Holon-Total-Time-Ms"] = f"{total_time * 1000:.2f}"
