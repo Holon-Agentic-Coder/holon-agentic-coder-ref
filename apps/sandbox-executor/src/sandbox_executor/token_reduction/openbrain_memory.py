@@ -56,22 +56,24 @@ class OpenBrainMemory:
         Returns:
             int: Inserted memory ID.
         """
-        meta_str = json.dumps(metadata or {})
+        meta_str = json.dumps(metadata or {}, default=str)
         now = time.time()
 
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO memories (topic, category, content, metadata_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (topic, category, content, meta_str, now),
-            )
-            conn.commit()
-            mem_id = cursor.lastrowid or 0
-            logger.info("Stored OpenBrain memory #%d for topic '%s'", mem_id, topic)
-            return mem_id
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO memories (topic, category, content, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (topic, category, content, meta_str, now),
+                )
+                conn.commit()
+                return cursor.lastrowid or 0
+        except sqlite3.Error as exc:
+            logger.error("Failed to store memory in OpenBrain database: %s", exc)
+            return -1
 
     def fetch_memories(
         self, topic: str | None = None, category: str | None = None, limit: int = 10

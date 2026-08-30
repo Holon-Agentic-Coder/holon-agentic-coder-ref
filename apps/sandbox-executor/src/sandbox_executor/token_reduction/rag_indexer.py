@@ -23,9 +23,10 @@ class RAGCodebaseIndexer:
         self.symbol_map.clear()
         self.file_index.clear()
 
-        for root, _dirs, files in os.walk(self.root_dir):
-            if any(ignore in root for ignore in (".git", ".venv", "__pycache__", "node_modules", ".beans")):
-                continue
+        for root, dirs, files in os.walk(self.root_dir):
+            dirs[:] = [
+                d for d in dirs if d not in (".git", ".venv", "__pycache__", "node_modules", ".beans", "build", ".idea")
+            ]
 
             for file in files:
                 if file.endswith((".py", ".md", ".json", ".yml", ".yaml", ".toml", ".sh", ".hcl")):

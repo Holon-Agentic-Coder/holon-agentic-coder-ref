@@ -13,7 +13,7 @@ class SubtaskResult:
         self.task_id = task_id
         self.success = success
         self.raw_output = raw_output
-        self.summary = summary or self._summarize(raw_output)
+        self.summary = summary if summary is not None else self._summarize(raw_output)
 
     def _summarize(self, raw_output: str) -> str:
         """Compresses raw execution output to a high-level summary."""
