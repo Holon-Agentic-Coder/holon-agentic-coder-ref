@@ -89,7 +89,7 @@ class MITMProxyInterceptor:
             tuple[dict[str, Any], dict[str, Any] | None]:
                 (cleaned_request_json, cached_response_or_none)
         """
-        provider = self.detect_provider(endpoint)
+        provider = self.detect_provider(endpoint, request_json)
         if provider == "unknown":
             logger.warning("Unknown LLM provider for endpoint: %s. Bypassing payload cleaning.", endpoint)
             return request_json, None
@@ -135,7 +135,7 @@ class MITMProxyInterceptor:
             logger.warning("Skipping cache put for API error response payload on %s", endpoint)
             return
 
-        provider = self.detect_provider(endpoint)
+        provider = self.detect_provider(endpoint, request_json)
         if provider != "unknown":
             try:
                 self.cache_store.put(request_json, response_json, provider=provider)
@@ -151,10 +151,11 @@ def estimate_chars(data: Any) -> int:
         return sum(estimate_chars(x) for x in data)
     if isinstance(data, dict):
         total = 0
+        found_target = False
         if "system" in data:
             total += estimate_chars(data["system"])
-        found_target = False
-        for key in ("messages", "message", "contents", "parts", "choices", "candidates", "content", "text"):
+            found_target = True
+        for key in ("messages", "message", "prompt", "contents", "parts", "choices", "candidates", "content", "text"):
             if key in data:
                 total += estimate_chars(data[key])
                 found_target = True
@@ -216,15 +217,21 @@ class MitmproxyAddon:
         if getattr(flow, "request", None) is None:
             return
         url = getattr(flow.request, "pretty_url", "")
-        provider = self.interceptor.detect_provider(url)
+        data = None
+        try:
+            content = flow.request.get_text()
+            if content:
+                data = json.loads(content)
+        except Exception:
+            pass
+
+        provider = self.interceptor.detect_provider(url, data)
         if provider != "unknown":
             flow.request_start_time = time.perf_counter()
             self.total_requests += 1
 
             try:
-                content = flow.request.get_text()
-                if content:
-                    data = json.loads(content)
+                if data is not None:
                     cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
                     flow.request.set_text(json.dumps(cleaned_data))
 
@@ -249,6 +256,8 @@ class MitmproxyAddon:
                             flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
                             flow.response.headers["X-Holon-TTFT"] = "0.0000"
                             flow.response.headers["X-Holon-Prefill-TPS"] = "0.0000"
+                            flow.response.headers["X-Holon-Tail-Prefill-TPS"] = "0.0000"
+                            flow.response.headers["X-Holon-Decode-Time"] = "0.0000"
                             flow.response.headers["X-Holon-Output-TPS"] = "0.0000"
                             flow.response.headers["X-Holon-Total-Time"] = "0.0000"
             except json.JSONDecodeError as exc:
@@ -260,7 +269,14 @@ class MitmproxyAddon:
         """Mitmproxy response headers callback."""
         if getattr(flow, "request", None) is not None:
             url = getattr(flow.request, "pretty_url", "")
-            provider = self.interceptor.detect_provider(url)
+            req_data = None
+            try:
+                content = flow.request.get_text()
+                if content:
+                    req_data = json.loads(content)
+            except Exception:
+                pass
+            provider = self.interceptor.detect_provider(url, req_data)
             if provider != "unknown":
                 flow.response_headers_time = time.perf_counter()
 
@@ -269,16 +285,22 @@ class MitmproxyAddon:
         if getattr(flow, "request", None) is None or getattr(flow, "response", None) is None:
             return
         url = getattr(flow.request, "pretty_url", "")
-        provider = self.interceptor.detect_provider(url)
+        req_data = None
+        try:
+            req_text = flow.request.get_text()
+            if req_text:
+                req_data = json.loads(req_text)
+        except Exception:
+            pass
+
+        provider = self.interceptor.detect_provider(url, req_data)
         status_code = getattr(flow.response, "status_code", 200)
 
         if provider != "unknown" and not getattr(flow, "is_cached", False):
             if status_code == 200:
                 try:
-                    req_text = flow.request.get_text()
                     resp_text = flow.response.get_text()
-                    if req_text and resp_text:
-                        req_data = json.loads(req_text)
+                    if req_data is not None and resp_text:
                         resp_data = json.loads(resp_text)
                         self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
 
@@ -309,6 +331,8 @@ class MitmproxyAddon:
                         flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
                         flow.response.headers["X-Holon-TTFT"] = f"{ttft:.4f}"
                         flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                        flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                        flow.response.headers["X-Holon-Decode-Time"] = f"{generation_time:.4f}"
                         flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
                         flow.response.headers["X-Holon-Total-Time"] = f"{total_time:.4f}"
                 except json.JSONDecodeError as exc:

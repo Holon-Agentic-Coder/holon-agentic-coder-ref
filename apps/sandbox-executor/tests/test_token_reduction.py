@@ -1262,6 +1262,8 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
     assert flow.response.headers["X-Holon-TTFT"] == "2.5000"
     assert flow.response.headers["X-Holon-Prefill-TPS"] == "40.0000"  # 100 tokens / 2.5s = 40.0
+    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"
+    assert flow.response.headers["X-Holon-Decode-Time"] == "2.5000"
     assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"   # 50 tokens / 2.5s = 20.0
     assert flow.response.headers["X-Holon-Total-Time"] == "5.0000"
 
@@ -1275,6 +1277,8 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     assert flow_hit.response.headers["X-Holon-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
     assert flow_hit.response.headers["X-Holon-TTFT"] == "0.0000"
     assert flow_hit.response.headers["X-Holon-Prefill-TPS"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Tail-Prefill-TPS"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Decode-Time"] == "0.0000"
     assert flow_hit.response.headers["X-Holon-Output-TPS"] == "0.0000"
     assert flow_hit.response.headers["X-Holon-Total-Time"] == "0.0000"
 
@@ -1350,4 +1354,17 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
 
     assert flow_fallback.response.headers["X-Holon-Prefill-TPS"] == "5.0000"
     assert flow_fallback.response.headers["X-Holon-Output-TPS"] == "3.0000"
+
+
+def test_estimate_chars_system_and_prompt_keys():
+    from sandbox_executor.token_reduction.mitm_addon import estimate_chars
+
+    # Test system key present along with non-target fields
+    data_system = {"system": "System instructions here", "custom_meta": "extra metadata"}
+    assert estimate_chars(data_system) == len("System instructions here")
+
+    # Test prompt key
+    data_prompt = {"prompt": "Hello world prompt"}
+    assert estimate_chars(data_prompt) == len("Hello world prompt")
+
 
