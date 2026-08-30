@@ -1106,3 +1106,91 @@ def test_hybrid_cache_put_upsert_preserves_hit_count(tmp_path):
         row = conn.execute("SELECT hit_count, response_json FROM prompt_cache").fetchone()
         assert row[0] == 2
         assert "Updated response" in row[1]
+
+
+def test_rag_indexer(tmp_path):
+    from sandbox_executor.token_reduction.rag_indexer import RAGCodebaseIndexer
+
+    temp_dir = str(tmp_path)
+    py_file = os.path.join(temp_dir, "sample.py")
+    with open(py_file, "w") as f:
+        f.write("class DatabaseConnection:\n    def connect(self):\n        pass\n")
+
+    indexer = RAGCodebaseIndexer(root_dir=temp_dir)
+
+    # Test AST symbol lookup
+    syms = indexer.graph_find_symbol("DatabaseConnection")
+    assert len(syms) == 1
+    assert syms[0]["file"] == "sample.py"
+    assert syms[0]["type"] == "class"
+
+    # Test Keyword Search
+    results = indexer.semantic_search("connect")
+    assert len(results) >= 1
+    assert results[0]["file"] == "sample.py"
+
+    # Test Context Bootstrap
+    bootstrap = indexer.build_context_bootstrap(query="connect")
+    assert "DatabaseConnection" in bootstrap
+
+
+def test_openbrain_memory(tmp_path):
+    from sandbox_executor.token_reduction.openbrain_memory import OpenBrainMemory
+
+    temp_dir = str(tmp_path)
+    ob = OpenBrainMemory(db_dir=temp_dir)
+
+    mem_id = ob.store_memory(
+        topic="pytest",
+        content="Use -m 'not integration_test' for fast unit testing",
+        category="lesson_learned",
+    )
+    assert mem_id > 0
+
+    memories = ob.fetch_memories(topic="pytest")
+    assert len(memories) == 1
+    assert memories[0]["topic"] == "pytest"
+
+    formatted = ob.format_memory_context(topic="pytest")
+    assert "OpenBrain Episodic Memories" in formatted
+    assert "not integration_test" in formatted
+
+
+def test_ringer_orchestrator():
+    from sandbox_executor.token_reduction.ringer_orchestrator import RingerOrchestrator
+
+    orchestrator = RingerOrchestrator(architect_model="claude-3-5-sonnet", executor_model="gemini-3.5-flash")
+
+    subtask = orchestrator.plan_subtask(task_id="t1", description="Run linting", commands=["ruff check ."])
+    assert subtask["assigned_model"] == "gemini-3.5-flash"
+
+    outcome = orchestrator.record_execution_outcome(
+        task_id="t1",
+        success=True,
+        raw_output="All checks passed!\nLine 2\nLine 3\nLine 4\nLine 5\nDone.",
+    )
+    assert outcome.success is True
+    assert "[Subtask t1 SUCCESS" in outcome.summary
+
+    summary = orchestrator.build_architect_summary()
+    assert "Ringer Executor Subtask Results Summary" in summary
+    assert "t1" in summary
+
+
+def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
+    temp_dir = str(tmp_path)
+    monkeypatch.setattr(
+        "sandbox_executor.cli.setup_token_reduction_proxy",
+        lambda: (
+            ["--network", "holon-net", "-v", f"{temp_dir}/ca.crt:/container/ca.crt:ro"],
+            {
+                "HTTP_PROXY": "http://holon-proxy:8080",
+                "HTTPS_PROXY": "http://holon-proxy:8080",
+            },
+        ),
+    )
+
+    mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=True)
+    assert "--network" in mounts
+    assert envs["HTTP_PROXY"] == "http://holon-proxy:8080"
+    assert envs["HTTPS_PROXY"] == "http://holon-proxy:8080"
