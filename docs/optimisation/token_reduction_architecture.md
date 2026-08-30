@@ -78,6 +78,26 @@ graph TD
 
   $$\text{Jaccard Similarity}(A, B) = \frac{|A \cap B|}{|A \cup B|}$$
 
+- **Tuple Return & Operational Short-Circuiting**: `MITMProxyInterceptor.intercept_request()` returns a 2-element tuple
+  `(cleaned_request_json, cached_response_or_none)`:
+  1. **First Element (`cleaned_request_json`)**: The cleaned request body (with deduplicated tool outputs and cache
+     control breakpoints).
+  2. **Second Element (`cached_response_or_none`)**: The pre-cached LLM response payload served from the local SQLite
+     database (`llm_cache.db`), or `None` on a cache miss.
+
+  In `MitmproxyAddon.request(flow)`, when `cached_resp` is present, the proxy short-circuits the HTTP request directly
+  on cache hits without sending outbound traffic to LLM provider endpoints:
+
+  ```python
+  cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
+  flow.request.set_text(json.dumps(cleaned_data))
+
+  if cached_resp:
+      # Serve cached response locally and skip upstream network call
+      headers = {"Content-Type": "application/json"}
+      flow.response = Response.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
+  ```
+
 ---
 
 ### Phase 4: Codebase RAG & Ringer Delegation

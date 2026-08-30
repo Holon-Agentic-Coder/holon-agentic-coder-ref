@@ -46,7 +46,17 @@ class MITMProxyInterceptor:
     def intercept_request(
         self, endpoint: str, request_json: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        """Intercepts an outgoing JSON API request payload.
+        """Intercepts and optimizes an outgoing JSON API request payload.
+
+        Tuple Return Design:
+            1. First Element (cleaned_request_json): The cleaned request body (with deduplicated tool
+               outputs and cache control breakpoints).
+            2. Second Element (cached_response_or_none): The pre-cached LLM response payload served from the
+               local SQLite database (llm_cache.db), or None on a cache miss.
+
+        Operational Impact in MitmproxyAddon:
+            This allows MitmproxyAddon.request(flow) to short-circuit HTTP network requests directly on cache
+            hits without sending outbound traffic to LLM provider endpoints (Anthropic/OpenAI/Gemini).
 
         Args:
             endpoint: The API endpoint URL or path.

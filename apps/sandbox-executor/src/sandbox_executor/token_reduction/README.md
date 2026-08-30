@@ -25,6 +25,10 @@ The system operates across four primary optimization layers:
    - Disk-backed SQLite exact and semantic prompt caching.
    - Normalizes transient values (timestamps, run IDs, UUIDs) before checking hits.
    - Token-based semantic similarity checking using Jaccard indexes for minor prompt variations.
+   - **Tuple Return & Operational Short-Circuiting**: `intercept_request` returns
+     `(cleaned_request_json, cached_response_or_none)`. If a cached response is present, `MitmproxyAddon.request(flow)`
+     sets `flow.response = Response.make(200, ...)` to short-circuit the request directly without making outbound LLM
+     API network calls.
 
 4. **Phase 4: Targeted Context Retrieval & Orchestration**
    - **RAG Codebase Indexing**: Symbol-based AST parsing and BM25 search to prune initial context inputs.
