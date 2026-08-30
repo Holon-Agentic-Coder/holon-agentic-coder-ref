@@ -34,7 +34,9 @@ class MITMProxyInterceptor:
         return self._cache_store
 
     def detect_provider(self, url_or_path: str, payload: dict[str, Any] | None = None) -> str:
-        """Determines the provider protocol family (anthropic, openai, gemini) based on target URL, path, or payload structure."""
+        """Determines the provider protocol family (anthropic, openai, gemini)
+        based on target URL, path, or payload structure.
+        """
         url_lower = url_or_path.lower()
         if "anthropic" in url_lower or "v1/messages" in url_lower:
             return "anthropic"
@@ -227,12 +229,14 @@ class MitmproxyAddon:
 
         provider = self.interceptor.detect_provider(url, data)
         if provider != "unknown":
+            flow.provider = provider
             flow.request_start_time = time.perf_counter()
             self.total_requests += 1
 
             try:
                 if data is not None:
                     cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
+                    flow.req_data = cleaned_data
                     flow.request.set_text(json.dumps(cleaned_data))
 
                     if cached_resp:
@@ -254,12 +258,12 @@ class MitmproxyAddon:
                             if not hasattr(flow.response, "headers") or flow.response.headers is None:
                                 flow.response.headers = {}
                             flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
-                            flow.response.headers["X-Holon-TTFT"] = "0.0000"
+                            flow.response.headers["X-Holon-TTFT-Ms"] = "0.00"
                             flow.response.headers["X-Holon-Prefill-TPS"] = "0.0000"
                             flow.response.headers["X-Holon-Tail-Prefill-TPS"] = "0.0000"
-                            flow.response.headers["X-Holon-Decode-Time"] = "0.0000"
+                            flow.response.headers["X-Holon-Decode-Time-Sec"] = "0.000"
                             flow.response.headers["X-Holon-Output-TPS"] = "0.0000"
-                            flow.response.headers["X-Holon-Total-Time"] = "0.0000"
+                            flow.response.headers["X-Holon-Total-Time-Ms"] = "0.00"
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
@@ -267,80 +271,70 @@ class MitmproxyAddon:
 
     def responseheaders(self, flow: Any) -> None:
         """Mitmproxy response headers callback."""
-        if getattr(flow, "request", None) is not None:
-            url = getattr(flow.request, "pretty_url", "")
-            req_data = None
-            try:
-                content = flow.request.get_text()
-                if content:
-                    req_data = json.loads(content)
-            except Exception:
-                pass
-            provider = self.interceptor.detect_provider(url, req_data)
-            if provider != "unknown":
-                flow.response_headers_time = time.perf_counter()
+        if getattr(flow, "provider", "unknown") != "unknown":
+            flow.response_headers_time = time.perf_counter()
 
     def response(self, flow: Any) -> None:
         """Mitmproxy response callback."""
         if getattr(flow, "request", None) is None or getattr(flow, "response", None) is None:
             return
-        url = getattr(flow.request, "pretty_url", "")
-        req_data = None
-        try:
-            req_text = flow.request.get_text()
-            if req_text:
-                req_data = json.loads(req_text)
-        except Exception:
-            pass
 
-        provider = self.interceptor.detect_provider(url, req_data)
+        provider = getattr(flow, "provider", "unknown")
+        if provider == "unknown" or getattr(flow, "is_cached", False):
+            return
+
+        url = getattr(flow.request, "pretty_url", "")
         status_code = getattr(flow.response, "status_code", 200)
 
-        if provider != "unknown" and not getattr(flow, "is_cached", False):
-            if status_code == 200:
-                try:
-                    resp_text = flow.response.get_text()
-                    if req_data is not None and resp_text:
-                        resp_data = json.loads(resp_text)
-                        self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
+        if status_code == 200:
+            try:
+                req_data = getattr(flow, "req_data", None)
+                if req_data is None:
+                    req_text = flow.request.get_text()
+                    if req_text:
+                        req_data = json.loads(req_text)
+                resp_text = flow.response.get_text()
+                if req_data is not None and resp_text:
+                    resp_data = json.loads(resp_text)
+                    self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
 
-                        # Extract token counts
-                        input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider)
+                    # Extract token counts
+                    input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider)
 
-                        # Compute timing metrics
-                        req_start = getattr(flow, "request_start_time", None)
-                        resp_headers_time = getattr(flow, "response_headers_time", None)
-                        
-                        now = time.perf_counter()
-                        if req_start is None:
-                            req_start = now
-                        if resp_headers_time is None:
-                            resp_headers_time = now
+                    # Compute timing metrics
+                    req_start = getattr(flow, "request_start_time", None)
+                    resp_headers_time = getattr(flow, "response_headers_time", None)
 
-                        ttft = resp_headers_time - req_start
-                        total_time = now - req_start
-                        generation_time = total_time - ttft
+                    now = time.perf_counter()
+                    if req_start is None:
+                        req_start = now
+                    if resp_headers_time is None:
+                        resp_headers_time = now
 
-                        prefill_tps = input_tokens / ttft if ttft > 0 else 0.0
-                        output_tps = output_tokens / generation_time if generation_time > 0 else 0.0
-                        hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
+                    ttft = resp_headers_time - req_start
+                    total_time = now - req_start
+                    generation_time = total_time - ttft
 
-                        # Inject telemetry headers on cache miss
-                        if not hasattr(flow.response, "headers") or flow.response.headers is None:
-                            flow.response.headers = {}
-                        flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
-                        flow.response.headers["X-Holon-TTFT"] = f"{ttft:.4f}"
-                        flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
-                        flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{prefill_tps:.4f}"
-                        flow.response.headers["X-Holon-Decode-Time"] = f"{generation_time:.4f}"
-                        flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
-                        flow.response.headers["X-Holon-Total-Time"] = f"{total_time:.4f}"
-                except json.JSONDecodeError as exc:
-                    logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
-                except Exception:
-                    logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
-            else:
-                logger.warning("Skipping caching response with HTTP status code %d for %s", status_code, url)
+                    prefill_tps = input_tokens / ttft if ttft > 0 else 0.0
+                    output_tps = output_tokens / generation_time if generation_time > 0 else 0.0
+                    hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
+
+                    # Inject telemetry headers on cache miss
+                    if not hasattr(flow.response, "headers") or flow.response.headers is None:
+                        flow.response.headers = {}
+                    flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                    flow.response.headers["X-Holon-TTFT-Ms"] = f"{ttft * 1000:.2f}"
+                    flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                    flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                    flow.response.headers["X-Holon-Decode-Time-Sec"] = f"{generation_time:.3f}"
+                    flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
+                    flow.response.headers["X-Holon-Total-Time-Ms"] = f"{total_time * 1000:.2f}"
+            except json.JSONDecodeError as exc:
+                logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
+            except Exception:
+                logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
+        else:
+            logger.warning("Skipping caching response with HTTP status code %d for %s", status_code, url)
 
 
 addons = [MitmproxyAddon()]

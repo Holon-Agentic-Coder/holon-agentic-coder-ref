@@ -1198,7 +1198,7 @@ def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
 
 def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     import json
-    from unittest.mock import MagicMock
+
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1260,31 +1260,32 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     addon.response(flow)
 
     assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
-    assert flow.response.headers["X-Holon-TTFT"] == "2.5000"
+    assert flow.response.headers["X-Holon-TTFT-Ms"] == "2500.00"
     assert flow.response.headers["X-Holon-Prefill-TPS"] == "40.0000"  # 100 tokens / 2.5s = 40.0
     assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"
-    assert flow.response.headers["X-Holon-Decode-Time"] == "2.5000"
+    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
     assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"   # 50 tokens / 2.5s = 20.0
-    assert flow.response.headers["X-Holon-Total-Time"] == "5.0000"
+    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "5000.00"
 
     # Now let's test a Cache Hit flow (which will be the 2nd request)
     ts_iter = iter([20.0, 25.0])
-    
+
     flow_hit = FakeFlow(FakeRequest(url, json.dumps(req_body)))
     addon.request(flow_hit)
 
     assert flow_hit.is_cached is True
     assert flow_hit.response.headers["X-Holon-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
-    assert flow_hit.response.headers["X-Holon-TTFT"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-TTFT-Ms"] == "0.00"
     assert flow_hit.response.headers["X-Holon-Prefill-TPS"] == "0.0000"
     assert flow_hit.response.headers["X-Holon-Tail-Prefill-TPS"] == "0.0000"
-    assert flow_hit.response.headers["X-Holon-Decode-Time"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Decode-Time-Sec"] == "0.000"
     assert flow_hit.response.headers["X-Holon-Output-TPS"] == "0.0000"
-    assert flow_hit.response.headers["X-Holon-Total-Time"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Total-Time-Ms"] == "0.00"
 
 
 def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
     import json
+
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
