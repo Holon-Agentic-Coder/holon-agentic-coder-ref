@@ -556,3 +556,553 @@ def test_run_docker_container_tears_down_sidecar_after_the_run(monkeypatch):
 
     assert cli.run_docker_container("executor", "holon/agent-pi", [], agent_id="pi") == 7
     assert teardowns == [True]
+
+
+def test_hybrid_cache(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    req_1 = {
+        "system": "You are a helpful assistant.",
+        "messages": [{"role": "user", "content": "Fix bug in 2026-08-28T18:00:00Z task-1234"}],
+    }
+    resp_1 = {"result": "Fixed bug in task-1234"}
+
+    cache.put(req_1, resp_1, provider="anthropic")
+
+    # Exact lookup after normalization (timestamp & task ID stripped)
+    req_2 = {
+        "system": "You are a helpful assistant.",
+        "messages": [{"role": "user", "content": "Fix bug in 2026-08-28T19:30:00Z task-5678"}],
+    }
+    cached_resp = cache.get(req_2, provider="anthropic")
+    assert cached_resp is not None
+    assert cached_resp["result"] == "Fixed bug in task-1234"
+
+
+def test_hybrid_cache_dissimilar_user_prompts(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.85)
+    sys_prompt = "You are a helpful coding assistant."
+    req_1 = {"system": sys_prompt, "messages": [{"role": "user", "content": "Fix bug in authentication module"}]}
+    req_2 = {"system": sys_prompt, "messages": [{"role": "user", "content": "Delete production database records"}]}
+    cache.put(req_1, {"result": "Bug fixed"}, provider="anthropic")
+    assert cache.get(req_2, provider="anthropic") is None
+
+
+def test_mitm_interceptor(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(cache_dir=str(tmp_path), enable_caching=True)
+    endpoint = "https://api.anthropic.com/v1/messages"
+
+    req_json = {
+        "system": "System prompt",
+        "messages": [{"role": "user", "content": "Hello LLM"}],
+    }
+
+    # Initial request -> Cache miss
+    cleaned_req, cached_resp = interceptor.intercept_request(endpoint, req_json)
+    assert cached_resp is None
+    assert isinstance(cleaned_req["system"], list)
+
+    # Store response
+    fake_resp = {"id": "msg_123", "content": [{"type": "text", "text": "Hello human"}]}
+    interceptor.intercept_response(endpoint, cleaned_req, fake_resp)
+
+    # Subsequent identical request -> Cache hit
+    _, cached_hit = interceptor.intercept_request(endpoint, req_json)
+    assert cached_hit is not None
+    assert cached_hit["id"] == "msg_123"
+
+
+def test_mitm_interceptor_caching_disabled(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    cache_dir = tmp_path / "should_not_be_created"
+    interceptor = MITMProxyInterceptor(cache_dir=str(cache_dir), enable_caching=False)
+    assert interceptor._cache_store is None
+    assert not cache_dir.exists()
+
+    endpoint = "https://api.anthropic.com/v1/messages"
+    req_json = {"system": "System prompt", "messages": [{"role": "user", "content": "Hello LLM"}]}
+    _cleaned_req, cached_resp = interceptor.intercept_request(endpoint, req_json)
+    assert cached_resp is None
+    assert interceptor._cache_store is None
+    assert not cache_dir.exists()
+
+
+def test_mitm_addon_lifecycle_and_hit_count(tmp_path):
+    import json
+    import sqlite3
+
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    cache_dir = tmp_path / "cache"
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(cache_dir)
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, text=""):
+            self.status_code = status_code
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        @classmethod
+        def make(cls, status_code, content, headers=None):
+            return cls(status_code=status_code, text=content.decode("utf-8") if isinstance(content, bytes) else content)
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.Response = FakeResponse
+
+    url = "https://api.anthropic.com/v1/messages"
+    req_body = json.dumps({"system": "System prompt", "messages": [{"role": "user", "content": "Test mitm flow"}]})
+
+    # Flow 1: Initial request (cache miss) -> backend response -> response callback stores in cache
+    flow1 = FakeFlow(FakeRequest(url, req_body), FakeResponse(200, json.dumps({"id": "resp_1"})))
+    addon.request(flow1)
+    assert getattr(flow1, "is_cached", False) is False
+
+    addon.response(flow1)
+
+    # Check cache table hit_count (should be 0)
+    db_path = cache_dir / "llm_cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
+        assert row[0] == 0
+
+    # Flow 2: Subsequent request (cache hit)
+    flow2 = FakeFlow(FakeRequest(url, req_body))
+    addon.request(flow2)
+    assert getattr(flow2, "is_cached", False) is True
+    assert flow2.response is not None
+    assert json.loads(flow2.response.get_text()) == {"id": "resp_1"}
+
+    # Call response callback on cached flow -> should not re-put or reset hit_count to 0
+    addon.response(flow2)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
+        assert row[0] == 1
+
+
+def test_hybrid_cache_atomic_hit_count_and_system_prompt_normalization(tmp_path):
+    import sqlite3
+
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    req_1 = {
+        "system": "You are assistant at 2026-08-30T00:00:00Z with task-100",
+        "messages": [
+            {
+                "role": "user",
+                "content": "word1 word2 word3 word4 word5 word6 word7 word8 word9 test",
+            }
+        ],
+    }
+    resp_1 = {"output": "Refactored auth"}
+    cache.put(req_1, resp_1, provider="anthropic")
+
+    # 1. Exact match (with normalized timestamps/task IDs)
+    req_exact = {
+        "system": "You are assistant at 2026-08-30T01:00:00Z with task-200",
+        "messages": [
+            {
+                "role": "user",
+                "content": "word1 word2 word3 word4 word5 word6 word7 word8 word9 test",
+            }
+        ],
+    }
+    resp = cache.get(req_exact, provider="anthropic")
+    assert resp == resp_1
+
+    # 2. Semantic match with transient tokens in system prompt (9 shared out of 11 union = 0.818 >= 0.8)
+    req_semantic = {
+        "system": "You are assistant at 2026-08-30T02:00:00Z with task-300",
+        "messages": [
+            {
+                "role": "user",
+                "content": "word1 word2 word3 word4 word5 word6 word7 word8 word9 check",
+            }
+        ],
+    }
+    resp_sem = cache.get(req_semantic, provider="anthropic")
+    assert resp_sem == resp_1
+
+    # Verify hit_count incremented to 2 (1 exact hit + 1 semantic hit)
+    db_path = tmp_path / "llm_cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count FROM prompt_cache").fetchone()
+        assert row[0] == 2
+
+
+def test_hybrid_cache_openai_system_prompt_isolation(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    stored_openai_req = {
+        "messages": [
+            {"role": "system", "content": "You are a specialized code review bot."},
+            {"role": "user", "content": "Analyze performance and optimization of database queries in repository"},
+        ]
+    }
+    stored_resp = {"choices": [{"message": {"content": "DB queries look optimized."}}]}
+
+    cache.put(stored_openai_req, stored_resp, provider="openai")
+
+    # 1. Query with different OpenAI system prompt but identical user message -> Cache miss
+    diff_sys_req = {
+        "messages": [
+            {"role": "system", "content": "You are a code formatter bot."},
+            {"role": "user", "content": "Analyze performance and optimization of database queries in repository"},
+        ]
+    }
+    assert cache.get(diff_sys_req, provider="openai") is None
+
+    # 2. Query with same OpenAI system prompt and high token overlap user message -> Cache hit
+    same_sys_req = {
+        "messages": [
+            {"role": "system", "content": "You are a specialized code review bot."},
+            {"role": "user", "content": "Analyze performance and efficiency of database queries in repository"},
+        ]
+    }
+    hit_resp = cache.get(same_sys_req, provider="openai")
+    assert hit_resp is not None
+    assert hit_resp["choices"][0]["message"]["content"] == "DB queries look optimized."
+
+
+def test_mitm_addon_null_response_flow():
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeFlowNullResponse:
+        def __init__(self):
+            self.request = MagicMock(pretty_url="https://api.openai.com/v1/chat/completions")
+            self.response = None
+            self.is_cached = False
+
+    flow = FakeFlowNullResponse()
+    # Call response on flow with response=None should return cleanly without raising AttributeError
+    addon.response(flow)
+
+
+def test_hybrid_cache_cross_provider_exact_match_isolation(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+
+    payload = {
+        "system": "You are a coding assistant.",
+        "messages": [{"role": "user", "content": "Write a python function to compute fibonacci numbers."}],
+    }
+    response = {"content": "def fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)"}
+
+    # Store payload under anthropic provider
+    cache.put(payload, response, provider="anthropic")
+
+    # Exact lookup for anthropic returns the cached response
+    assert cache.get(payload, provider="anthropic") == response
+
+    # Exact lookup for openai with identical payload returns None due to provider isolation
+    assert cache.get(payload, provider="openai") is None
+
+
+def test_mitm_addon_null_request_flow():
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeFlowNullRequest:
+        def __init__(self):
+            self.request = None
+            self.response = None
+            self.is_cached = False
+
+    flow = FakeFlowNullRequest()
+    # Call request and response callbacks on flow with request=None should return cleanly
+    addon.request(flow)
+    addon.response(flow)
+
+
+def test_mitm_addon_error_response_caching_bypass(tmp_path):
+    import json
+
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
+
+    cache_dir = tmp_path / "cache"
+    interceptor = MITMProxyInterceptor(cache_dir=str(cache_dir), enable_caching=True)
+    endpoint = "https://api.anthropic.com/v1/messages"
+    req_json = {"system": "System prompt", "messages": [{"role": "user", "content": "Trigger error test"}]}
+
+    # 1. Non-200 HTTP status code should NOT be stored by intercept_response
+    err_resp_500 = {"error": {"type": "api_error", "message": "Internal Server Error"}}
+    interceptor.intercept_response(endpoint, req_json, err_resp_500, status_code=500)
+    _, cached_500 = interceptor.intercept_request(endpoint, req_json)
+    assert cached_500 is None
+
+    # 2. HTTP 200 with top-level "error" payload should NOT be stored
+    err_resp_200 = {"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}
+    interceptor.intercept_response(endpoint, req_json, err_resp_200, status_code=200)
+    _, cached_200 = interceptor.intercept_request(endpoint, req_json)
+    assert cached_200 is None
+
+    # 3. HTTP 200 with type == "error" payload should NOT be stored
+    type_err_resp = {"type": "error", "error": {"type": "invalid_request_error", "message": "Bad request"}}
+    interceptor.intercept_response(endpoint, req_json, type_err_resp, status_code=200)
+    _, cached_type_err = interceptor.intercept_request(endpoint, req_json)
+    assert cached_type_err is None
+
+    # 4. Test MitmproxyAddon callback skips non-200 flow
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(cache_dir)
+
+    class FakeRequest:
+        pretty_url = endpoint
+
+        def get_text(self):
+            return json.dumps(req_json)
+
+    class FakeResponse:
+        status_code = 429
+
+        def get_text(self):
+            return json.dumps({"error": "Rate limit exceeded"})
+
+    class FakeFlow:
+        request = FakeRequest()
+        response = FakeResponse()
+
+    flow = FakeFlow()
+    addon.response(flow)
+    _, cached_flow = interceptor.intercept_request(endpoint, req_json)
+    assert cached_flow is None
+
+
+def test_hybrid_cache_anthropic_tool_result_content_block_extraction(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.8)
+    sys_prompt = "You are a coding assistant with tool support."
+
+    req_1 = {
+        "system": sys_prompt,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_123",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": ("Successfully compiled binary target main without any compilation warnings"),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    resp_1 = {"content": [{"type": "text", "text": "Compilation completed successfully."}]}
+    cache.put(req_1, resp_1, provider="anthropic")
+
+    # Query with semantically similar tool_result text content
+    req_2 = {
+        "system": sys_prompt,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_456",
+                        "content": "Successfully compiled binary target main without any build warnings",
+                    }
+                ],
+            }
+        ],
+    }
+    cached = cache.get(req_2, provider="anthropic")
+    assert cached is not None
+    assert cached["content"][0]["text"] == "Compilation completed successfully."
+
+
+def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path), similarity_threshold=0.85)
+    sys_prompt = "You are a coding agent working on repo refactoring."
+
+    # Turn 9 in a long conversation history (turns 1..8 share setup words)
+    long_history_turn9 = [
+        {"role": "user", "content": "Turn 1: Initialize project setup and environment verification"},
+        {"role": "assistant", "content": "Turn 1 done"},
+        {"role": "user", "content": "Turn 2: Read directory structure and source files"},
+        {"role": "assistant", "content": "Turn 2 done"},
+        {"role": "user", "content": "Turn 3: Run preliminary linter and static check"},
+        {"role": "assistant", "content": "Turn 3 done"},
+        {"role": "user", "content": "Turn 9: Refactor authentication middleware in auth.py"},
+    ]
+    req_turn9 = {"system": sys_prompt, "messages": long_history_turn9}
+    resp_turn9 = {"content": [{"type": "text", "text": "Auth middleware refactored."}]}
+    cache.put(req_turn9, resp_turn9, provider="anthropic")
+
+    # Turn 10 with long history (turns 1..9) but a completely DIFFERENT instruction in turn 10:
+    long_history_turn10 = [
+        *long_history_turn9,
+        {"role": "assistant", "content": "Turn 9 done"},
+        {"role": "user", "content": "Turn 10: Delete temporary log files from output build directory"},
+    ]
+    req_turn10_diff = {"system": sys_prompt, "messages": long_history_turn10}
+
+    # Should NOT hit Turn 9 cache entry because Turn 10 instruction is different!
+    assert cache.get(req_turn10_diff, provider="anthropic") is None
+
+    # Query Turn 10 with semantically SIMILAR instruction for turn 10:
+    long_history_turn10_similar = [
+        *long_history_turn9,
+        {"role": "assistant", "content": "Turn 9 done"},
+        {"role": "user", "content": "Turn 10: Delete temporary log files from build output folder"},
+    ]
+    req_turn10_sim = {"system": sys_prompt, "messages": long_history_turn10_similar}
+
+    # Put Turn 10 response into cache
+    resp_turn10 = {"content": [{"type": "text", "text": "Log files deleted."}]}
+    cache.put(req_turn10_diff, resp_turn10, provider="anthropic")
+
+    # Querying with semantically similar turn 10 should hit Turn 10 cache
+    cached_turn10 = cache.get(req_turn10_sim, provider="anthropic")
+    assert cached_turn10 is not None
+    assert cached_turn10["content"][0]["text"] == "Log files deleted."
+
+
+def test_mitm_addon_response_make_import_fallback(monkeypatch):
+    import json
+
+    from sandbox_executor.token_reduction import mitm_addon
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    url = "https://api.anthropic.com/v1/messages"
+    req_payload = {"system": "Sys", "messages": [{"role": "user", "content": "Hi"}]}
+    cached_payload = {"id": "cached_resp_123"}
+    monkeypatch.setattr(addon.interceptor, "intercept_request", lambda u, d: (d, cached_payload))
+
+    class MockHttpResponse:
+        @classmethod
+        def make(cls, status_code, content, headers):
+            return {
+                "mock_http": True,
+                "status_code": status_code,
+                "content": json.loads(content.decode("utf-8")),
+                "headers": headers,
+            }
+
+    class MockHttpModule:
+        Response = MockHttpResponse
+
+    monkeypatch.setattr(mitm_addon, "http", MockHttpModule)
+
+    class FakeRequest:
+        pretty_url = url
+
+        def get_text(self):
+            return json.dumps(req_payload)
+
+        def set_text(self, text):
+            pass
+
+    class FakeFlowWithoutResponseAttr:
+        request = FakeRequest()
+        response = None
+        is_cached = False
+
+    flow_a = FakeFlowWithoutResponseAttr()
+    addon.request(flow_a)
+    assert getattr(flow_a, "is_cached", False) is True
+    assert flow_a.response == {
+        "mock_http": True,
+        "status_code": 200,
+        "content": cached_payload,
+        "headers": {"Content-Type": "application/json"},
+    }
+
+    monkeypatch.setattr(mitm_addon, "http", None)
+
+    class FakeFlowWithResponseAttr:
+        request = FakeRequest()
+        response = None
+        is_cached = False
+
+        class Response:
+            @classmethod
+            def make(cls, status_code, content, headers):
+                return {
+                    "mock_flow_response": True,
+                    "status_code": status_code,
+                    "content": json.loads(content.decode("utf-8")),
+                }
+
+    flow_b = FakeFlowWithResponseAttr()
+    addon.request(flow_b)
+    assert getattr(flow_b, "is_cached", False) is True
+    assert flow_b.response == {
+        "mock_flow_response": True,
+        "status_code": 200,
+        "content": cached_payload,
+    }
+
+
+def test_hybrid_cache_put_upsert_preserves_hit_count(tmp_path):
+    import sqlite3
+
+    from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
+
+    cache = HybridCacheStore(cache_dir=str(tmp_path))
+    req = {
+        "system": "System prompt",
+        "messages": [{"role": "user", "content": "Test hit count preservation"}],
+    }
+    resp1 = {"output": "Initial response"}
+    cache.put(req, resp1, provider="anthropic")
+
+    cache.get(req, provider="anthropic")
+    cache.get(req, provider="anthropic")
+
+    db_path = tmp_path / "llm_cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count, response_json FROM prompt_cache").fetchone()
+        assert row[0] == 2
+        assert "Initial response" in row[1]
+
+    resp2 = {"output": "Updated response"}
+    cache.put(req, resp2, provider="anthropic")
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT hit_count, response_json FROM prompt_cache").fetchone()
+        assert row[0] == 2
+        assert "Updated response" in row[1]

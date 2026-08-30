@@ -312,7 +312,7 @@ def test_mitm_interceptor_and_addon() -> None:
 
     # Unknown endpoint bypass
     raw = {"data": "test"}
-    assert interceptor.intercept_request("https://example.com/api", raw) == raw
+    assert interceptor.intercept_request("https://example.com/api", raw) == (raw, None)
 
     # Addon flow handling
     addon = MitmproxyAddon()
