@@ -242,7 +242,7 @@ class MitmproxyAddon:
         provider = self.interceptor.detect_provider(url, data)
         if provider != "unknown":
             flow.provider = provider
-            flow.request_start_time = time.perf_counter()
+            flow.request_start_time = time.perf_counter()  # float: timestamp from time.perf_counter()
             self.total_requests += 1
 
             try:
@@ -284,7 +284,7 @@ class MitmproxyAddon:
     def responseheaders(self, flow: Any) -> None:
         """Mitmproxy response headers callback."""
         if getattr(flow, "provider", "unknown") != "unknown":
-            flow.response_headers_time = time.perf_counter()
+            flow.response_headers_time = time.perf_counter()  # float: timestamp from time.perf_counter()
 
     def response(self, flow: Any) -> None:
         """Mitmproxy response callback."""
