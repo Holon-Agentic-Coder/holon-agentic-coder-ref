@@ -61,12 +61,14 @@ class MITMProxyInterceptor:
             return "openai"
 
         if payload and isinstance(payload, dict):
-            if "anthropic-version" in payload or "anthropic_version" in payload or "system" in payload:
+            if "anthropic-version" in payload or "anthropic_version" in payload:
                 return "anthropic"
             if "contents" in payload:
                 return "gemini"
             if "messages" in payload or "prompt" in payload:
                 return "openai"
+            if "system" in payload:
+                return "anthropic"
 
         return "unknown"
 
