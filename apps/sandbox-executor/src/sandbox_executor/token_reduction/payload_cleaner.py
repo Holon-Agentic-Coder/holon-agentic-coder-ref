@@ -43,10 +43,10 @@ class JSONContextCleaner:
 
         if provider == "anthropic":
             cleaned_payload = self._clean_anthropic(cleaned_payload, seen_content_hashes)
-        elif provider == "openai":
-            cleaned_payload = self._clean_openai(cleaned_payload, seen_content_hashes)
         elif provider == "gemini":
             cleaned_payload = self._clean_gemini(cleaned_payload, seen_content_hashes)
+        else:
+            cleaned_payload = self._clean_openai(cleaned_payload, seen_content_hashes)
 
         return cleaned_payload
 

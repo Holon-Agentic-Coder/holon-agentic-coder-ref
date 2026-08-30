@@ -33,16 +33,38 @@ class MITMProxyInterceptor:
             self._cache_store = HybridCacheStore(cache_dir=self.cache_dir)
         return self._cache_store
 
-    def detect_provider(self, url_or_path: str) -> str:
-        """Determines the provider based on target URL or endpoint path."""
+    def detect_provider(self, url_or_path: str, payload: dict[str, Any] | None = None) -> str:
+        """Determines the provider protocol family (anthropic, openai, gemini) based on target URL, path, or payload structure."""
         url_lower = url_or_path.lower()
         if "anthropic" in url_lower or "v1/messages" in url_lower:
             return "anthropic"
-        if "openai" in url_lower or "chat/completions" in url_lower:
-            return "openai"
-        if "googleapis" in url_lower or "gemini" in url_lower:
+        if "googleapis" in url_lower or "gemini" in url_lower or "generatecontent" in url_lower:
             return "gemini"
-        return "unknown"
+
+        openai_providers = [
+            "openai",
+            "openrouter",
+            "deepseek",
+            "groq",
+            "together",
+            "mistral",
+            "fireworks",
+            "ollama",
+            "vllm",
+            "lmstudio",
+            "chat/completions",
+            "v1/completions",
+        ]
+        if any(p in url_lower for p in openai_providers):
+            return "openai"
+
+        if payload and isinstance(payload, dict):
+            if "contents" in payload:
+                return "gemini"
+            if "messages" in payload or "prompt" in payload:
+                return "openai"
+
+        return "openai"
 
     def intercept_request(
         self, endpoint: str, request_json: dict[str, Any]
