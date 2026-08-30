@@ -1367,6 +1367,11 @@ def test_estimate_chars_system_and_prompt_keys():
     data_prompt = {"prompt": "Hello world prompt"}
     assert estimate_chars(data_prompt) == len("Hello world prompt")
 
+    # Test max_depth guard
+    nested_data = {"a": {"b": {"c": "deep string"}}}
+    assert estimate_chars(nested_data, max_depth=3) == 0
+    assert estimate_chars(nested_data, max_depth=4) == len("deep string")
+
 
 def test_extract_token_counts_anthropic_prompt_caching():
     from sandbox_executor.token_reduction.mitm_addon import extract_token_counts

@@ -2,8 +2,7 @@
 
 This document outlines the architectural design and execution plan for adding real-time streaming performance metrics
 (**Time-To-First-Token / TTFT**, **Prefill TPS**, **Output TPS**, and **Decode Time**) directly into the MITM proxy
-sidecar
-([`mitm_addon.py`](file:///Users/thomashan/git/holon-agentic-coder-ref-metadata/holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)).
+sidecar ([`mitm_addon.py`](apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)).
 
 ---
 
@@ -84,12 +83,8 @@ Compute performance metrics and inject standardized response headers into `flow.
 
 ### Phase 5: A/B Benchmark Harness Integration
 
-Update
-[`todo/ab_benchmark_real_api.py`](file:///Users/thomashan/git/holon-agentic-coder-ref-metadata/todo/ab_benchmark_real_api.py)
-and
-[`todo/ab_benchmark_holon_agent.py`](file:///Users/thomashan/git/holon-agentic-coder-ref-metadata/todo/ab_benchmark_holon_agent.py)
-to read `X-Holon-*` headers and log output/prefill TPS in `todo/ab_real_api_results.json` and
-`todo/ab_real_api_results.md`.
+Update `todo/ab_benchmark_real_api.py` and `todo/ab_benchmark_holon_agent.py` to read `X-Holon-*` headers and log
+output/prefill TPS in `todo/ab_real_api_results.json` and `todo/ab_real_api_results.md`.
 
 ---
 

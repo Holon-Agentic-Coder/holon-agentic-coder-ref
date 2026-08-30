@@ -147,28 +147,30 @@ class MITMProxyInterceptor:
                 logger.exception("Cache store put failed for endpoint %s.", endpoint)
 
 
-def estimate_chars(data: Any) -> int:
+def estimate_chars(data: Any, max_depth: int = 10) -> int:
     """Recursively estimates prompt/response characters from nested request/response structures.
 
-    Returns 0 for unsupported primitive types.
+    Returns 0 for unsupported primitive types or when max_depth is reached.
     """
+    if max_depth <= 0:
+        return 0
     if isinstance(data, str):
         return len(data)
     if isinstance(data, list):
-        return sum(estimate_chars(x) for x in data)
+        return sum(estimate_chars(x, max_depth - 1) for x in data)
     if isinstance(data, dict):
         total = 0
         found_target = False
         if "system" in data:
-            total += estimate_chars(data["system"])
+            total += estimate_chars(data["system"], max_depth - 1)
             found_target = True
         for key in ("messages", "message", "prompt", "contents", "parts", "choices", "candidates", "content", "text"):
             if key in data:
-                total += estimate_chars(data[key])
+                total += estimate_chars(data[key], max_depth - 1)
                 found_target = True
         if found_target:
             return total
-        return sum(estimate_chars(v) for v in data.values())
+        return sum(estimate_chars(v, max_depth - 1) for v in data.values())
     return 0
 
 
