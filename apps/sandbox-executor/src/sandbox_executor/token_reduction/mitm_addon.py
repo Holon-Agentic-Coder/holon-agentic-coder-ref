@@ -64,7 +64,7 @@ class MITMProxyInterceptor:
             if "messages" in payload or "prompt" in payload:
                 return "openai"
 
-        return "openai"
+        return "unknown"
 
     def intercept_request(
         self, endpoint: str, request_json: dict[str, Any]
@@ -173,19 +173,19 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any], pr
     try:
         if isinstance(resp_data, dict):
             if provider == "anthropic":
-                usage = resp_data.get("usage", {})
+                usage = resp_data.get("usage") or {}
                 if "input_tokens" in usage and "output_tokens" in usage:
                     input_tokens = int(usage["input_tokens"])
                     output_tokens = int(usage["output_tokens"])
                     parsed = True
             elif provider == "openai":
-                usage = resp_data.get("usage", {})
+                usage = resp_data.get("usage") or {}
                 if "prompt_tokens" in usage and "completion_tokens" in usage:
                     input_tokens = int(usage["prompt_tokens"])
                     output_tokens = int(usage["completion_tokens"])
                     parsed = True
             elif provider == "gemini":
-                usage = resp_data.get("usageMetadata", {})
+                usage = resp_data.get("usageMetadata") or {}
                 if "promptTokenCount" in usage and "candidatesTokenCount" in usage:
                     input_tokens = int(usage["promptTokenCount"])
                     output_tokens = int(usage["candidatesTokenCount"])
@@ -246,11 +246,11 @@ class MitmproxyAddon:
                         if getattr(flow, "response", None) is not None:
                             if not hasattr(flow.response, "headers") or flow.response.headers is None:
                                 flow.response.headers = {}
-                            flow.response.headers["X-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
-                            flow.response.headers["X-TTFT"] = "0.0000"
-                            flow.response.headers["X-Prefill-TPS"] = "0.0000"
-                            flow.response.headers["X-Output-TPS"] = "0.0000"
-                            flow.response.headers["X-Total-Time"] = "0.0000"
+                            flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                            flow.response.headers["X-Holon-TTFT"] = "0.0000"
+                            flow.response.headers["X-Holon-Prefill-TPS"] = "0.0000"
+                            flow.response.headers["X-Holon-Output-TPS"] = "0.0000"
+                            flow.response.headers["X-Holon-Total-Time"] = "0.0000"
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
@@ -306,11 +306,11 @@ class MitmproxyAddon:
                         # Inject telemetry headers on cache miss
                         if not hasattr(flow.response, "headers") or flow.response.headers is None:
                             flow.response.headers = {}
-                        flow.response.headers["X-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
-                        flow.response.headers["X-TTFT"] = f"{ttft:.4f}"
-                        flow.response.headers["X-Prefill-TPS"] = f"{prefill_tps:.4f}"
-                        flow.response.headers["X-Output-TPS"] = f"{output_tps:.4f}"
-                        flow.response.headers["X-Total-Time"] = f"{total_time:.4f}"
+                        flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                        flow.response.headers["X-Holon-TTFT"] = f"{ttft:.4f}"
+                        flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                        flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
+                        flow.response.headers["X-Holon-Total-Time"] = f"{total_time:.4f}"
                 except json.JSONDecodeError as exc:
                     logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
                 except Exception:

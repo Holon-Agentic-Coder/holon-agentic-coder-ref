@@ -1259,11 +1259,11 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     addon.responseheaders(flow)
     addon.response(flow)
 
-    assert flow.response.headers["X-Cache-Hit-Rate"] == "0.0000"
-    assert flow.response.headers["X-TTFT"] == "2.5000"
-    assert flow.response.headers["X-Prefill-TPS"] == "40.0000"  # 100 tokens / 2.5s = 40.0
-    assert flow.response.headers["X-Output-TPS"] == "20.0000"   # 50 tokens / 2.5s = 20.0
-    assert flow.response.headers["X-Total-Time"] == "5.0000"
+    assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
+    assert flow.response.headers["X-Holon-TTFT"] == "2.5000"
+    assert flow.response.headers["X-Holon-Prefill-TPS"] == "40.0000"  # 100 tokens / 2.5s = 40.0
+    assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"   # 50 tokens / 2.5s = 20.0
+    assert flow.response.headers["X-Holon-Total-Time"] == "5.0000"
 
     # Now let's test a Cache Hit flow (which will be the 2nd request)
     ts_iter = iter([20.0, 25.0])
@@ -1272,11 +1272,11 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     addon.request(flow_hit)
 
     assert flow_hit.is_cached is True
-    assert flow_hit.response.headers["X-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
-    assert flow_hit.response.headers["X-TTFT"] == "0.0000"
-    assert flow_hit.response.headers["X-Prefill-TPS"] == "0.0000"
-    assert flow_hit.response.headers["X-Output-TPS"] == "0.0000"
-    assert flow_hit.response.headers["X-Total-Time"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
+    assert flow_hit.response.headers["X-Holon-TTFT"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Prefill-TPS"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Output-TPS"] == "0.0000"
+    assert flow_hit.response.headers["X-Holon-Total-Time"] == "0.0000"
 
 
 def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
@@ -1319,8 +1319,8 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
     addon.responseheaders(flow_openai)
     addon.response(flow_openai)
 
-    assert flow_openai.response.headers["X-Prefill-TPS"] == "4.0000"
-    assert flow_openai.response.headers["X-Output-TPS"] == "3.0000"
+    assert flow_openai.response.headers["X-Holon-Prefill-TPS"] == "4.0000"
+    assert flow_openai.response.headers["X-Holon-Output-TPS"] == "3.0000"
 
     # 2. Gemini provider check
     ts_iter = iter([10.0, 12.0, 14.0])
@@ -1332,8 +1332,8 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
     addon.responseheaders(flow_gemini)
     addon.response(flow_gemini)
 
-    assert flow_gemini.response.headers["X-Prefill-TPS"] == "5.0000"
-    assert flow_gemini.response.headers["X-Output-TPS"] == "4.0000"
+    assert flow_gemini.response.headers["X-Holon-Prefill-TPS"] == "5.0000"
+    assert flow_gemini.response.headers["X-Holon-Output-TPS"] == "4.0000"
 
     # 3. Fallback character-based estimation check
     ts_iter = iter([10.0, 12.0, 14.0])
@@ -1348,6 +1348,6 @@ def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
     addon.responseheaders(flow_fallback)
     addon.response(flow_fallback)
 
-    assert flow_fallback.response.headers["X-Prefill-TPS"] == "5.0000"
-    assert flow_fallback.response.headers["X-Output-TPS"] == "3.0000"
+    assert flow_fallback.response.headers["X-Holon-Prefill-TPS"] == "5.0000"
+    assert flow_fallback.response.headers["X-Holon-Output-TPS"] == "3.0000"
 
