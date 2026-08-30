@@ -1194,4 +1194,3 @@ def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
     assert "--network" in mounts
     assert envs["HTTP_PROXY"] == "http://holon-proxy:8080"
     assert envs["HTTPS_PROXY"] == "http://holon-proxy:8080"
-
