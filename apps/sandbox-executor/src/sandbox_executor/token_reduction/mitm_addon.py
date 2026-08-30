@@ -208,6 +208,10 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any], pr
         logger.debug("Failed to parse token counts for provider %s from response; using estimation fallback", provider)
 
     if not parsed:
+        logger.debug(
+            "Provider usage dictionary missing or invalid for %s; estimating token counts from payload characters",
+            provider,
+        )
         input_chars = estimate_chars(req_data)
         output_chars = estimate_chars(resp_data)
         input_tokens = max(1, input_chars // 4) if input_chars > 0 else 0
