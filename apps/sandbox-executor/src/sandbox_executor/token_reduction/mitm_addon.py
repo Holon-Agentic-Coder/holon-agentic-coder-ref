@@ -146,7 +146,10 @@ class MITMProxyInterceptor:
 
 
 def estimate_chars(data: Any) -> int:
-    """Helper to estimate prompt/response characters from nested request/response structures."""
+    """Recursively estimates prompt/response characters from nested request/response structures.
+
+    Returns 0 for unsupported primitive types.
+    """
     if isinstance(data, str):
         return len(data)
     if isinstance(data, list):
@@ -178,7 +181,11 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any], pr
             if provider == "anthropic":
                 usage = resp_data.get("usage") or {}
                 if "input_tokens" in usage and "output_tokens" in usage:
-                    input_tokens = int(usage["input_tokens"])
+                    input_tokens = (
+                        int(usage["input_tokens"])
+                        + int(usage.get("cache_read_input_tokens", 0))
+                        + int(usage.get("cache_creation_input_tokens", 0))
+                    )
                     output_tokens = int(usage["output_tokens"])
                     parsed = True
             elif provider == "openai":
@@ -194,7 +201,7 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any], pr
                     output_tokens = int(usage["candidatesTokenCount"])
                     parsed = True
     except Exception:
-        logger.exception("Failed to parse token counts for provider %s from response", provider)
+        logger.debug("Failed to parse token counts for provider %s from response; using estimation fallback", provider)
 
     if not parsed:
         input_chars = estimate_chars(req_data)

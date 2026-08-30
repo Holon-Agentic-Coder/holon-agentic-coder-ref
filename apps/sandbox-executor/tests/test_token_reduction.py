@@ -1369,3 +1369,21 @@ def test_estimate_chars_system_and_prompt_keys():
     assert estimate_chars(data_prompt) == len("Hello world prompt")
 
 
+def test_extract_token_counts_anthropic_prompt_caching():
+    from sandbox_executor.token_reduction.mitm_addon import extract_token_counts
+
+    req_data = {"messages": [{"role": "user", "content": "hello"}]}
+    resp_data = {
+        "usage": {
+            "input_tokens": 100,
+            "cache_read_input_tokens": 500,
+            "cache_creation_input_tokens": 200,
+            "output_tokens": 50,
+        }
+    }
+    input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider="anthropic")
+    assert input_tokens == 800
+    assert output_tokens == 50
+
+
+
