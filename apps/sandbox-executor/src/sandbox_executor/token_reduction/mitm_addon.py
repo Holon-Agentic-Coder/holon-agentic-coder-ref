@@ -224,8 +224,9 @@ class MitmproxyAddon:
             content = flow.request.get_text()
             if content:
                 data = json.loads(content)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Request body is non-JSON or unparseable; proceed with URL-based provider detection
+            logger.debug("Non-JSON or unparseable request body for endpoint %s: %s", url, exc)
 
         provider = self.interceptor.detect_provider(url, data)
         if provider != "unknown":
