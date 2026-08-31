@@ -186,14 +186,18 @@ def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: in
 
 
 def log_telemetry(msg: str) -> None:
-    """Logs telemetry message to standard logger and mitmproxy console context if available."""
-    logger.info(msg)
+    """Logs telemetry message to mitmproxy console context if available, falling back to standard logger."""
     try:
         from mitmproxy import ctx
+
         if hasattr(ctx, "log") and hasattr(ctx.log, "info"):
             ctx.log.info(msg)
-    except Exception:
+            return
+    except (ImportError, AttributeError):
+        # mitmproxy context is unavailable when running outside active mitmproxy process
         pass
+
+    logger.info(msg)
 
 
 def estimate_chars(data: Any, max_depth: int = 10) -> int:
@@ -309,10 +313,13 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
 
             choices = find_nested_key(chunk, ("choices",))
             if choices and isinstance(choices, list) and len(choices) > 0:
-                delta = choices[0].get("delta") or {}
-                content = delta.get("content", "")
-                if content:
-                    accumulated_content_len += len(content)
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    delta = first_choice.get("delta")
+                    if isinstance(delta, dict):
+                        content = delta.get("content", "")
+                        if isinstance(content, str) and content:
+                            accumulated_content_len += len(content)
 
         elif provider == "gemini":
             # Gemini / Cloud Code PA format
@@ -326,12 +333,18 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
             candidates = find_nested_key(chunk, ("candidates", "choices", "contents"))
             if candidates and isinstance(candidates, list):
                 for candidate in candidates:
-                    content = candidate.get("content") or {}
-                    parts = content.get("parts") or []
-                    for part in parts:
-                        text = part.get("text", "")
-                        if text:
-                            accumulated_content_len += len(text)
+                    if isinstance(candidate, dict):
+                        content = candidate.get("content")
+                        if isinstance(content, dict):
+                            parts = content.get("parts")
+                            if isinstance(parts, list):
+                                for part in parts:
+                                    if isinstance(part, dict):
+                                        text = part.get("text", "")
+                                        if isinstance(text, str) and text:
+                                            accumulated_content_len += len(text)
+                        elif isinstance(content, str) and content:
+                            accumulated_content_len += len(content)
 
     # Fallback/estimate calculations
     if input_tokens_parsed is not None:
