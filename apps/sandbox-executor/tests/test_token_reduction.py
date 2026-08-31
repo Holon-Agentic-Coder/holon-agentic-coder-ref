@@ -1436,4 +1436,3 @@ def test_detect_provider_schemeless_urls():
     assert interceptor.detect_provider("api.anthropic.com/v1/messages") == "anthropic"
     assert interceptor.detect_provider("api.openai.com/v1/chat/completions") == "openai"
     assert interceptor.detect_provider("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") == "unknown"
-
