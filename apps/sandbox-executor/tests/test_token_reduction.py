@@ -1192,7 +1192,7 @@ def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
     assert envs["HTTPS_PROXY"] == "http://holon-proxy:8080"
 
 
-def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
+def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch, caplog):
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1244,25 +1244,26 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
         "usage": {"input_tokens": 100, "cache_read_input_tokens": 60, "output_tokens": 50},
     }
 
-    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, json.dumps(resp_body)))
+    with caplog.at_level(logging.INFO):
+        flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, json.dumps(resp_body)))
 
-    addon.request(flow)
-    addon.responseheaders(flow)
-    addon.response(flow)
+        addon.request(flow)
+        addon.responseheaders(flow)
+        addon.response(flow)
 
-    assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
-    assert flow.response.headers["X-Holon-TTFT-Ms"] == "2500.00"
-    assert flow.response.headers["X-Holon-Prefill-TPS"] == "64.0000"  # (100 + 60) tokens / 2.5s = 64.0
-    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"  # 100 uncached tokens / 2.5s = 40.0
-    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
-    assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"  # 50 tokens / 2.5s = 20.0
-    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "5000.00"
+        assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
+        assert flow.response.headers["X-Holon-TTFT-Ms"] == "2500.00"
+        assert flow.response.headers["X-Holon-Prefill-TPS"] == "64.0000"  # (100 + 60) tokens / 2.5s = 64.0
+        assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"  # 100 uncached tokens / 2.5s = 40.0
+        assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
+        assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"  # 50 tokens / 2.5s = 20.0
+        assert flow.response.headers["X-Holon-Total-Time-Ms"] == "5000.00"
 
-    # Now let's test a Cache Hit flow (which will be the 2nd request)
-    ts_iter = iter([20.0, 25.0])
+        # Now let's test a Cache Hit flow (which will be the 2nd request)
+        ts_iter = iter([20.0, 25.0])
 
-    flow_hit = FakeFlow(FakeRequest(url, json.dumps(req_body)))
-    addon.request(flow_hit)
+        flow_hit = FakeFlow(FakeRequest(url, json.dumps(req_body)))
+        addon.request(flow_hit)
 
     assert flow_hit.is_cached is True
     assert flow_hit.response.headers["X-Holon-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
@@ -1272,6 +1273,11 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     assert flow_hit.response.headers["X-Holon-Decode-Time-Sec"] == "0.000"
     assert flow_hit.response.headers["X-Holon-Output-TPS"] == "0.0000"
     assert flow_hit.response.headers["X-Holon-Total-Time-Ms"] == "0.00"
+
+    hit_logs = [record.message for record in caplog.records if "Cache: HIT" in record.message]
+    assert len(hit_logs) == 1
+    assert "Provider: ANTHROPIC" in hit_logs[0]
+    assert "Cache: HIT (Hit Rate: 50.0%)" in hit_logs[0]
 
 
 def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
