@@ -227,6 +227,16 @@ def estimate_chars(data: Any, max_depth: int = 10) -> int:
     return 0
 
 
+def safe_int(val: Any, default: int = 0) -> int:
+    """Safely converts val to int, returning default on None or ValueError/TypeError."""
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def extract_sse_cache_read_tokens(resp_text: str) -> int:
     """Extracts cache_read_input_tokens from Anthropic SSE text if present."""
     lines = resp_text.splitlines()
@@ -243,7 +253,7 @@ def extract_sse_cache_read_tokens(resp_text: str) -> int:
                 if event_type == "message_start":
                     message = find_nested_key(chunk, ("message",)) or {}
                     usage = find_nested_key(message, ("usage",)) or {}
-                    return int(usage.get("cache_read_input_tokens", 0))
+                    return safe_int(usage.get("cache_read_input_tokens", 0))
         except Exception:
             continue
     return 0
@@ -290,14 +300,14 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                 usage = find_nested_key(message, ("usage",)) or {}
                 if "input_tokens" in usage:
                     input_tokens_parsed = (
-                        int(usage["input_tokens"])
-                        + int(usage.get("cache_read_input_tokens", 0))
-                        + int(usage.get("cache_creation_input_tokens", 0))
+                        safe_int(usage.get("input_tokens"))
+                        + safe_int(usage.get("cache_read_input_tokens"))
+                        + safe_int(usage.get("cache_creation_input_tokens"))
                     )
             elif event_type == "message_delta":
                 usage = find_nested_key(chunk, ("usage",)) or {}
                 if "output_tokens" in usage:
-                    output_tokens_parsed = int(usage["output_tokens"])
+                    output_tokens_parsed = safe_int(usage.get("output_tokens"))
             elif event_type == "content_block_delta":
                 delta = find_nested_key(chunk, ("delta",)) or {}
                 text = delta.get("text", "")
@@ -309,9 +319,9 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
             usage = find_nested_key(chunk, ("usage",))
             if usage and isinstance(usage, dict):
                 if "prompt_tokens" in usage:
-                    input_tokens_parsed = int(usage["prompt_tokens"])
+                    input_tokens_parsed = safe_int(usage.get("prompt_tokens"))
                 if "completion_tokens" in usage:
-                    output_tokens_parsed = int(usage["completion_tokens"])
+                    output_tokens_parsed = safe_int(usage.get("completion_tokens"))
 
             choices = find_nested_key(chunk, ("choices",))
             if choices and isinstance(choices, list) and len(choices) > 0:
@@ -328,9 +338,9 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
             usage = find_nested_key(chunk, ("usageMetadata", "usage"))
             if usage and isinstance(usage, dict):
                 if "promptTokenCount" in usage:
-                    input_tokens_parsed = int(usage["promptTokenCount"])
+                    input_tokens_parsed = safe_int(usage.get("promptTokenCount"))
                 if "candidatesTokenCount" in usage:
-                    output_tokens_parsed = int(usage["candidatesTokenCount"])
+                    output_tokens_parsed = safe_int(usage.get("candidatesTokenCount"))
 
             candidates = find_nested_key(chunk, ("candidates", "choices", "contents"))
             if candidates and isinstance(candidates, list):
@@ -382,23 +392,23 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any] | s
                 usage = resp_data.get("usage") or {}
                 if "input_tokens" in usage and "output_tokens" in usage:
                     input_tokens = (
-                        int(usage["input_tokens"])
-                        + int(usage.get("cache_read_input_tokens", 0))
-                        + int(usage.get("cache_creation_input_tokens", 0))
+                        safe_int(usage.get("input_tokens"))
+                        + safe_int(usage.get("cache_read_input_tokens"))
+                        + safe_int(usage.get("cache_creation_input_tokens"))
                     )
-                    output_tokens = int(usage["output_tokens"])
+                    output_tokens = safe_int(usage.get("output_tokens"))
                     parsed = True
             elif provider == "openai":
                 usage = resp_data.get("usage") or {}
                 if "prompt_tokens" in usage and "completion_tokens" in usage:
-                    input_tokens = int(usage["prompt_tokens"])
-                    output_tokens = int(usage["completion_tokens"])
+                    input_tokens = safe_int(usage.get("prompt_tokens"))
+                    output_tokens = safe_int(usage.get("completion_tokens"))
                     parsed = True
             elif provider == "gemini":
                 usage = resp_data.get("usageMetadata") or {}
                 if "promptTokenCount" in usage and "candidatesTokenCount" in usage:
-                    input_tokens = int(usage["promptTokenCount"])
-                    output_tokens = int(usage["candidatesTokenCount"])
+                    input_tokens = safe_int(usage.get("promptTokenCount"))
+                    output_tokens = safe_int(usage.get("candidatesTokenCount"))
                     parsed = True
     except Exception:
         logger.debug("Failed to parse token counts for provider %s from response; using estimation fallback", provider)
