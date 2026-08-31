@@ -1710,14 +1710,13 @@ def test_anthropic_sse_cache_read_token_extraction():
     from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
 
     sse_text = (
-        'event: message_start\n'
+        "event: message_start\n"
         'data: {"type": "message_start", "message": {"id": "msg_123", '
         '"usage": {"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50}}}\n\n'
-        'event: message_delta\n'
+        "event: message_delta\n"
         'data: {"type": "message_delta", "usage": {"output_tokens": 80}}\n\n'
     )
     in_tok, out_tok, cache_tok = extract_sse_token_counts(sse_text, {}, provider="anthropic")
     assert in_tok == 550
     assert out_tok == 80
     assert cache_tok == 400
-
