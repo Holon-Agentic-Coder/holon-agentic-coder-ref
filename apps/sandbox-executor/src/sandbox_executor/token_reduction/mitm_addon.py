@@ -160,6 +160,42 @@ class MITMProxyInterceptor:
                 logger.exception("Cache store put failed for endpoint %s.", endpoint)
 
 
+def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: int = 10) -> Any:
+    """Recursively searches nested dicts/lists to find the first occurrence of any key in target_keys."""
+    if max_depth <= 0 or not data:
+        return None
+    if isinstance(target_keys, str):
+        target_keys = (target_keys,)
+
+    if isinstance(data, dict):
+        for key in target_keys:
+            if key in data:
+                return data[key]
+        for val in data.values():
+            if isinstance(val, (dict, list)):
+                res = find_nested_key(val, target_keys, max_depth - 1)
+                if res is not None:
+                    return res
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                res = find_nested_key(item, target_keys, max_depth - 1)
+                if res is not None:
+                    return res
+    return None
+
+
+def log_telemetry(msg: str) -> None:
+    """Logs telemetry message to standard logger and mitmproxy console context if available."""
+    logger.info(msg)
+    try:
+        from mitmproxy import ctx
+        if hasattr(ctx, "log") and hasattr(ctx.log, "info"):
+            ctx.log.info(msg)
+    except Exception:
+        pass
+
+
 def estimate_chars(data: Any, max_depth: int = 10) -> int:
     """Recursively estimates prompt/response characters from nested request/response structures.
 
@@ -242,10 +278,10 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
 
         if provider == "anthropic":
             # Anthropic SSE format
-            event_type = chunk.get("type")
+            event_type = find_nested_key(chunk, ("type",))
             if event_type == "message_start":
-                message = chunk.get("message") or {}
-                usage = message.get("usage") or {}
+                message = find_nested_key(chunk, ("message",)) or {}
+                usage = find_nested_key(message, ("usage",)) or {}
                 if "input_tokens" in usage:
                     input_tokens_parsed = (
                         int(usage["input_tokens"])
@@ -253,25 +289,25 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                         + int(usage.get("cache_creation_input_tokens", 0))
                     )
             elif event_type == "message_delta":
-                usage = chunk.get("usage") or {}
+                usage = find_nested_key(chunk, ("usage",)) or {}
                 if "output_tokens" in usage:
                     output_tokens_parsed = int(usage["output_tokens"])
             elif event_type == "content_block_delta":
-                delta = chunk.get("delta") or {}
+                delta = find_nested_key(chunk, ("delta",)) or {}
                 text = delta.get("text", "")
                 if text:
                     accumulated_content_len += len(text)
 
         elif provider == "openai":
             # OpenAI SSE format
-            usage = chunk.get("usage")
+            usage = find_nested_key(chunk, ("usage",))
             if usage and isinstance(usage, dict):
                 if "prompt_tokens" in usage:
                     input_tokens_parsed = int(usage["prompt_tokens"])
                 if "completion_tokens" in usage:
                     output_tokens_parsed = int(usage["completion_tokens"])
 
-            choices = chunk.get("choices")
+            choices = find_nested_key(chunk, ("choices",))
             if choices and isinstance(choices, list) and len(choices) > 0:
                 delta = choices[0].get("delta") or {}
                 content = delta.get("content", "")
@@ -279,15 +315,15 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                     accumulated_content_len += len(content)
 
         elif provider == "gemini":
-            # Gemini format
-            usage = chunk.get("usageMetadata")
+            # Gemini / Cloud Code PA format
+            usage = find_nested_key(chunk, ("usageMetadata", "usage"))
             if usage and isinstance(usage, dict):
                 if "promptTokenCount" in usage:
                     input_tokens_parsed = int(usage["promptTokenCount"])
                 if "candidatesTokenCount" in usage:
                     output_tokens_parsed = int(usage["candidatesTokenCount"])
 
-            candidates = chunk.get("candidates")
+            candidates = find_nested_key(chunk, ("candidates", "choices", "contents"))
             if candidates and isinstance(candidates, list):
                 for candidate in candidates:
                     content = candidate.get("content") or {}
@@ -517,25 +553,26 @@ class MitmproxyAddon:
                     flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
                     flow.response.headers["X-Holon-Total-Time-Ms"] = f"{total_time * 1000:.2f}"
 
-                    # Write a single unified logger.info("📊 [TELEMETRY] ...") log line.
-                    logger.info(
-                        "📊 [TELEMETRY] Provider: %s | TTFT: %.1fms | Prefill: %.2f t/s (%d tok) | "
-                        "Output: %.2f t/s (%d tok in %.2fs) | Total: %.1fms",
-                        provider.upper(),
-                        ttft * 1000,
-                        prefill_tps,
-                        input_tokens,
-                        output_tps,
-                        output_tokens,
-                        generation_time,
-                        total_time * 1000,
+                    log_msg = (
+                        f"📊 [TELEMETRY] Provider: {provider.upper()} | "
+                        f"Cache: MISS (Hit Rate: {hit_rate * 100:.1f}%) | "
+                        f"TTFT: {ttft * 1000:.1f}ms | "
+                        f"Prefill: {prefill_tps:.2f} t/s ({input_tokens} tok) | "
+                        f"Output: {output_tps:.2f} t/s ({output_tokens} tok in {generation_time:.2f}s) | "
+                        f"Total: {total_time * 1000:.1f}ms"
                     )
+                    log_telemetry(log_msg)
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
             except Exception:
                 logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
         else:
             logger.warning("Skipping caching response with HTTP status code %d for %s", status_code, url)
+            log_msg = (
+                f"⚠️ [TELEMETRY] Provider: {provider.upper()} | Status: {status_code} | "
+                f"Total: {(time.perf_counter() - getattr(flow, 'request_start_time', time.perf_counter())) * 1000:.1f}ms"
+            )
+            log_telemetry(log_msg)
 
 
 addons = [MitmproxyAddon()]

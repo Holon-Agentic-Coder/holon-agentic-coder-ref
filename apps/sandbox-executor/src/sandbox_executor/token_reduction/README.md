@@ -52,17 +52,44 @@ Enable token reduction transparently when spawning plan generation or execution 
 ./holon execute I-1787914053-token-reduction-plan/P-1787914074-antigravity-agent-gemini-3.5-flash/_ --token-reduce
 ```
 
-### 2. Setting Up the MITM Interception Proxy
+### 2. Setting Up the Host MITM Interception Proxy & Launching `agy`
 
-To capture and optimize HTTPS traffic, run `mitmproxy` or `mitmdump` with the token reducer addon script loaded:
+#### Step A: Run the MITM Sidecar Docker Container
+
+Start the `mitmproxy` container with the token reduction addon:
 
 ```bash
-mitmdump -s apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py \
-         --listen-host 0.0.0.0 \
-         --listen-port 8080
+docker run --rm --name host-mitm-proxy \
+  -p 127.0.0.1:8080:8080 \
+  -v ~/.holon/proxy-ca/mitmproxy-ca.pem:/home/mitmproxy/.mitmproxy/mitmproxy-ca.pem:ro \
+  -v ~/.holon/proxy-ca/mitmproxy-ca-cert.pem:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem:ro \
+  -v $(pwd)/apps/sandbox-executor/src:/tmp/src \
+  -e PYTHONPATH=/tmp/src \
+  -e PYTHONUNBUFFERED=1 \
+  -v $(pwd)/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py:/tmp/mitm_addon.py:ro \
+  mitmproxy/mitmproxy:12.2.3 \
+  mitmdump -s /tmp/mitm_addon.py \
+           --listen-port 8080 \
+           --set ignore_hosts='^(api\.github\.com|github\.com):443$'
 ```
 
 On first run, the Root CA certificate is generated automatically and stored at `~/.holon/certs/holon-root-ca.crt`.
+
+#### Step B: Launch `agy` Connected to the Proxy
+
+Once the container is running, launch `agy` in your terminal:
+
+```bash
+HTTP_PROXY="http://127.0.0.1:8080" \
+HTTPS_PROXY="http://127.0.0.1:8080" \
+http_proxy="http://127.0.0.1:8080" \
+https_proxy="http://127.0.0.1:8080" \
+NODE_EXTRA_CA_CERTS="$HOME/.holon/certs/holon-root-ca.crt" \
+SSL_CERT_FILE="$HOME/.holon/certs/holon-root-ca.crt" \
+NO_PROXY="localhost,127.0.0.1,::1,api.github.com,github.com" \
+no_proxy="localhost,127.0.0.1,::1,api.github.com,github.com" \
+agy
+```
 
 ---
 

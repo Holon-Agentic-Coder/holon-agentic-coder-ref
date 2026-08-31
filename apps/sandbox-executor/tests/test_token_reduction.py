@@ -1,5 +1,6 @@
 """Unit tests for AI Agent Token Reduction Architecture - Phase 1."""
 
+import json
 import logging
 import os
 import stat
@@ -1439,9 +1440,6 @@ def test_detect_provider_schemeless_urls():
 
 
 def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):
-    import json
-    import logging
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1529,9 +1527,6 @@ def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):
 
 
 def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):
-    import json
-    import logging
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1615,9 +1610,6 @@ def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):
 
 
 def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypatch, caplog):
-    import json
-    import logging
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1689,3 +1681,27 @@ def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypat
     assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "4.000"
     assert flow.response.headers["X-Holon-Output-TPS"] == "1.0000"
     assert flow.response.headers["X-Holon-Total-Time-Ms"] == "6000.00"
+
+
+def test_find_nested_key_and_cloudcode_pa_sse_parsing():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts, find_nested_key
+
+    data = {
+        "response": {
+            "result": {
+                "candidates": [{"content": {"parts": [{"text": "Sample code from Cloud Code PA"}]}}],
+                "usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 40},
+            }
+        }
+    }
+    assert find_nested_key(data, ("usageMetadata", "usage")) == {"promptTokenCount": 120, "candidatesTokenCount": 40}
+    assert find_nested_key(data, ("candidates", "choices")) == [{"content": {"parts": [{"text": "Sample code from Cloud Code PA"}]}}]
+
+    nested_sse = (
+        'data: {"response": {"candidates": [{"content": {"parts": [{"text": "Hello world"}]}}], '
+        '"usageMetadata": {"promptTokenCount": 150, "candidatesTokenCount": 45}}}\n\n'
+    )
+    in_tok, out_tok = extract_sse_token_counts(nested_sse, {}, provider="gemini")
+    assert in_tok == 150
+    assert out_tok == 45
+
