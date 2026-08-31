@@ -40,7 +40,12 @@ class MITMProxyInterceptor:
         url_lower = url_or_path.lower()
         if "anthropic" in url_lower or "v1/messages" in url_lower:
             return "anthropic"
-        if "googleapis" in url_lower or "gemini" in url_lower or "generatecontent" in url_lower:
+        if (
+            "generativelanguage.googleapis.com" in url_lower
+            or "gemini" in url_lower
+            or "generatecontent" in url_lower
+            or "streamgeneratecontent" in url_lower
+        ):
             return "gemini"
 
         openai_providers = [

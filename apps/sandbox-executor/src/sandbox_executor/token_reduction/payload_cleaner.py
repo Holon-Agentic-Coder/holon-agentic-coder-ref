@@ -397,8 +397,8 @@ class JSONContextCleaner:
         return payload
 
     def _clean_gemini(self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]) -> dict[str, Any]:
-        contents = payload.get("contents", [])
-        if not isinstance(contents, list):
+        contents = payload.get("contents")
+        if contents is None or not isinstance(contents, list):
             return payload
 
         turn_count = len(contents)
