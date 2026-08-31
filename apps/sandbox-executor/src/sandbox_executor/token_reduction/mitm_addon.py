@@ -187,8 +187,136 @@ def estimate_chars(data: Any, max_depth: int = 10) -> int:
     return 0
 
 
-def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any], provider: str) -> tuple[int, int]:
+def extract_sse_cache_read_tokens(resp_text: str) -> int:
+    """Extracts cache_read_input_tokens from Anthropic SSE text if present."""
+    lines = resp_text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(line)
+            if isinstance(chunk, dict) and chunk.get("type") == "message_start":
+                message = chunk.get("message") or {}
+                usage = message.get("usage") or {}
+                return int(usage.get("cache_read_input_tokens", 0))
+        except Exception:
+            continue
+    return 0
+
+
+def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider: str) -> tuple[int, int]:
+    """Extracts (input_tokens, output_tokens) from SSE stream text."""
+    input_tokens = 0
+    output_tokens = 0
+
+    # Track parsed metrics
+    input_tokens_parsed = None
+    output_tokens_parsed = None
+    accumulated_content_len = 0
+
+    # We split the stream by lines.
+    lines = resp_text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Strip "data:" prefix if present
+        json_str = line
+        if line.startswith("data:"):
+            json_str = line[5:].strip()
+
+        if not json_str or json_str == "[DONE]":
+            continue
+
+        try:
+            chunk = json.loads(json_str)
+        except Exception:
+            continue
+
+        if not isinstance(chunk, dict):
+            continue
+
+        if provider == "anthropic":
+            # Anthropic SSE format
+            event_type = chunk.get("type")
+            if event_type == "message_start":
+                message = chunk.get("message") or {}
+                usage = message.get("usage") or {}
+                if "input_tokens" in usage:
+                    input_tokens_parsed = (
+                        int(usage["input_tokens"])
+                        + int(usage.get("cache_read_input_tokens", 0))
+                        + int(usage.get("cache_creation_input_tokens", 0))
+                    )
+            elif event_type == "message_delta":
+                usage = chunk.get("usage") or {}
+                if "output_tokens" in usage:
+                    output_tokens_parsed = int(usage["output_tokens"])
+            elif event_type == "content_block_delta":
+                delta = chunk.get("delta") or {}
+                text = delta.get("text", "")
+                if text:
+                    accumulated_content_len += len(text)
+
+        elif provider == "openai":
+            # OpenAI SSE format
+            usage = chunk.get("usage")
+            if usage and isinstance(usage, dict):
+                if "prompt_tokens" in usage:
+                    input_tokens_parsed = int(usage["prompt_tokens"])
+                if "completion_tokens" in usage:
+                    output_tokens_parsed = int(usage["completion_tokens"])
+
+            choices = chunk.get("choices")
+            if choices and isinstance(choices, list) and len(choices) > 0:
+                delta = choices[0].get("delta") or {}
+                content = delta.get("content", "")
+                if content:
+                    accumulated_content_len += len(content)
+
+        elif provider == "gemini":
+            # Gemini format
+            usage = chunk.get("usageMetadata")
+            if usage and isinstance(usage, dict):
+                if "promptTokenCount" in usage:
+                    input_tokens_parsed = int(usage["promptTokenCount"])
+                if "candidatesTokenCount" in usage:
+                    output_tokens_parsed = int(usage["candidatesTokenCount"])
+
+            candidates = chunk.get("candidates")
+            if candidates and isinstance(candidates, list):
+                for candidate in candidates:
+                    content = candidate.get("content") or {}
+                    parts = content.get("parts") or []
+                    for part in parts:
+                        text = part.get("text", "")
+                        if text:
+                            accumulated_content_len += len(text)
+
+    # Fallback/estimate calculations
+    if input_tokens_parsed is not None:
+        input_tokens = input_tokens_parsed
+    else:
+        input_chars = estimate_chars(req_data)
+        input_tokens = max(1, input_chars // 4) if input_chars > 0 else 0
+
+    if output_tokens_parsed is not None:
+        output_tokens = output_tokens_parsed
+    else:
+        output_tokens = max(1, accumulated_content_len // 4) if accumulated_content_len > 0 else 0
+
+    return input_tokens, output_tokens
+
+
+def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str) -> tuple[int, int]:
     """Extracts (input_tokens, output_tokens) from request/response data."""
+    if isinstance(resp_data, str):
+        return extract_sse_token_counts(resp_data, req_data, provider)
+
     input_tokens = 0
     output_tokens = 0
     parsed = False
@@ -302,6 +430,18 @@ class MitmproxyAddon:
         """Mitmproxy response headers callback."""
         if getattr(flow, "provider", "unknown") != "unknown":
             flow.response_headers_time = time.perf_counter()  # float: timestamp from time.perf_counter()
+            response = getattr(flow, "response", None)
+            if response is not None:
+                headers = getattr(response, "headers", None)
+                if headers and "text/event-stream" in headers.get("Content-Type", ""):
+                    flow.sse_chunks = []
+
+                    def sse_stream_wrapper(chunk: bytes) -> bytes:
+                        if chunk:
+                            flow.sse_chunks.append(chunk)
+                        return chunk
+
+                    response.stream = sse_stream_wrapper
 
     def response(self, flow: Any) -> None:
         """Mitmproxy response callback."""
@@ -322,10 +462,19 @@ class MitmproxyAddon:
                     req_text = flow.request.get_text()
                     if req_text:
                         req_data = json.loads(req_text)
-                resp_text = flow.response.get_text()
-                if req_data is not None and resp_text:
-                    resp_data = json.loads(resp_text)
-                    self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
+
+                sse_chunks = getattr(flow, "sse_chunks", None)
+                is_sse = sse_chunks is not None
+
+                if is_sse:
+                    resp_data = b"".join(sse_chunks).decode("utf-8", errors="ignore")
+                else:
+                    resp_text = flow.response.get_text()
+                    resp_data = json.loads(resp_text) if resp_text else None
+
+                if req_data is not None and resp_data:
+                    if not is_sse:
+                        self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
 
                     # Extract token counts
                     input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider)
@@ -344,11 +493,13 @@ class MitmproxyAddon:
                     total_time = now - req_start
                     generation_time = total_time - ttft
 
-                    cache_read_tokens = (
-                        int((resp_data.get("usage") or {}).get("cache_read_input_tokens", 0))
-                        if provider == "anthropic" and isinstance(resp_data, dict)
-                        else 0
-                    )
+                    cache_read_tokens = 0
+                    if provider == "anthropic":
+                        if isinstance(resp_data, dict):
+                            cache_read_tokens = int((resp_data.get("usage") or {}).get("cache_read_input_tokens", 0))
+                        elif isinstance(resp_data, str):
+                            cache_read_tokens = extract_sse_cache_read_tokens(resp_data)
+
                     uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
                     prefill_tps = input_tokens / ttft if ttft > 0 else 0.0
                     tail_prefill_tps = uncached_input_tokens / ttft if ttft > 0 else 0.0
@@ -365,6 +516,20 @@ class MitmproxyAddon:
                     flow.response.headers["X-Holon-Decode-Time-Sec"] = f"{generation_time:.3f}"
                     flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
                     flow.response.headers["X-Holon-Total-Time-Ms"] = f"{total_time * 1000:.2f}"
+
+                    # Write a single unified logger.info("📊 [TELEMETRY] ...") log line.
+                    logger.info(
+                        "📊 [TELEMETRY] Provider: %s | TTFT: %.1fms | Prefill: %.2f t/s (%d tok) | "
+                        "Output: %.2f t/s (%d tok in %.2fs) | Total: %.1fms",
+                        provider.upper(),
+                        ttft * 1000,
+                        prefill_tps,
+                        input_tokens,
+                        output_tps,
+                        output_tokens,
+                        generation_time,
+                        total_time * 1000,
+                    )
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
             except Exception:
