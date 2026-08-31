@@ -193,8 +193,8 @@ def log_telemetry(msg: str) -> None:
         if hasattr(ctx, "log") and hasattr(ctx.log, "info"):
             ctx.log.info(msg)
             return
-    except (ImportError, AttributeError):
-        # mitmproxy context is unavailable when running outside active mitmproxy process
+    except Exception:
+        # mitmproxy context is unavailable or inactive in this execution context
         pass
 
     logger.info(msg)
@@ -498,7 +498,16 @@ class MitmproxyAddon:
             response = getattr(flow, "response", None)
             if response is not None:
                 headers = getattr(response, "headers", None)
-                if headers and "text/event-stream" in headers.get("Content-Type", ""):
+                content_type = ""
+                if headers:
+                    if hasattr(headers, "get"):
+                        content_type = headers.get("Content-Type") or headers.get("content-type") or ""
+                    elif isinstance(headers, dict):
+                        for k, v in headers.items():
+                            if k.lower() == "content-type":
+                                content_type = v
+                                break
+                if "text/event-stream" in content_type:
                     flow.sse_chunks = []
 
                     def sse_stream_wrapper(chunk: bytes) -> bytes:
