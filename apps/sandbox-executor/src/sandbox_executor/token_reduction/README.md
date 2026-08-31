@@ -61,8 +61,7 @@ Start the `mitmproxy` container with the token reduction addon:
 ```bash
 docker run --rm --name host-mitm-proxy \
   -p 127.0.0.1:8080:8080 \
-  -v ~/.holon/proxy-ca/mitmproxy-ca.pem:/home/mitmproxy/.mitmproxy/mitmproxy-ca.pem:ro \
-  -v ~/.holon/proxy-ca/mitmproxy-ca-cert.pem:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem:ro \
+  -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy:rw \
   -v $(pwd)/apps/sandbox-executor/src:/tmp/src \
   -e PYTHONPATH=/tmp/src \
   -e PYTHONUNBUFFERED=1 \

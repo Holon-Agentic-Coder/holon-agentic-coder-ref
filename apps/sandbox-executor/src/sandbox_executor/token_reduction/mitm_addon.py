@@ -345,8 +345,12 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                                         text = part.get("text", "")
                                         if isinstance(text, str) and text:
                                             accumulated_content_len += len(text)
+                                    elif isinstance(part, str) and part:
+                                        accumulated_content_len += len(part)
                         elif isinstance(content, str) and content:
                             accumulated_content_len += len(content)
+                    elif isinstance(candidate, str) and candidate:
+                        accumulated_content_len += len(candidate)
 
     # Fallback/estimate calculations
     if input_tokens_parsed is not None:
