@@ -84,8 +84,8 @@ HTTP_PROXY="http://127.0.0.1:8080" \
 HTTPS_PROXY="http://127.0.0.1:8080" \
 http_proxy="http://127.0.0.1:8080" \
 https_proxy="http://127.0.0.1:8080" \
-NODE_EXTRA_CA_CERTS="$HOME/.holon/certs/holon-root-ca.crt" \
-SSL_CERT_FILE="$HOME/.holon/certs/holon-root-ca.crt" \
+NODE_EXTRA_CA_CERTS="$HOME/.holon/proxy-ca/mitmproxy-ca-cert.pem" \
+SSL_CERT_FILE="$HOME/.holon/proxy-ca/mitmproxy-ca-cert.pem" \
 NO_PROXY="localhost,127.0.0.1,::1,api.github.com,github.com" \
 no_proxy="localhost,127.0.0.1,::1,api.github.com,github.com" \
 agy

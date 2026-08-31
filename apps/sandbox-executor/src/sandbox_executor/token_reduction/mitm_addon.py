@@ -169,7 +169,7 @@ def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: in
 
     if isinstance(data, dict):
         for key in target_keys:
-            if key in data:
+            if key in data and data[key] is not None:
                 return data[key]
         for val in data.values():
             if isinstance(val, (dict, list)):
@@ -238,10 +238,12 @@ def extract_sse_cache_read_tokens(resp_text: str) -> int:
             continue
         try:
             chunk = json.loads(line)
-            if isinstance(chunk, dict) and chunk.get("type") == "message_start":
-                message = chunk.get("message") or {}
-                usage = message.get("usage") or {}
-                return int(usage.get("cache_read_input_tokens", 0))
+            if isinstance(chunk, dict):
+                event_type = find_nested_key(chunk, ("type",))
+                if event_type == "message_start":
+                    message = find_nested_key(chunk, ("message",)) or {}
+                    usage = find_nested_key(message, ("usage",)) or {}
+                    return int(usage.get("cache_read_input_tokens", 0))
         except Exception:
             continue
     return 0
