@@ -636,7 +636,6 @@ def test_mitm_interceptor_caching_disabled(tmp_path):
 
 
 def test_mitm_addon_lifecycle_and_hit_count(tmp_path):
-    import json
     import sqlite3
 
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
@@ -848,8 +847,6 @@ def test_mitm_addon_null_request_flow():
 
 
 def test_mitm_addon_error_response_caching_bypass(tmp_path):
-    import json
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
 
     cache_dir = tmp_path / "cache"
@@ -1001,8 +998,6 @@ def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
 
 
 def test_mitm_addon_response_make_import_fallback(monkeypatch):
-    import json
-
     from sandbox_executor.token_reduction import mitm_addon
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
 
@@ -1198,8 +1193,6 @@ def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
 
 
 def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
-    import json
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1282,8 +1275,6 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
 
 
 def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
-    import json
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
