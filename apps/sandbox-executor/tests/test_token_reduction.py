@@ -1383,9 +1383,10 @@ def test_extract_token_counts_anthropic_prompt_caching():
             "output_tokens": 50,
         }
     }
-    input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider="anthropic")
+    input_tokens, output_tokens, cache_read_tokens = extract_token_counts(req_data, resp_data, provider="anthropic")
     assert input_tokens == 800
     assert output_tokens == 50
+    assert cache_read_tokens == 500
 
 
 def test_mitm_interceptor_generic_googleapis_unaffected():
@@ -1699,6 +1700,24 @@ def test_find_nested_key_and_cloudcode_pa_sse_parsing():
         'data: {"response": {"candidates": [{"content": {"parts": [{"text": "Hello world"}]}}], '
         '"usageMetadata": {"promptTokenCount": 150, "candidatesTokenCount": 45}}}\n\n'
     )
-    in_tok, out_tok = extract_sse_token_counts(nested_sse, {}, provider="gemini")
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(nested_sse, {}, provider="gemini")
     assert in_tok == 150
     assert out_tok == 45
+    assert cache_tok == 0
+
+
+def test_anthropic_sse_cache_read_token_extraction():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    sse_text = (
+        'event: message_start\n'
+        'data: {"type": "message_start", "message": {"id": "msg_123", '
+        '"usage": {"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50}}}\n\n'
+        'event: message_delta\n'
+        'data: {"type": "message_delta", "usage": {"output_tokens": 80}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(sse_text, {}, provider="anthropic")
+    assert in_tok == 550
+    assert out_tok == 80
+    assert cache_tok == 400
+

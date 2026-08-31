@@ -161,7 +161,12 @@ class MITMProxyInterceptor:
 
 
 def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: int = 10) -> Any:
-    """Recursively searches nested dicts/lists to find the first occurrence of any key in target_keys."""
+    """Recursively searches nested dicts/lists to find the first occurrence of any key in target_keys.
+
+    Evaluates target keys at the current nesting level (breadth-first) before recursing deeper into
+    child dictionaries or lists. If target_keys is a tuple of key names, keys present at a shallower
+    nesting level will take precedence over target keys located deeper in the data structure.
+    """
     if max_depth <= 0 or not data:
         return None
     if isinstance(target_keys, str):
@@ -238,35 +243,24 @@ def safe_int(val: Any, default: int = 0) -> int:
 
 
 def extract_sse_cache_read_tokens(resp_text: str) -> int:
-    """Extracts cache_read_input_tokens from Anthropic SSE text if present."""
-    lines = resp_text.splitlines()
-    for line in lines:
-        line = line.strip()
-        if line.startswith("data:"):
-            line = line[5:].strip()
-        if not line or line == "[DONE]":
-            continue
-        try:
-            chunk = json.loads(line)
-            if isinstance(chunk, dict):
-                event_type = find_nested_key(chunk, ("type",))
-                if event_type == "message_start":
-                    message = find_nested_key(chunk, ("message",)) or {}
-                    usage = find_nested_key(message, ("usage",)) or {}
-                    return safe_int(usage.get("cache_read_input_tokens", 0))
-        except Exception:
-            continue
-    return 0
+    """Extracts cache_read_input_tokens from Anthropic SSE text if present.
+
+    Delegates to extract_sse_token_counts to ensure single-pass SSE stream line parsing.
+    """
+    _, _, cache_read_tokens = extract_sse_token_counts(resp_text, {}, "anthropic")
+    return cache_read_tokens
 
 
-def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider: str) -> tuple[int, int]:
-    """Extracts (input_tokens, output_tokens) from SSE stream text."""
+def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider: str) -> tuple[int, int, int]:
+    """Extracts (input_tokens, output_tokens, cache_read_tokens) from SSE stream text."""
     input_tokens = 0
     output_tokens = 0
+    cache_read_tokens = 0
 
     # Track parsed metrics
     input_tokens_parsed = None
     output_tokens_parsed = None
+    cache_read_tokens_parsed = None
     accumulated_content_len = 0
 
     # We split the stream by lines.
@@ -298,6 +292,8 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
             if event_type == "message_start":
                 message = find_nested_key(chunk, ("message",)) or {}
                 usage = find_nested_key(message, ("usage",)) or {}
+                if "cache_read_input_tokens" in usage:
+                    cache_read_tokens_parsed = safe_int(usage.get("cache_read_input_tokens"))
                 if "input_tokens" in usage:
                     input_tokens_parsed = (
                         safe_int(usage.get("input_tokens"))
@@ -374,16 +370,22 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
     else:
         output_tokens = max(1, accumulated_content_len // 4) if accumulated_content_len > 0 else 0
 
-    return input_tokens, output_tokens
+    if cache_read_tokens_parsed is not None:
+        cache_read_tokens = cache_read_tokens_parsed
+
+    return input_tokens, output_tokens, cache_read_tokens
 
 
-def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str) -> tuple[int, int]:
-    """Extracts (input_tokens, output_tokens) from request/response data."""
+def extract_token_counts(
+    req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str
+) -> tuple[int, int, int]:
+    """Extracts (input_tokens, output_tokens, cache_read_tokens) from request/response data."""
     if isinstance(resp_data, str):
         return extract_sse_token_counts(resp_data, req_data, provider)
 
     input_tokens = 0
     output_tokens = 0
+    cache_read_tokens = 0
     parsed = False
 
     try:
@@ -391,9 +393,10 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any] | s
             if provider == "anthropic":
                 usage = resp_data.get("usage") or {}
                 if "input_tokens" in usage and "output_tokens" in usage:
+                    cache_read_tokens = safe_int(usage.get("cache_read_input_tokens"))
                     input_tokens = (
                         safe_int(usage.get("input_tokens"))
-                        + safe_int(usage.get("cache_read_input_tokens"))
+                        + cache_read_tokens
                         + safe_int(usage.get("cache_creation_input_tokens"))
                     )
                     output_tokens = safe_int(usage.get("output_tokens"))
@@ -423,7 +426,7 @@ def extract_token_counts(req_data: dict[str, Any], resp_data: dict[str, Any] | s
         input_tokens = max(1, input_chars // 4) if input_chars > 0 else 0
         output_tokens = max(1, output_chars // 4) if output_chars > 0 else 0
 
-    return input_tokens, output_tokens
+    return input_tokens, output_tokens, cache_read_tokens
 
 
 # mitmproxy addon entrypoint compatible function
@@ -555,11 +558,14 @@ class MitmproxyAddon:
                     resp_data = json.loads(resp_text) if resp_text else None
 
                 if req_data is not None and resp_data:
+                    # Note: Response caching is explicitly bypassed for SSE streams (is_sse is True)
+                    # because streaming responses cannot be served statically from cache, but telemetry
+                    # metrics (token counts, TTFT, TPS) are still calculated and logged.
                     if not is_sse:
                         self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
 
-                    # Extract token counts
-                    input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider)
+                    # Extract token counts and cache read tokens in a single pass
+                    input_tokens, output_tokens, cache_read_tokens = extract_token_counts(req_data, resp_data, provider)
 
                     # Compute timing metrics
                     req_start = getattr(flow, "request_start_time", None)
@@ -574,13 +580,6 @@ class MitmproxyAddon:
                     ttft = resp_headers_time - req_start
                     total_time = now - req_start
                     generation_time = total_time - ttft
-
-                    cache_read_tokens = 0
-                    if provider == "anthropic":
-                        if isinstance(resp_data, dict):
-                            cache_read_tokens = int((resp_data.get("usage") or {}).get("cache_read_input_tokens", 0))
-                        elif isinstance(resp_data, str):
-                            cache_read_tokens = extract_sse_cache_read_tokens(resp_data)
 
                     uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
                     prefill_tps = input_tokens / ttft if ttft > 0 else 0.0

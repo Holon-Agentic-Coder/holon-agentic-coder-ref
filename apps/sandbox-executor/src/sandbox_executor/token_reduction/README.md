@@ -59,6 +59,8 @@ Enable token reduction transparently when spawning plan generation or execution 
 Start the `mitmproxy` container with the token reduction addon:
 
 ```bash
+mkdir -p ~/.holon/proxy-ca
+
 docker run --rm --name host-mitm-proxy \
   -p 127.0.0.1:8080:8080 \
   -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy:rw \
