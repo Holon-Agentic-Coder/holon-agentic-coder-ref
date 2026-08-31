@@ -533,12 +533,12 @@ class MitmproxyAddon:
         if getattr(flow, "request", None) is None or getattr(flow, "response", None) is None:
             return
 
+        url = getattr(flow.request, "pretty_url", "")
+        status_code = getattr(flow.response, "status_code", 200)
+
         provider = getattr(flow, "provider", "unknown")
         if provider == "unknown" or getattr(flow, "is_cached", False):
             return
-
-        url = getattr(flow.request, "pretty_url", "")
-        status_code = getattr(flow.response, "status_code", 200)
 
         if status_code == 200:
             try:
