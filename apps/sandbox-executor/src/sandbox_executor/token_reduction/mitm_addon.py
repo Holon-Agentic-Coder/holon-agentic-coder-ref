@@ -486,6 +486,14 @@ class MitmproxyAddon:
                             flow.response.headers["X-Holon-Decode-Time-Sec"] = "0.000"
                             flow.response.headers["X-Holon-Output-TPS"] = "0.0000"
                             flow.response.headers["X-Holon-Total-Time-Ms"] = "0.00"
+
+                        log_msg = (
+                            f"📊 [TELEMETRY] Provider: {provider.upper()} | "
+                            f"Cache: HIT (Hit Rate: {hit_rate * 100:.1f}%) | "
+                            f"TTFT: 0.00ms | Prefill: 0.00 t/s | Output: 0.00 t/s | "
+                            f"Total: 0.00ms"
+                        )
+                        log_telemetry(log_msg)
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
