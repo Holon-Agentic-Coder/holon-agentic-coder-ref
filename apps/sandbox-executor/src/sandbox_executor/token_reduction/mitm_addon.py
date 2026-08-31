@@ -568,10 +568,9 @@ class MitmproxyAddon:
                 logger.exception("Mitmproxy response intercept error for endpoint: %s", url)
         else:
             logger.warning("Skipping caching response with HTTP status code %d for %s", status_code, url)
-            log_msg = (
-                f"⚠️ [TELEMETRY] Provider: {provider.upper()} | Status: {status_code} | "
-                f"Total: {(time.perf_counter() - getattr(flow, 'request_start_time', time.perf_counter())) * 1000:.1f}ms"
-            )
+            start_t = getattr(flow, "request_start_time", None) or time.perf_counter()
+            elapsed_ms = (time.perf_counter() - start_t) * 1000
+            log_msg = f"⚠️ [TELEMETRY] Provider: {provider.upper()} | Status: {status_code} | Total: {elapsed_ms:.1f}ms"
             log_telemetry(log_msg)
 
 

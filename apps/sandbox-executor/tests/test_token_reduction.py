@@ -1686,7 +1686,8 @@ def test_find_nested_key_and_cloudcode_pa_sse_parsing():
         }
     }
     assert find_nested_key(data, ("usageMetadata", "usage")) == {"promptTokenCount": 120, "candidatesTokenCount": 40}
-    assert find_nested_key(data, ("candidates", "choices")) == [{"content": {"parts": [{"text": "Sample code from Cloud Code PA"}]}}]
+    expected_cand = [{"content": {"parts": [{"text": "Sample code from Cloud Code PA"}]}}]
+    assert find_nested_key(data, ("candidates", "choices")) == expected_cand
 
     nested_sse = (
         'data: {"response": {"candidates": [{"content": {"parts": [{"text": "Hello world"}]}}], '
