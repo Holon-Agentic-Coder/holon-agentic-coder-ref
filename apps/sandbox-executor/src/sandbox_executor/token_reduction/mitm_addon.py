@@ -39,7 +39,8 @@ class MITMProxyInterceptor:
         based on target URL, path, or payload structure.
         """
         url_lower = url_or_path.lower()
-        parsed = urlparse(url_lower)
+        parse_target = url_lower if "://" in url_lower else f"https://{url_lower}"
+        parsed = urlparse(parse_target)
         hostname = parsed.hostname or url_lower
 
         if "anthropic" in url_lower or "v1/messages" in url_lower:

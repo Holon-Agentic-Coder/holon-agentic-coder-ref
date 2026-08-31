@@ -1422,3 +1422,18 @@ def test_mitm_interceptor_generic_googleapis_unaffected():
     # 3. Verify payload with contents set to None returns payload unchanged
     none_payload = {"contents": None}
     assert cleaner.process_payload(none_payload, provider="gemini") == none_payload
+
+
+def test_detect_provider_schemeless_urls():
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(enable_caching=False)
+
+    # Verify scheme-less URLs correctly detect provider by parsing domain/path without leading http(s)://
+    assert (
+        interceptor.detect_provider("generativelanguage.googleapis.com/v1beta/models/custom-model:predict") == "gemini"
+    )
+    assert interceptor.detect_provider("api.anthropic.com/v1/messages") == "anthropic"
+    assert interceptor.detect_provider("api.openai.com/v1/chat/completions") == "openai"
+    assert interceptor.detect_provider("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") == "unknown"
+
