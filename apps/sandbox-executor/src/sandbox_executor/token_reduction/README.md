@@ -72,7 +72,8 @@ docker run --rm --name host-mitm-proxy \
            --set ignore_hosts='^(api\.github\.com|github\.com):443$'
 ```
 
-On first run, the Root CA certificate is generated automatically and stored at `~/.holon/proxy-ca/mitmproxy-ca-cert.pem`.
+On first run, the Root CA certificate is generated automatically and stored at
+`~/.holon/proxy-ca/mitmproxy-ca-cert.pem`.
 
 #### Step B: Launch `agy` Connected to the Proxy
 
