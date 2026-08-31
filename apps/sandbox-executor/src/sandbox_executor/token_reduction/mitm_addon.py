@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 try:
     from mitmproxy import http
@@ -38,10 +39,14 @@ class MITMProxyInterceptor:
         based on target URL, path, or payload structure.
         """
         url_lower = url_or_path.lower()
+        parsed = urlparse(url_lower)
+        hostname = parsed.hostname or url_lower
+
         if "anthropic" in url_lower or "v1/messages" in url_lower:
             return "anthropic"
         if (
-            "generativelanguage.googleapis.com" in url_lower
+            hostname == "generativelanguage.googleapis.com"
+            or hostname.endswith(".generativelanguage.googleapis.com")
             or "gemini" in url_lower
             or "generatecontent" in url_lower
             or "streamgeneratecontent" in url_lower

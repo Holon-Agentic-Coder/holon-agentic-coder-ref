@@ -1418,3 +1418,7 @@ def test_mitm_interceptor_generic_googleapis_unaffected():
     cleaned = cleaner.process_payload(sample_payload, provider="gemini")
     assert "contents" not in cleaned
     assert cleaned == sample_payload
+
+    # 3. Verify payload with contents set to None returns payload unchanged
+    none_payload = {"contents": None}
+    assert cleaner.process_payload(none_payload, provider="gemini") == none_payload
