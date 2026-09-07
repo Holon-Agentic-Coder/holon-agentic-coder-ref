@@ -115,7 +115,12 @@ class MITMProxyInterceptor:
         cleaned_request = self.cleaner.process_payload(request_json, provider=provider)
 
         # Step 2: Check local cache if enabled (bypassed for streaming requests)
-        if self.enable_caching and not request_json.get("stream", False):
+        is_streaming = (
+            request_json.get("stream") is True
+            or ":streamgeneratecontent" in endpoint.lower()
+            or "streamgeneratecontent" in endpoint.lower()
+        )
+        if self.enable_caching and not is_streaming:
             try:
                 cached_response = self.cache_store.get(cleaned_request, provider=provider)
                 if cached_response is not None:
@@ -142,6 +147,13 @@ class MITMProxyInterceptor:
             status_code: HTTP status code of the response.
         """
         if not self.enable_caching:
+            return
+
+        if (
+            request_json.get("stream") is True
+            or ":streamgeneratecontent" in endpoint.lower()
+            or "streamgeneratecontent" in endpoint.lower()
+        ):
             return
 
         if status_code != 200:
@@ -302,18 +314,19 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
             event_type = find_nested_key(chunk, ("type",))
             if event_type == "message_start":
                 message = find_nested_key(chunk, ("message",)) or {}
-                usage = find_nested_key(message, ("usage",)) or {}
-                if "cache_read_input_tokens" in usage:
-                    cache_read_tokens_parsed = safe_int(usage.get("cache_read_input_tokens"))
-                if "input_tokens" in usage:
-                    input_tokens_parsed = (
-                        safe_int(usage.get("input_tokens"))
-                        + safe_int(usage.get("cache_read_input_tokens"))
-                        + safe_int(usage.get("cache_creation_input_tokens"))
-                    )
+                usage = find_nested_key(message, ("usage",))
+                if isinstance(usage, dict):
+                    if "cache_read_input_tokens" in usage:
+                        cache_read_tokens_parsed = safe_int(usage.get("cache_read_input_tokens"))
+                    if "input_tokens" in usage:
+                        input_tokens_parsed = (
+                            safe_int(usage.get("input_tokens"))
+                            + safe_int(usage.get("cache_read_input_tokens"))
+                            + safe_int(usage.get("cache_creation_input_tokens"))
+                        )
             elif event_type == "message_delta":
-                usage = find_nested_key(chunk, ("usage",)) or {}
-                if "output_tokens" in usage:
+                usage = find_nested_key(chunk, ("usage",))
+                if isinstance(usage, dict) and "output_tokens" in usage:
                     output_tokens_parsed = safe_int(usage.get("output_tokens"))
             elif event_type == "content_block_delta":
                 delta = find_nested_key(chunk, ("delta",)) or {}
@@ -332,6 +345,11 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                     input_tokens_parsed = safe_int(usage.get("prompt_tokens"))
                 if "completion_tokens" in usage:
                     output_tokens_parsed = safe_int(usage.get("completion_tokens"))
+                prompt_tokens_details = usage.get("prompt_tokens_details")
+                if isinstance(prompt_tokens_details, dict) and "cached_tokens" in prompt_tokens_details:
+                    cache_read_tokens_parsed = safe_int(prompt_tokens_details.get("cached_tokens"))
+                elif "cached_tokens" in usage:
+                    cache_read_tokens_parsed = safe_int(usage.get("cached_tokens"))
 
             choices = find_nested_key(chunk, ("choices",))
             if choices and isinstance(choices, list) and len(choices) > 0:
@@ -346,6 +364,9 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                         if isinstance(tool_calls, list):
                             for tc in tool_calls:
                                 fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                                fn_name = fn.get("name", "")
+                                if isinstance(fn_name, str) and fn_name:
+                                    accumulated_content_len += len(fn_name)
                                 args = fn.get("arguments", "")
                                 if isinstance(args, str) and args:
                                     accumulated_content_len += len(args)
@@ -358,6 +379,8 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                     input_tokens_parsed = safe_int(usage.get("promptTokenCount"))
                 if "candidatesTokenCount" in usage:
                     output_tokens_parsed = safe_int(usage.get("candidatesTokenCount"))
+                if "cachedContentTokenCount" in usage:
+                    cache_read_tokens_parsed = safe_int(usage.get("cachedContentTokenCount"))
 
             candidates = find_nested_key(chunk, ("candidates", "choices", "contents"))
             if candidates and isinstance(candidates, list):
@@ -438,8 +461,8 @@ def extract_token_counts(
     try:
         if isinstance(resp_data, dict):
             if provider == "anthropic":
-                usage = resp_data.get("usage") or {}
-                if "input_tokens" in usage and "output_tokens" in usage:
+                usage = resp_data.get("usage")
+                if isinstance(usage, dict) and "input_tokens" in usage and "output_tokens" in usage:
                     cache_read_tokens = safe_int(usage.get("cache_read_input_tokens"))
                     input_tokens = (
                         safe_int(usage.get("input_tokens"))
@@ -449,16 +472,23 @@ def extract_token_counts(
                     output_tokens = safe_int(usage.get("output_tokens"))
                     parsed = True
             elif provider == "openai":
-                usage = resp_data.get("usage") or {}
-                if "prompt_tokens" in usage and "completion_tokens" in usage:
+                usage = resp_data.get("usage")
+                if isinstance(usage, dict) and "prompt_tokens" in usage and "completion_tokens" in usage:
                     input_tokens = safe_int(usage.get("prompt_tokens"))
                     output_tokens = safe_int(usage.get("completion_tokens"))
+                    prompt_tokens_details = usage.get("prompt_tokens_details")
+                    if isinstance(prompt_tokens_details, dict) and "cached_tokens" in prompt_tokens_details:
+                        cache_read_tokens = safe_int(prompt_tokens_details.get("cached_tokens"))
+                    elif "cached_tokens" in usage:
+                        cache_read_tokens = safe_int(usage.get("cached_tokens"))
                     parsed = True
             elif provider == "gemini":
-                usage = resp_data.get("usageMetadata") or {}
-                if "promptTokenCount" in usage and "candidatesTokenCount" in usage:
+                usage = resp_data.get("usageMetadata")
+                if isinstance(usage, dict) and "promptTokenCount" in usage and "candidatesTokenCount" in usage:
                     input_tokens = safe_int(usage.get("promptTokenCount"))
                     output_tokens = safe_int(usage.get("candidatesTokenCount"))
+                    if "cachedContentTokenCount" in usage:
+                        cache_read_tokens = safe_int(usage.get("cachedContentTokenCount"))
                     parsed = True
     except Exception:
         logger.debug("Failed to parse token counts for provider %s from response; using estimation fallback", provider)
@@ -553,6 +583,7 @@ class MitmproxyAddon:
         """Mitmproxy response headers callback."""
         if getattr(flow, "provider", "unknown") != "unknown":
             flow.response_headers_time = time.perf_counter()  # float: timestamp from time.perf_counter()
+            flow.first_chunk_time = None
             response = getattr(flow, "response", None)
             if response is not None:
                 headers = getattr(response, "headers", None)
@@ -565,12 +596,14 @@ class MitmproxyAddon:
                             if k.lower() == "content-type":
                                 content_type = v
                                 break
-                if "text/event-stream" in content_type:
+                if "text/event-stream" in content_type.lower():
                     flow.sse_chunks = []
                     existing_stream = getattr(response, "stream", None)
 
                     def sse_stream_wrapper(chunk: bytes) -> bytes:
                         if chunk:
+                            if getattr(flow, "first_chunk_time", None) is None:
+                                flow.first_chunk_time = time.perf_counter()
                             flow.sse_chunks.append(chunk)
                         if callable(existing_stream):
                             return existing_stream(chunk)
@@ -620,6 +653,7 @@ class MitmproxyAddon:
                     # Compute timing metrics
                     req_start = getattr(flow, "request_start_time", None)
                     resp_headers_time = getattr(flow, "response_headers_time", None)
+                    first_chunk_time = getattr(flow, "first_chunk_time", None)
 
                     now = time.perf_counter()
                     if req_start is None:
@@ -627,8 +661,10 @@ class MitmproxyAddon:
                     if resp_headers_time is None:
                         resp_headers_time = now
 
-                    ttft = resp_headers_time - req_start
-                    total_time = now - req_start
+                    ttfb = max(0.0, resp_headers_time - req_start)
+                    ttft = max(0.0, first_chunk_time - req_start) if first_chunk_time is not None else ttfb
+
+                    total_time = max(0.0, now - req_start)
                     generation_time = max(0.0, total_time - ttft)
 
                     uncached_input_tokens = max(0, input_tokens - cache_read_tokens)

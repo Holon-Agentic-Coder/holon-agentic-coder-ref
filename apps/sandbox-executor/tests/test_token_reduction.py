@@ -1486,7 +1486,7 @@ def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):
             self.response = response
             self.is_cached = False
 
-    timestamps = [10.0, 11.5, 13.0]
+    timestamps = [10.0, 11.5, 11.5, 13.0]
     ts_iter = iter(timestamps)
     monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
 
@@ -1573,7 +1573,7 @@ def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):
             self.response = response
             self.is_cached = False
 
-    timestamps = [20.0, 22.0, 26.0]
+    timestamps = [20.0, 22.0, 22.0, 26.0]
     ts_iter = iter(timestamps)
     monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
 
@@ -1656,7 +1656,7 @@ def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypat
             self.response = response
             self.is_cached = False
 
-    timestamps = [20.0, 22.0, 26.0]
+    timestamps = [20.0, 22.0, 22.0, 26.0]
     ts_iter = iter(timestamps)
     monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
 
@@ -1689,6 +1689,14 @@ def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypat
     assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "4.000"
     assert flow.response.headers["X-Holon-Output-TPS"] == "1.0000"
     assert flow.response.headers["X-Holon-Total-Time-Ms"] == "6000.00"
+
+    telemetry_logs = [record.message for record in caplog.records if "[TELEMETRY]" in record.message]
+    assert len(telemetry_logs) == 1
+    assert "Provider: OPENAI" in telemetry_logs[0]
+    assert "TTFT: 2000.0ms" in telemetry_logs[0]
+    assert "Prefill: 0.50 t/s (1 tok)" in telemetry_logs[0]
+    assert "Output: 1.00 t/s (4 tok in 4.00s)" in telemetry_logs[0]
+    assert "Total: 6000.0ms" in telemetry_logs[0]
 
 
 def test_find_nested_key_and_cloudcode_pa_sse_parsing():
@@ -1833,7 +1841,8 @@ def test_extract_sse_token_counts_tool_calls_fallback():
     )
     in_tok, out_tok, cache_tok = extract_sse_token_counts(openai_tool_sse, {"prompt": "Run ls"}, provider="openai")
     assert in_tok > 0
-    assert out_tok == max(1, len('{"cmd": "ls"}') // 4)
+    expected_openai_len = len("run_cmd") + len('{"cmd": "ls"}')
+    assert out_tok == max(1, expected_openai_len // 4)
     assert cache_tok == 0
 
     # 2. Gemini functionCall chunk without usage metadata
@@ -1849,3 +1858,198 @@ def test_extract_sse_token_counts_tool_calls_fallback():
     expected_args_len = len("read_file") + len(json.dumps({"path": "/tmp/foo"}))
     assert out_tok_g == max(1, expected_args_len // 4)
     assert cache_tok_g == 0
+
+
+def test_gemini_stream_generate_content_bypasses_cache(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    cache_dir = str(tmp_path / "cache")
+    interceptor = MITMProxyInterceptor(cache_dir=cache_dir, enable_caching=True)
+
+    endpoint_non_stream = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    endpoint_stream = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:streamGenerateContent"
+    req_json = {"contents": [{"role": "user", "parts": [{"text": "Hello Gemini"}]}]}
+    resp_json = {"candidates": [{"content": {"parts": [{"text": "Hi human"}]}}]}
+
+    # Populate cache using non-streaming endpoint
+    interceptor.intercept_response(endpoint_non_stream, req_json, resp_json, status_code=200)
+
+    # Non-streaming request should hit cache
+    _, cached = interceptor.intercept_request(endpoint_non_stream, req_json)
+    assert cached is not None
+
+    # Streaming request with :streamGenerateContent should bypass cache
+    _, cached_stream = interceptor.intercept_request(endpoint_stream, req_json)
+    assert cached_stream is None
+
+    # Attempting to put response for streaming endpoint should be ignored
+    interceptor.intercept_response(endpoint_stream, req_json, resp_json, status_code=200)
+
+
+def test_responseheaders_case_insensitive_content_type():
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = FakeHeaders({"Content-Type": "Text/Event-Stream; charset=utf-8"})
+            self.stream = None
+
+    class FakeFlow:
+        def __init__(self):
+            self.provider = "openai"
+            self.response = FakeResponse()
+            self.sse_chunks = None
+
+    flow = FakeFlow()
+    addon.responseheaders(flow)
+    assert flow.response.stream is not None
+    assert flow.sse_chunks == []
+
+
+def test_mitm_addon_ttft_vs_ttfb_timing(tmp_path, monkeypatch, caplog):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, headers=None):
+            self.status_code = status_code
+            self.headers = FakeHeaders(headers or {})
+            self.stream = None
+
+        def get_text(self):
+            return ""
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.is_cached = False
+
+    # Timestamps:
+    # 1. req_start = 100.0
+    # 2. responseheaders (TTFB) = 101.0 (TTFB = 1.0s / 1000ms)
+    # 3. first chunk (TTFT) = 101.5 (TTFT = 1.5s / 1500ms)
+    # 4. response (now) = 104.0 (total = 4.0s / 4000ms, decode = 2.5s)
+    timestamps = [100.0, 101.0, 101.5, 104.0]
+    ts_iter = iter(timestamps)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    url = "https://api.openai.com/v1/chat/completions"
+    req_body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}]}
+    sse_events = [
+        b'data: {"choices": [{"index": 0, "delta": {"content": "Hello"}}]}\n',
+        b'data: {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}\n',
+        b"data: [DONE]\n",
+    ]
+
+    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, {"Content-Type": "text/event-stream"}))
+
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.responseheaders(flow)
+        assert flow.first_chunk_time is None
+
+        for event in sse_events:
+            flow.response.stream(event)
+
+        assert flow.first_chunk_time == 101.5
+        addon.response(flow)
+
+    assert flow.response.headers["X-Holon-TTFT-Ms"] == "1500.00"
+    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
+    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "4000.00"
+
+    telemetry_logs = [record.message for record in caplog.records if "[TELEMETRY]" in record.message]
+    assert "TTFT: 1500.0ms" in telemetry_logs[0]
+
+
+def test_prompt_cache_token_extraction_gemini_and_openai():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts, extract_token_counts
+
+    # 1. Gemini SSE with cachedContentTokenCount
+    gemini_sse = (
+        'data: {"candidates": [{"content": {"parts": [{"text": "Hello"}]}}], '
+        '"usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 20, "cachedContentTokenCount": 60}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(gemini_sse, {}, provider="gemini")
+    assert in_tok == 100
+    assert out_tok == 20
+    assert cache_tok == 60
+
+    # 2. Gemini non-SSE with cachedContentTokenCount
+    gemini_resp = {
+        "candidates": [{"content": {"parts": [{"text": "Hello"}]}}],
+        "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 20, "cachedContentTokenCount": 60},
+    }
+    in_tok, out_tok, cache_tok = extract_token_counts({}, gemini_resp, provider="gemini")
+    assert in_tok == 100
+    assert out_tok == 20
+    assert cache_tok == 60
+
+    # 3. OpenAI SSE with prompt_tokens_details.cached_tokens
+    openai_sse = (
+        'data: {"choices": [{"delta": {"content": "Hello"}}], '
+        '"usage": {"prompt_tokens": 120, "completion_tokens": 30, '
+        '"prompt_tokens_details": {"cached_tokens": 80}}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(openai_sse, {}, provider="openai")
+    assert in_tok == 120
+    assert out_tok == 30
+    assert cache_tok == 80
+
+    # 4. OpenAI non-SSE with prompt_tokens_details.cached_tokens
+    openai_resp = {
+        "choices": [{"message": {"content": "Hello"}}],
+        "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+    }
+    in_tok, out_tok, cache_tok = extract_token_counts({}, openai_resp, provider="openai")
+    assert in_tok == 120
+    assert out_tok == 30
+    assert cache_tok == 80
+
+
+def test_anthropic_sse_usage_non_dict_guard():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    # Malformed SSE with non-dict usage
+    malformed_sse = (
+        'data: {"type": "message_start", "message": {"usage": 12345}}\n'
+        'data: {"type": "message_delta", "usage": "invalid"}\n'
+        'data: {"type": "content_block_delta", "delta": {"text": "hello"}}\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(malformed_sse, {"prompt": "test"}, provider="anthropic")
+    # Should not raise exception, falls back to char estimation
+    assert in_tok >= 0
+    assert out_tok >= 0
+    assert cache_tok == 0
