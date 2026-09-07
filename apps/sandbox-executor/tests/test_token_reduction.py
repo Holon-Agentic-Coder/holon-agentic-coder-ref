@@ -1860,6 +1860,26 @@ def test_extract_sse_token_counts_tool_calls_fallback():
     assert cache_tok_g == 0
 
 
+def test_extract_sse_token_counts_openai_multiple_choices_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    # Multiple choices in a single SSE chunk without usage metadata
+    openai_multi_choice_sse = (
+        'data: {"choices": ['
+        '{"index": 0, "delta": {"content": "First choice content"}},'
+        '{"index": 1, "delta": {"content": "Second choice content"}}'
+        "]}\n"
+        "data: [DONE]\n"
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(
+        openai_multi_choice_sse, {"prompt": "Two alternatives"}, provider="openai"
+    )
+    assert in_tok > 0
+    expected_len = len("First choice content") + len("Second choice content")
+    assert out_tok == max(1, expected_len // 4)
+    assert cache_tok == 0
+
+
 def test_gemini_stream_generate_content_bypasses_cache(tmp_path):
     from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
 

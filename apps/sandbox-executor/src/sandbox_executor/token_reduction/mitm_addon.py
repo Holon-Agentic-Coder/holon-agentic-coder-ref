@@ -115,11 +115,7 @@ class MITMProxyInterceptor:
         cleaned_request = self.cleaner.process_payload(request_json, provider=provider)
 
         # Step 2: Check local cache if enabled (bypassed for streaming requests)
-        is_streaming = (
-            request_json.get("stream") is True
-            or ":streamgeneratecontent" in endpoint.lower()
-            or "streamgeneratecontent" in endpoint.lower()
-        )
+        is_streaming = request_json.get("stream") is True or "streamgeneratecontent" in endpoint.lower()
         if self.enable_caching and not is_streaming:
             try:
                 cached_response = self.cache_store.get(cleaned_request, provider=provider)
@@ -149,11 +145,7 @@ class MITMProxyInterceptor:
         if not self.enable_caching:
             return
 
-        if (
-            request_json.get("stream") is True
-            or ":streamgeneratecontent" in endpoint.lower()
-            or "streamgeneratecontent" in endpoint.lower()
-        ):
+        if request_json.get("stream") is True or "streamgeneratecontent" in endpoint.lower():
             return
 
         if status_code != 200:
@@ -352,24 +344,24 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                     cache_read_tokens_parsed = safe_int(usage.get("cached_tokens"))
 
             choices = find_nested_key(chunk, ("choices",))
-            if choices and isinstance(choices, list) and len(choices) > 0:
-                first_choice = choices[0]
-                if isinstance(first_choice, dict):
-                    delta = first_choice.get("delta")
-                    if isinstance(delta, dict):
-                        content = delta.get("content", "")
-                        if isinstance(content, str) and content:
-                            accumulated_content_len += len(content)
-                        tool_calls = delta.get("tool_calls")
-                        if isinstance(tool_calls, list):
-                            for tc in tool_calls:
-                                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                                fn_name = fn.get("name", "")
-                                if isinstance(fn_name, str) and fn_name:
-                                    accumulated_content_len += len(fn_name)
-                                args = fn.get("arguments", "")
-                                if isinstance(args, str) and args:
-                                    accumulated_content_len += len(args)
+            if choices and isinstance(choices, list):
+                for choice in choices:
+                    if isinstance(choice, dict):
+                        delta = choice.get("delta")
+                        if isinstance(delta, dict):
+                            content = delta.get("content", "")
+                            if isinstance(content, str) and content:
+                                accumulated_content_len += len(content)
+                            tool_calls = delta.get("tool_calls")
+                            if isinstance(tool_calls, list):
+                                for tc in tool_calls:
+                                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                                    fn_name = fn.get("name", "")
+                                    if isinstance(fn_name, str) and fn_name:
+                                        accumulated_content_len += len(fn_name)
+                                    args = fn.get("arguments", "")
+                                    if isinstance(args, str) and args:
+                                        accumulated_content_len += len(args)
 
         elif provider == "gemini":
             # Gemini / Cloud Code PA format
