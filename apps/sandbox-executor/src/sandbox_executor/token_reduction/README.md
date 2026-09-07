@@ -60,6 +60,7 @@ Start the `mitmproxy` container with the token reduction addon:
 
 ```bash
 mkdir -p ~/.holon/proxy-ca
+chmod 700 ~/.holon/proxy-ca
 
 docker run --rm --name host-mitm-proxy \
   -p 127.0.0.1:8080:8080 \
@@ -71,11 +72,14 @@ docker run --rm --name host-mitm-proxy \
   mitmproxy/mitmproxy:12.2.3 \
   mitmdump -s /tmp/mitm_addon.py \
            --listen-port 8080 \
-           --set ignore_hosts='^(api\.github\.com|github\.com):443$'
+           --set ignore_hosts='^([a-zA-Z0-9.-]+\.)?github(usercontent)?\.com:443$'
 ```
 
 On first run, the Root CA certificate is generated automatically and stored at
 `~/.holon/proxy-ca/mitmproxy-ca-cert.pem`.
+
+> [!TIP] **Root CA Key Security**: Ensure `chmod 700 ~/.holon/proxy-ca` is set to safeguard generated private CA keys
+> from unauthorized local users.
 
 #### Step B: Launch `agy` Connected to the Proxy
 
@@ -88,8 +92,8 @@ http_proxy="http://127.0.0.1:8080" \
 https_proxy="http://127.0.0.1:8080" \
 NODE_EXTRA_CA_CERTS="$HOME/.holon/proxy-ca/mitmproxy-ca-cert.pem" \
 SSL_CERT_FILE="$HOME/.holon/proxy-ca/mitmproxy-ca-cert.pem" \
-NO_PROXY="localhost,127.0.0.1,::1,api.github.com,github.com" \
-no_proxy="localhost,127.0.0.1,::1,api.github.com,github.com" \
+NO_PROXY="localhost,127.0.0.1,::1,api.github.com,github.com,.githubusercontent.com" \
+no_proxy="localhost,127.0.0.1,::1,api.github.com,github.com,.githubusercontent.com" \
 agy
 ```
 

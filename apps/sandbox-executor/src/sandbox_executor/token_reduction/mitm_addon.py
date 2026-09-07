@@ -252,7 +252,21 @@ def extract_sse_cache_read_tokens(resp_text: str) -> int:
 
 
 def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider: str) -> tuple[int, int, int]:
-    """Extracts (input_tokens, output_tokens, cache_read_tokens) from SSE stream text."""
+    """Extracts (input_tokens, output_tokens, cache_read_tokens) from SSE stream text.
+
+    Args:
+        resp_text: Full raw SSE text accumulated from stream chunks.
+        req_data: Original request payload dictionary used for input token fallback estimation.
+        provider: Detected model provider ("anthropic", "openai", "gemini").
+
+    Returns:
+        tuple[int, int, int]: A 3-tuple containing (input_tokens, output_tokens, cache_read_tokens).
+
+    Note:
+        When explicit usage metadata is absent from the SSE stream chunks, fallback token estimation
+        derives counts from accumulated character counts using an integer division heuristic of
+        1 token per 4 characters (i.e. chars // 4).
+    """
     input_tokens = 0
     output_tokens = 0
     cache_read_tokens = 0
@@ -267,13 +281,11 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
     lines = resp_text.splitlines()
     for line in lines:
         line = line.strip()
-        if not line:
+        if not line or not line.startswith("data:"):
             continue
 
-        # Strip "data:" prefix if present
-        json_str = line
-        if line.startswith("data:"):
-            json_str = line[5:].strip()
+        # Strip "data:" prefix
+        json_str = line[5:].strip()
 
         if not json_str or json_str == "[DONE]":
             continue
@@ -379,7 +391,23 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
 def extract_token_counts(
     req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str
 ) -> tuple[int, int, int]:
-    """Extracts (input_tokens, output_tokens, cache_read_tokens) from request/response data."""
+    """Extracts (input_tokens, output_tokens, cache_read_tokens) from request/response data.
+
+    Args:
+        req_data: Request payload dictionary used for input token fallback estimation.
+        resp_data: Response payload dictionary or raw SSE stream text string.
+        provider: Detected model provider ("anthropic", "openai", "gemini").
+
+    Returns:
+        tuple[int, int, int]: A 3-tuple containing (input_tokens, output_tokens, cache_read_tokens).
+            For Anthropic prompt caching, input_tokens reflects total input tokens (prompt tokens,
+            cache read tokens, and cache creation tokens), while cache_read_tokens tracks ephemeral
+            prompt cache read hits separately.
+
+    Note:
+        If provider usage metadata is missing or unparseable, fallback token counts are estimated
+        using character count integer division (chars // 4 heuristic, ~4 characters per token).
+    """
     if isinstance(resp_data, str):
         return extract_sse_token_counts(resp_data, req_data, provider)
 
@@ -520,10 +548,13 @@ class MitmproxyAddon:
                                 break
                 if "text/event-stream" in content_type:
                     flow.sse_chunks = []
+                    existing_stream = getattr(response, "stream", None)
 
                     def sse_stream_wrapper(chunk: bytes) -> bytes:
                         if chunk:
                             flow.sse_chunks.append(chunk)
+                        if callable(existing_stream):
+                            return existing_stream(chunk)
                         return chunk
 
                     response.stream = sse_stream_wrapper

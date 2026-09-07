@@ -1720,3 +1720,69 @@ def test_anthropic_sse_cache_read_token_extraction():
     assert in_tok == 550
     assert out_tok == 80
     assert cache_tok == 400
+
+
+def test_response_stream_preserves_existing_callback(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    existing_calls = []
+
+    def upstream_stream_fn(chunk: bytes) -> bytes:
+        existing_calls.append(chunk)
+        return chunk + b"_transformed"
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = FakeHeaders({"Content-Type": "text/event-stream"})
+            self.stream = upstream_stream_fn
+
+    class FakeFlow:
+        def __init__(self):
+            self.provider = "anthropic"
+            self.response = FakeResponse()
+            self.sse_chunks = None
+
+    flow = FakeFlow()
+    addon.responseheaders(flow)
+
+    assert flow.response.stream is not None
+    assert callable(flow.response.stream)
+
+    test_chunk = b'data: {"test": 1}\n\n'
+    res = flow.response.stream(test_chunk)
+
+    # Chunks are tracked in flow.sse_chunks
+    assert flow.sse_chunks == [test_chunk]
+    # Upstream stream function was invoked
+    assert existing_calls == [test_chunk]
+    # Returned result is from upstream_stream_fn
+    assert res == test_chunk + b"_transformed"
+
+
+def test_extract_sse_token_counts_filters_non_data_lines():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    sse_text = (
+        ": comment line here\n"
+        "id: 42\n"
+        "event: message_start\n"
+        "retry: 2000\n"
+        'data: {"type": "message_start", "message": {"usage": {"input_tokens": 50, "cache_read_input_tokens": 10}}}\n'
+        ": another comment\n"
+        "event: message_delta\n"
+        'data: {"type": "message_delta", "usage": {"output_tokens": 25}}\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(sse_text, {}, provider="anthropic")
+    assert in_tok == 60
+    assert out_tok == 25
+    assert cache_tok == 10
