@@ -846,7 +846,7 @@ def test_mitm_addon_null_request_flow():
     addon.response(flow)
 
 
-def test_mitm_addon_error_response_caching_bypass(tmp_path):
+def test_mitm_addon_error_response_caching_bypass(tmp_path, caplog):
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
 
     cache_dir = tmp_path / "cache"
@@ -882,6 +882,9 @@ def test_mitm_addon_error_response_caching_bypass(tmp_path):
         def get_text(self):
             return json.dumps(req_json)
 
+        def set_text(self, text):
+            pass
+
     class FakeResponse:
         status_code = 429
 
@@ -893,9 +896,16 @@ def test_mitm_addon_error_response_caching_bypass(tmp_path):
         response = FakeResponse()
 
     flow = FakeFlow()
-    addon.response(flow)
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.response(flow)
     _, cached_flow = interceptor.intercept_request(endpoint, req_json)
     assert cached_flow is None
+
+    telemetry_logs = [record.message for record in caplog.records if "⚠️ [TELEMETRY]" in record.message]
+    assert len(telemetry_logs) == 1
+    assert "Provider: ANTHROPIC" in telemetry_logs[0]
+    assert "Status: 429" in telemetry_logs[0]
 
 
 def test_hybrid_cache_anthropic_tool_result_content_block_extraction(tmp_path):
@@ -1707,7 +1717,7 @@ def test_find_nested_key_and_cloudcode_pa_sse_parsing():
 
 
 def test_anthropic_sse_cache_read_token_extraction():
-    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_cache_read_tokens, extract_sse_token_counts
 
     sse_text = (
         "event: message_start\n"
@@ -1720,6 +1730,8 @@ def test_anthropic_sse_cache_read_token_extraction():
     assert in_tok == 550
     assert out_tok == 80
     assert cache_tok == 400
+    # Direct test assertion for standalone extract_sse_cache_read_tokens helper
+    assert extract_sse_cache_read_tokens(sse_text) == 400
 
 
 def test_response_stream_preserves_existing_callback(tmp_path):
@@ -1786,3 +1798,54 @@ def test_extract_sse_token_counts_filters_non_data_lines():
     assert in_tok == 60
     assert out_tok == 25
     assert cache_tok == 10
+
+
+def test_intercept_request_bypasses_cache_for_streaming(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    cache_dir = tmp_path / "cache"
+    interceptor = MITMProxyInterceptor(cache_dir=str(cache_dir), enable_caching=True)
+    endpoint = "https://api.openai.com/v1/chat/completions"
+    req_json = {"messages": [{"role": "user", "content": "Hello"}], "stream": False}
+    resp_json = {"choices": [{"message": {"content": "Hi"}}]}
+
+    # Populate cache
+    interceptor.intercept_response(endpoint, req_json, resp_json, status_code=200)
+    _, cached = interceptor.intercept_request(endpoint, req_json)
+    assert cached is not None
+
+    # Request with stream=True must bypass cache lookup
+    streaming_req = {"messages": [{"role": "user", "content": "Hello"}], "stream": True}
+    _, cached_stream = interceptor.intercept_request(endpoint, streaming_req)
+    assert cached_stream is None
+
+
+def test_extract_sse_token_counts_tool_calls_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    # 1. OpenAI tool call chunk without usage metadata
+    openai_tool_sse = (
+        'data: {"choices": [{"index": 0, "delta": {"role": "assistant"}}]}\n'
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "id": "call_1", "function": {"name": "run_cmd", "arguments": "{\\"cmd\\": \\"ls\\"}"}}'
+        "]}}]}\n"
+        "data: [DONE]\n"
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(openai_tool_sse, {"prompt": "Run ls"}, provider="openai")
+    assert in_tok > 0
+    assert out_tok == max(1, len('{"cmd": "ls"}') // 4)
+    assert cache_tok == 0
+
+    # 2. Gemini functionCall chunk without usage metadata
+    gemini_tool_sse = (
+        'data: {"candidates": [{"content": {"parts": ['
+        '{"functionCall": {"name": "read_file", "args": {"path": "/tmp/foo"}}}'
+        "]}}]}\n"
+    )
+    in_tok_g, out_tok_g, cache_tok_g = extract_sse_token_counts(
+        gemini_tool_sse, {"prompt": "Read file"}, provider="gemini"
+    )
+    assert in_tok_g > 0
+    expected_args_len = len("read_file") + len(json.dumps({"path": "/tmp/foo"}))
+    assert out_tok_g == max(1, expected_args_len // 4)
+    assert cache_tok_g == 0

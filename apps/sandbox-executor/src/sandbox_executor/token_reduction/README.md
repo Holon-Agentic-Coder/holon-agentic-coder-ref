@@ -58,13 +58,17 @@ Enable token reduction transparently when spawning plan generation or execution 
 
 Start the `mitmproxy` container with the token reduction addon:
 
+> [!NOTE] Run the following command from the repository root directory so that `$(pwd)` resolves correctly to the source
+> files.
+
 ```bash
-mkdir -p ~/.holon/proxy-ca
+mkdir -p ~/.holon/proxy-ca ~/.holon/cache
 chmod 700 ~/.holon/proxy-ca
 
 docker run --rm --name host-mitm-proxy \
   -p 127.0.0.1:8080:8080 \
   -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy:rw \
+  -v ~/.holon/cache:/home/mitmproxy/.holon/cache:rw \
   -v $(pwd)/apps/sandbox-executor/src:/tmp/src \
   -e PYTHONPATH=/tmp/src \
   -e PYTHONUNBUFFERED=1 \

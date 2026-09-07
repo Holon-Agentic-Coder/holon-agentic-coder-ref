@@ -114,8 +114,8 @@ class MITMProxyInterceptor:
         # Step 1: Clean and optimize request payload
         cleaned_request = self.cleaner.process_payload(request_json, provider=provider)
 
-        # Step 2: Check local cache if enabled
-        if self.enable_caching:
+        # Step 2: Check local cache if enabled (bypassed for streaming requests)
+        if self.enable_caching and not request_json.get("stream", False):
             try:
                 cached_response = self.cache_store.get(cleaned_request, provider=provider)
                 if cached_response is not None:
@@ -163,9 +163,8 @@ class MITMProxyInterceptor:
 def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: int = 10) -> Any:
     """Recursively searches nested dicts/lists to find the first occurrence of any key in target_keys.
 
-    Evaluates target keys at the current nesting level (breadth-first) before recursing deeper into
-    child dictionaries or lists. If target_keys is a tuple of key names, keys present at a shallower
-    nesting level will take precedence over target keys located deeper in the data structure.
+    Evaluates target keys on the immediate node before recursively traversing child dictionaries
+    or lists in depth-first order.
     """
     if max_depth <= 0 or not data:
         return None
@@ -321,6 +320,9 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                 text = delta.get("text", "")
                 if text:
                     accumulated_content_len += len(text)
+                partial_json = delta.get("partial_json", "")
+                if partial_json:
+                    accumulated_content_len += len(partial_json)
 
         elif provider == "openai":
             # OpenAI SSE format
@@ -340,6 +342,13 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                         content = delta.get("content", "")
                         if isinstance(content, str) and content:
                             accumulated_content_len += len(content)
+                        tool_calls = delta.get("tool_calls")
+                        if isinstance(tool_calls, list):
+                            for tc in tool_calls:
+                                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                                args = fn.get("arguments", "")
+                                if isinstance(args, str) and args:
+                                    accumulated_content_len += len(args)
 
         elif provider == "gemini":
             # Gemini / Cloud Code PA format
@@ -363,6 +372,16 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                                         text = part.get("text", "")
                                         if isinstance(text, str) and text:
                                             accumulated_content_len += len(text)
+                                        func_call = part.get("functionCall")
+                                        if isinstance(func_call, dict):
+                                            fn_name = func_call.get("name", "")
+                                            if isinstance(fn_name, str) and fn_name:
+                                                accumulated_content_len += len(fn_name)
+                                            fn_args = func_call.get("args")
+                                            if isinstance(fn_args, dict):
+                                                accumulated_content_len += len(json.dumps(fn_args))
+                                            elif isinstance(fn_args, str) and fn_args:
+                                                accumulated_content_len += len(fn_args)
                                     elif isinstance(part, str) and part:
                                         accumulated_content_len += len(part)
                         elif isinstance(content, str) and content:
@@ -610,7 +629,7 @@ class MitmproxyAddon:
 
                     ttft = resp_headers_time - req_start
                     total_time = now - req_start
-                    generation_time = total_time - ttft
+                    generation_time = max(0.0, total_time - ttft)
 
                     uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
                     prefill_tps = input_tokens / ttft if ttft > 0 else 0.0
@@ -619,6 +638,11 @@ class MitmproxyAddon:
                     hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
 
                     # Inject telemetry headers on cache miss
+                    # Note: In HTTP chunked SSE streaming, socket headers are flushed at stream onset
+                    # (during responseheaders). Setting flow.response.headers["X-Holon-..."] stores
+                    # metrics on the in-memory mitmproxy flow record for inspection via proxy UI and
+                    # test assertions, while console 📊 [TELEMETRY] logs serve as the primary sink for
+                    # streaming metrics.
                     if not hasattr(flow.response, "headers") or flow.response.headers is None:
                         flow.response.headers = {}
                     flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
