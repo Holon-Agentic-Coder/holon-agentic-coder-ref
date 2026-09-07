@@ -82,8 +82,9 @@ docker run --rm --name host-mitm-proxy \
 On first run, the Root CA certificate is generated automatically and stored at
 `~/.holon/proxy-ca/mitmproxy-ca-cert.pem`.
 
-> [!TIP] **Root CA Key Security**: Ensure `chmod 700 ~/.holon/proxy-ca` is set to safeguard generated private CA keys
-> from unauthorized local users.
+> [!TIP] **Root CA Key Security & Linux Permissions**: Ensure `chmod 700 ~/.holon/proxy-ca` is set to safeguard
+> generated private CA keys from unauthorized local users. On native Linux hosts with strict file permissions, users can
+> pass `--user $(id -u):$(id -g)` to the `docker run` command or ensure `chmod 700 ~/.holon/proxy-ca ~/.holon/cache`.
 
 #### Step B: Launch `agy` Connected to the Proxy
 

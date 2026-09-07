@@ -2073,3 +2073,131 @@ def test_anthropic_sse_usage_non_dict_guard():
     assert in_tok >= 0
     assert out_tok >= 0
     assert cache_tok == 0
+
+
+def test_sse_stream_wrapper_bounded_buffer_ceiling(monkeypatch):
+    import sandbox_executor.token_reduction.mitm_addon as mitm_module
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    # Set ceiling to 30 bytes for testing
+    monkeypatch.setattr(mitm_module, "_MAX_SSE_BUFFER_BYTES", 30)
+
+    addon = MitmproxyAddon()
+
+    existing_stream_chunks = []
+
+    def dummy_stream(chunk: bytes) -> bytes:
+        existing_stream_chunks.append(chunk)
+        return chunk
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = {"content-type": "text/event-stream"}
+            self.stream = dummy_stream
+
+    class FakeFlow:
+        def __init__(self):
+            self.provider = "anthropic"
+            self.response = FakeResponse()
+            self.sse_chunks = None
+
+    flow = FakeFlow()
+    addon.responseheaders(flow)
+    assert flow.sse_chunks == []
+    assert flow.sse_bytes == 0
+
+    chunk1 = b"1234567890"  # 10 bytes -> total 10 <= 30
+    chunk2 = b"1234567890"  # 10 bytes -> total 20 <= 30
+    chunk3 = b"1234567890"  # 10 bytes -> total 30 <= 30
+    chunk4 = b"1234567890"  # 10 bytes -> total 40 > 30 (exceeded)
+
+    ret1 = flow.response.stream(chunk1)
+    ret2 = flow.response.stream(chunk2)
+    ret3 = flow.response.stream(chunk3)
+    ret4 = flow.response.stream(chunk4)
+
+    # Transparent pass-through
+    assert ret1 == chunk1
+    assert ret2 == chunk2
+    assert ret3 == chunk3
+    assert ret4 == chunk4
+    assert existing_stream_chunks == [chunk1, chunk2, chunk3, chunk4]
+
+    # Accumulated chunks should only hold first 3
+    assert flow.sse_chunks == [chunk1, chunk2, chunk3]
+    assert flow.sse_bytes == 40
+
+
+def test_is_streaming_alt_sse_parameter(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(cache_dir=str(tmp_path / "cache"), enable_caching=True)
+    endpoint_standard = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    endpoint_sse = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?alt=sse"
+    req_json = {"contents": [{"role": "user", "parts": [{"text": "Hello"}]}]}
+    resp_json = {"candidates": [{"content": {"parts": [{"text": "World"}]}}]}
+
+    # Pre-populate cache using standard endpoint
+    interceptor.intercept_response(endpoint_standard, req_json, resp_json, status_code=200)
+
+    # Standard endpoint should hit cache
+    _, cached = interceptor.intercept_request(endpoint_standard, req_json)
+    assert cached is not None
+
+    # alt=sse endpoint should bypass cache lookup
+    _, cached_sse = interceptor.intercept_request(endpoint_sse, req_json)
+    assert cached_sse is None
+
+    # alt=sse endpoint should bypass cache store
+    interceptor_fresh = MITMProxyInterceptor(cache_dir=str(tmp_path / "cache_fresh"), enable_caching=True)
+    interceptor_fresh.intercept_response(endpoint_sse, req_json, resp_json, status_code=200)
+    _, cached_lookup = interceptor_fresh.intercept_request(endpoint_standard, req_json)
+    assert cached_lookup is None
+
+
+def test_anthropic_sse_thinking_delta_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    sse_data = (
+        'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}\n'
+        'data: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "1234567890123456"}}\n'
+        'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "12345678"}}\n'
+        'data: {"type": "message_stop"}\n'
+    )
+    # Total chars = 16 (thinking) + 8 (text) = 24 chars -> output_tokens = 24 // 4 = 6
+    _, out_tokens, _ = extract_sse_token_counts(sse_data, {"prompt": "think"}, provider="anthropic")
+    assert out_tokens == 6
+
+
+def test_find_nested_key_type_guard():
+    from sandbox_executor.token_reduction.mitm_addon import find_nested_key
+
+    assert find_nested_key(12345, "key") is None
+    assert find_nested_key("string_value", "key") is None
+    assert find_nested_key(None, "key") is None
+    assert find_nested_key(3.1415, "key") is None
+    assert find_nested_key(True, "key") is None
+    assert find_nested_key(object(), "key") is None
+    # Valid dict and list should still work
+    assert find_nested_key({"target": "found"}, "target") == "found"
+    assert find_nested_key([{"target": "found"}], "target") == "found"
+
+
+def test_log_telemetry_ctx_handling(monkeypatch, caplog):
+    import sandbox_executor.token_reduction.mitm_addon as mitm_module
+    from sandbox_executor.token_reduction.mitm_addon import log_telemetry
+
+    # 1. Test when ctx is available and has log.info
+    fake_ctx_log = MagicMock()
+    fake_ctx = SimpleNamespace(log=SimpleNamespace(info=fake_ctx_log))
+    monkeypatch.setattr(mitm_module, "ctx", fake_ctx)
+
+    log_telemetry("test ctx message")
+    fake_ctx_log.assert_called_once_with("test ctx message")
+
+    # 2. Test when ctx is None, falls back to logger.info
+    monkeypatch.setattr(mitm_module, "ctx", None)
+    with caplog.at_level(logging.INFO):
+        log_telemetry("test fallback message")
+    assert any("test fallback message" in r.message for r in caplog.records)

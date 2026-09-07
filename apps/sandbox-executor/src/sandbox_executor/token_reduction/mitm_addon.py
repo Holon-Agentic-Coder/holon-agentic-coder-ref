@@ -7,14 +7,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 try:
-    from mitmproxy import http
+    from mitmproxy import ctx, http
 except ImportError:
+    ctx = None
     http = None
 
 from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
 from sandbox_executor.token_reduction.payload_cleaner import JSONContextCleaner
 
 logger = logging.getLogger(__name__)
+
+_MAX_SSE_BUFFER_BYTES = 50 * 1024 * 1024
 
 
 class MITMProxyInterceptor:
@@ -115,7 +118,11 @@ class MITMProxyInterceptor:
         cleaned_request = self.cleaner.process_payload(request_json, provider=provider)
 
         # Step 2: Check local cache if enabled (bypassed for streaming requests)
-        is_streaming = request_json.get("stream") is True or "streamgeneratecontent" in endpoint.lower()
+        is_streaming = (
+            request_json.get("stream") is True
+            or "streamgeneratecontent" in endpoint.lower()
+            or "alt=sse" in endpoint.lower()
+        )
         if self.enable_caching and not is_streaming:
             try:
                 cached_response = self.cache_store.get(cleaned_request, provider=provider)
@@ -145,7 +152,11 @@ class MITMProxyInterceptor:
         if not self.enable_caching:
             return
 
-        if request_json.get("stream") is True or "streamgeneratecontent" in endpoint.lower():
+        if (
+            request_json.get("stream") is True
+            or "streamgeneratecontent" in endpoint.lower()
+            or "alt=sse" in endpoint.lower()
+        ):
             return
 
         if status_code != 200:
@@ -170,6 +181,8 @@ def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: in
     Evaluates target keys on the immediate node before recursively traversing child dictionaries
     or lists in depth-first order.
     """
+    if not isinstance(data, (dict, list)):
+        return None
     if max_depth <= 0 or not data:
         return None
     if isinstance(target_keys, str):
@@ -195,15 +208,13 @@ def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: in
 
 def log_telemetry(msg: str) -> None:
     """Logs telemetry message to mitmproxy console context if available, falling back to standard logger."""
-    try:
-        from mitmproxy import ctx
-
-        if hasattr(ctx, "log") and hasattr(ctx.log, "info"):
+    if ctx and hasattr(ctx, "log") and hasattr(ctx.log, "info"):
+        try:
             ctx.log.info(msg)
             return
-    except Exception:
-        # mitmproxy context is unavailable or inactive in this execution context
-        pass
+        except Exception:
+            # mitmproxy context is unavailable or inactive in this execution context
+            pass
 
     logger.info(msg)
 
@@ -328,6 +339,9 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                 partial_json = delta.get("partial_json", "")
                 if partial_json:
                     accumulated_content_len += len(partial_json)
+                thinking = delta.get("thinking", "")
+                if thinking:
+                    accumulated_content_len += len(thinking)
 
         elif provider == "openai":
             # OpenAI SSE format
@@ -590,13 +604,16 @@ class MitmproxyAddon:
                                 break
                 if "text/event-stream" in content_type.lower():
                     flow.sse_chunks = []
+                    flow.sse_bytes = 0
                     existing_stream = getattr(response, "stream", None)
 
                     def sse_stream_wrapper(chunk: bytes) -> bytes:
                         if chunk:
                             if getattr(flow, "first_chunk_time", None) is None:
                                 flow.first_chunk_time = time.perf_counter()
-                            flow.sse_chunks.append(chunk)
+                            flow.sse_bytes = getattr(flow, "sse_bytes", 0) + len(chunk)
+                            if flow.sse_bytes <= _MAX_SSE_BUFFER_BYTES:
+                                flow.sse_chunks.append(chunk)
                         if callable(existing_stream):
                             return existing_stream(chunk)
                         return chunk
