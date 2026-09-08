@@ -2201,3 +2201,239 @@ def test_log_telemetry_ctx_handling(monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         log_telemetry("test fallback message")
     assert any("test fallback message" in r.message for r in caplog.records)
+
+
+def test_payload_cleaner_cleaning_result_metrics():
+    from sandbox_executor.token_reduction.payload_cleaner import CleaningResult, JSONContextCleaner
+
+    cleaner = JSONContextCleaner(enable_deduplication=True, enable_prompt_caching=True, max_turns=10)
+
+    # 1. Deduplication and cache control injection
+    dup_tool_output = "Line " + "x" * 2000
+    payload = {
+        "system": "You are a helpful assistant.",
+        "tools": [{"name": "read_file", "description": "Reads a file"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": dup_tool_output}],
+            },
+            {"role": "assistant", "content": "Got it."},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "call_2", "content": dup_tool_output}],
+            },
+            {"role": "assistant", "content": "Checking."},
+            {"role": "user", "content": "Latest query."},
+        ],
+    }
+
+    result = cleaner.process_payload_with_stats(payload, provider="anthropic")
+    assert isinstance(result, CleaningResult)
+    assert result.tool_outputs_omitted >= 1
+    assert result.cache_control_injected >= 1
+    assert result.chars_saved > 0
+    assert "[Omitted:" in json.dumps(result.payload)
+
+    # 2. History summarization
+    many_turns_payload = {
+        "messages": [
+            {"role": "user", "content": f"Turn {i} " + "content " * 10}
+            if i % 2 == 0
+            else {"role": "assistant", "content": f"Reply {i}"}
+            for i in range(15)
+        ]
+    }
+    sum_res = cleaner.process_payload_with_stats(many_turns_payload, provider="anthropic")
+    assert sum_res.turns_summarized > 0
+    assert any("[Summary of omitted" in json.dumps(m) for m in sum_res.payload["messages"])
+
+
+def test_secret_scrubbing():
+    from sandbox_executor.token_reduction.mitm_addon import (
+        scrub_headers,
+        scrub_payload,
+        scrub_string,
+    )
+
+    # 1. URL query parameters
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash?key=AIzaSyA1234567890123456789012345678901&token=secret-token-value"
+    scrubbed_url = scrub_string(url)
+    assert "AIza" not in scrubbed_url
+    assert "secret-token-value" not in scrubbed_url
+    assert "key=[REDACTED]" in scrubbed_url
+    assert "token=[REDACTED]" in scrubbed_url
+
+    # 2. Secret regex patterns in text
+    secrets = [
+        "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345",
+        "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+        "sk-admin-abcdefghijklmnopqrstuvwxyz0123456789",
+        "sk-svcacct-abcdefghijklmnopqrstuvwxyz0123456789",
+        "AIzaSyDabcdefghijklmnopqrstuvwxyz012345",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "gho_abcdefghijklmnopqrstuvwxyz0123456789",
+        "github_pat_11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAIOSFODNN7EXAMPLE",
+        "hf_abcdefghijklmnopqrstuvwxyz012345678",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----",
+    ]
+    for sec in secrets:
+        scrubbed = scrub_string(f"Here is a secret: {sec} in code")
+        assert sec not in scrubbed
+        assert "[REDACTED_SECRET]" in scrubbed
+
+    # 3. Case-insensitive header names
+    headers = {
+        "AUTHORIZATION": "Bearer my-secret-token",
+        "X-Api-Key": "secret-api-key",
+        "api-key": "secret-api-key-2",
+        "X-Goog-Api-Key": "goog-key",
+        "Holon-Agent-Key": "agent-key",
+        "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+        "X-Amz-Security-Token": "amz-token",
+        "Content-Type": "application/json",
+    }
+    scrubbed_h = scrub_headers(headers)
+    for k in [
+        "authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "holon-agent-key",
+        "proxy-authorization",
+        "x-amz-security-token",
+    ]:
+        assert scrubbed_h[k] == "[REDACTED]"
+    assert scrubbed_h["content-type"] == "application/json"
+
+    # 4. Recursive payload scrubbing
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Secret is sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 and key=secret123",
+            }
+        ],
+        "metadata": {"token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
+    }
+    scrubbed_p = scrub_payload(payload)
+    assert "sk-ant-" not in json.dumps(scrubbed_p)
+    assert "ghp_" not in json.dumps(scrubbed_p)
+    assert "[REDACTED_SECRET]" in scrubbed_p["messages"][0]["content"]
+    assert "[REDACTED_SECRET]" in scrubbed_p["metadata"]["token"]
+
+
+def test_derive_turn_id_precedence():
+    from sandbox_executor.token_reduction.mitm_addon import derive_turn_id
+
+    # Tier 1: Explicit X-Holon-Turn-Id header
+    headers = {"X-Holon-Turn-Id": "7"}
+    payload = {"messages": [{"role": "assistant"}, {"role": "assistant"}]}
+    assert derive_turn_id(headers, payload, fallback_id=1) == 7
+
+    # Tier 2: Assistant completion count in messages (+ 1)
+    no_header = {}
+    payload_messages = {
+        "messages": [
+            {"role": "user"},
+            {"role": "assistant"},
+            {"role": "user"},
+            {"role": "assistant"},
+        ]
+    }
+    assert derive_turn_id(no_header, payload_messages, fallback_id=1) == 3
+
+    # Tier 2 (Gemini contents): Model count in contents (+ 1)
+    payload_gemini = {
+        "contents": [
+            {"role": "user"},
+            {"role": "model"},
+            {"role": "user"},
+        ]
+    }
+    assert derive_turn_id(no_header, payload_gemini, fallback_id=1) == 2
+
+    # Tier 3: Fallback sequential counter
+    assert derive_turn_id({}, {}, fallback_id=42) == 42
+
+
+def test_dump_wire_transaction_and_flush(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import dump_wire_transaction, flush_wire_logs
+
+    wire_dir = str(tmp_path / "mitm_logs")
+    record = {
+        "turn_id": 3,
+        "flow_id": "test_flow_xyz",
+        "agent_id": "subagent_01",
+        "agent_role": "executor",
+        "timestamp": "2026-09-08T21:30:00.000Z",
+        "provider": "anthropic",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "headers": {"content-type": "application/json", "x-api-key": "[REDACTED]"},
+        "raw_request": {"messages": [{"role": "user", "content": "hi"}]},
+        "cleaned_request": {"messages": [{"role": "user", "content": "hi"}]},
+        "delta": {
+            "raw_chars": 50,
+            "cleaned_chars": 50,
+            "chars_saved": 0,
+            "tool_outputs_omitted": 0,
+            "turns_summarized": 0,
+            "cache_control_injected": 0,
+        },
+        "cache_action": "MISS",
+        "response": {
+            "status": 200,
+            "usage": {
+                "input_tokens": 100,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 50,
+                "output_tokens": 20,
+                "reasoning_tokens": 5,
+            },
+            "content": "Hello there!",
+        },
+        "timing": {"ttft_ms": 150.0, "total_ms": 800.0},
+    }
+
+    dump_wire_transaction(record, wire_log_dir=wire_dir)
+    flush_wire_logs()
+
+    # Verify per-turn JSON dump
+    turn_file = tmp_path / "mitm_logs" / "turn_3_test_flow_xyz.json"
+    assert turn_file.is_file()
+    with open(turn_file) as f:
+        loaded_turn = json.load(f)
+    assert loaded_turn["turn_id"] == 3
+    assert loaded_turn["response"]["usage"]["reasoning_tokens"] == 5
+
+    # Verify transactions.jsonl append
+    jsonl_file = tmp_path / "mitm_logs" / "transactions.jsonl"
+    assert jsonl_file.is_file()
+    with open(jsonl_file) as f:
+        lines = [json.loads(line) for line in f if line.strip()]
+    assert len(lines) == 1
+    assert lines[0]["flow_id"] == "test_flow_xyz"
+
+
+def test_cli_mitm_web_configuration(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    _mounts, _envs = setup_token_reduction_proxy(mitm_web=True)
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    joined_run = " ".join(run_cmd)
+
+    # Verify mitmweb is invoked instead of mitmdump
+    assert "mitmweb" in joined_run
+    # Verify port 8081 is bound
+    assert "127.0.0.1:8081:8081" in joined_run
+    # Verify web host and port arguments
+    assert "--web-host 0.0.0.0" in joined_run
+    assert "--web-port 8081" in joined_run
+    teardown_token_reduction_proxy()

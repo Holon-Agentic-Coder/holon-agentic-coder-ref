@@ -1,8 +1,14 @@
 """MITM proxy interceptor & addon for LLM API request optimization and response caching (Phase 3)."""
 
+import concurrent.futures
+import copy
 import json
 import logging
+import os
+import re
 import time
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,11 +19,177 @@ except ImportError:
     http = None
 
 from sandbox_executor.token_reduction.hybrid_cache import HybridCacheStore
-from sandbox_executor.token_reduction.payload_cleaner import JSONContextCleaner
+from sandbox_executor.token_reduction.payload_cleaner import CleaningResult, JSONContextCleaner
 
 logger = logging.getLogger(__name__)
 
+WIRE_LOG_DIR = os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs")
+CACHE_DIR = os.getenv("CACHE_DIR", os.path.expanduser("~/.holon/cache"))
+
 _MAX_SSE_BUFFER_BYTES = 50 * 1024 * 1024
+
+_SECRET_HEADER_NAMES = {
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "holon-agent-key",
+    "proxy-authorization",
+    "x-amz-security-token",
+}
+
+_URL_QUERY_SECRET_PATTERN = re.compile(r'(?i)([?&](?:key|api_key|apiKey|token|access_token)=)[^&\s"\'`<>#]+')
+
+_BODY_SECRET_PATTERNS = [
+    # Anthropic
+    re.compile(r"\bsk-ant-[a-zA-Z0-9_\-]{20,}\b"),
+    # OpenAI
+    re.compile(r"\bsk-(?:proj-|admin-|svcacct-)?[a-zA-Z0-9_\-]{20,}\b"),
+    # Google Cloud / Vertex AI
+    re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),
+    # GitHub tokens
+    re.compile(r"\bgh[pousr]_[a-zA-Z0-9]{36}\b"),
+    re.compile(r"\bgithub_pat_[a-zA-Z0-9_]{22,}\b"),
+    # AWS access keys
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bASIA[0-9A-Z]{16}\b"),
+    # AWS secret access key
+    re.compile(
+        r'(?i)\b(?:aws_secret_access_key|aws_secret_key|secret_access_key)\s*[:=]\s*["\']?([A-Za-z0-9/+=]{40})["\']?'
+    ),
+    # Hugging Face
+    re.compile(r"\bhf_[a-zA-Z0-9]{34,}\b"),
+    # JWT Bearer tokens
+    re.compile(r"\beyJ[a-zA-Z0-9_\-]{20,}\.[a-zA-Z0-9_\-]{20,}\.[a-zA-Z0-9_\-]{20,}\b"),
+    # PEM & PGP Private Key Blocks (including PKCS#8)
+    re.compile(
+        r"-----BEGIN (?:[A-Z\s]+ )?PRIVATE KEY(?: BLOCK)?-----"
+        r"[\s\S]*?-----END (?:[A-Z\s]+ )?PRIVATE KEY(?: BLOCK)?-----"
+    ),
+]
+
+
+def scrub_string(text: str) -> str:
+    """Scrubs sensitive credentials from string payloads or URLs."""
+    if not isinstance(text, str) or not text:
+        return text
+    # 1. URL query parameters
+    text = _URL_QUERY_SECRET_PATTERN.sub(r"\1[REDACTED]", text)
+    # 2. Body secret patterns
+    for pattern in _BODY_SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED_SECRET]", text)
+    return text
+
+
+def scrub_headers(headers: Any) -> dict[str, str]:
+    """Scrubs sensitive credentials and normalizes header keys."""
+    cleaned: dict[str, str] = {}
+    if hasattr(headers, "items"):
+        items = headers.items()
+    elif isinstance(headers, (list, tuple)):
+        items = headers
+    elif isinstance(headers, dict):
+        items = headers.items()
+    else:
+        return {}
+
+    for k, v in items:
+        k_str = str(k).lower()
+        if k_str in _SECRET_HEADER_NAMES:
+            cleaned[k_str] = "[REDACTED]"
+        else:
+            cleaned[k_str] = scrub_string(str(v))
+    return cleaned
+
+
+def scrub_payload(data: Any) -> Any:
+    """Recursively scrubs sensitive keys and credentials in JSON-serializable payloads."""
+    if isinstance(data, dict):
+        return {k: scrub_payload(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [scrub_payload(elem) for elem in data]
+    elif isinstance(data, str):
+        return scrub_string(data)
+    else:
+        return data
+
+
+_wire_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="mitm_wire_logger")
+_pending_wire_log_futures: set[concurrent.futures.Future] = set()
+
+
+def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
+    try:
+        os.makedirs(wire_log_dir, exist_ok=True)
+        turn_id = record.get("turn_id", 0)
+        flow_id = record.get("flow_id", "flow")
+        safe_flow_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(flow_id))
+        filename = f"turn_{turn_id}_{safe_flow_id}.json"
+        filepath = os.path.join(wire_log_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2, ensure_ascii=False)
+
+        jsonl_path = os.path.join(wire_log_dir, "transactions.jsonl")
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:
+        logger.warning("Failed to persist wire log transaction: %s", exc)
+
+
+def dump_wire_transaction(record: dict[str, Any], wire_log_dir: str | None = None) -> concurrent.futures.Future:
+    """Asynchronously writes turn-scoped JSON dump and atomic JSONL entry."""
+    target_dir = wire_log_dir or os.getenv("WIRE_LOG_DIR", WIRE_LOG_DIR)
+    future = _wire_log_executor.submit(_write_transaction_sync, record, target_dir)
+    _pending_wire_log_futures.add(future)
+    future.add_done_callback(lambda f: _pending_wire_log_futures.discard(f))
+    return future
+
+
+def flush_wire_logs(timeout: float = 5.0) -> None:
+    """Blocks until all queued background wire log writes complete."""
+    if _pending_wire_log_futures:
+        concurrent.futures.wait(list(_pending_wire_log_futures), timeout=timeout)
+
+
+def derive_turn_id(
+    headers: Any,
+    payload: dict[str, Any] | None,
+    fallback_id: int = 1,
+) -> int:
+    """Derives conversation turn ID using 3-tier precedence:
+    1. X-Holon-Turn-Id header
+    2. Assistant completion count in message tree (+ 1)
+    3. Sequential fallback counter
+    """
+    if headers:
+        if hasattr(headers, "items"):
+            for k, v in headers.items():
+                if str(k).lower() == "x-holon-turn-id" and v:
+                    try:
+                        return int(v)
+                    except ValueError:
+                        return v
+        elif isinstance(headers, dict):
+            for k, v in headers.items():
+                if k.lower() == "x-holon-turn-id" and v:
+                    try:
+                        return int(v)
+                    except ValueError:
+                        return v
+
+    if isinstance(payload, dict):
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            assistant_count = len([m for m in messages if isinstance(m, dict) and m.get("role") == "assistant"])
+            return assistant_count + 1
+        contents = payload.get("contents")
+        if isinstance(contents, list):
+            model_count = len([c for c in contents if isinstance(c, dict) and c.get("role") in ("model", "assistant")])
+            return model_count + 1
+
+    return fallback_id
 
 
 class MITMProxyInterceptor:
@@ -27,9 +199,10 @@ class MITMProxyInterceptor:
 
     def __init__(self, cache_dir: str | None = None, enable_caching: bool = True):
         self.cleaner = JSONContextCleaner()
-        self.cache_dir = cache_dir
+        self.cache_dir = cache_dir or os.getenv("CACHE_DIR", os.path.expanduser("~/.holon/cache"))
         self.enable_caching = enable_caching
         self._cache_store: HybridCacheStore | None = None
+        self.last_cleaning_result: CleaningResult | None = None
 
     @property
     def cache_store(self) -> HybridCacheStore:
@@ -115,7 +288,9 @@ class MITMProxyInterceptor:
             return request_json, None
 
         # Step 1: Clean and optimize request payload
-        cleaned_request = self.cleaner.process_payload(request_json, provider=provider)
+        clean_res = self.cleaner.process_payload_with_stats(request_json, provider=provider)
+        self.last_cleaning_result = clean_res
+        cleaned_request = clean_res.payload
 
         # Step 2: Check local cache if enabled (bypassed for streaming requests)
         is_streaming = (
@@ -256,6 +431,111 @@ def safe_int(val: Any, default: int = 0) -> int:
         return default
 
 
+class TokenCounts(tuple):
+    """3-tuple compatible with (input_tokens, output_tokens, cache_read_tokens) with extra metadata."""
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    reasoning_tokens: int
+
+    def __new__(
+        cls,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_creation_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ):
+        inst = super().__new__(cls, (input_tokens, output_tokens, cache_read_tokens))
+        inst.input_tokens = input_tokens
+        inst.output_tokens = output_tokens
+        inst.cache_read_tokens = cache_read_tokens
+        inst.cache_creation_tokens = cache_creation_tokens
+        inst.reasoning_tokens = reasoning_tokens
+        return inst
+
+
+def extract_sse_content(resp_text: str, provider: str) -> tuple[str, int]:
+    """Extracts aggregated completion text and reasoning tokens from SSE lines."""
+    accumulated_content: list[str] = []
+    reasoning_tokens = 0
+    lines = resp_text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        json_str = line[5:].strip()
+        if not json_str or json_str == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(json_str)
+        except Exception:
+            continue
+        if not isinstance(chunk, dict):
+            continue
+
+        if provider == "anthropic":
+            delta = find_nested_key(chunk, ("delta",)) or {}
+            text = delta.get("text", "")
+            if text:
+                accumulated_content.append(text)
+            thinking = delta.get("thinking", "")
+            if thinking:
+                accumulated_content.append(thinking)
+        elif provider == "openai":
+            choices = find_nested_key(chunk, ("choices",))
+            if isinstance(choices, list):
+                for choice in choices:
+                    if isinstance(choice, dict):
+                        delta = choice.get("delta")
+                        if isinstance(delta, dict):
+                            content = delta.get("content")
+                            if isinstance(content, str):
+                                accumulated_content.append(content)
+                            tool_calls = delta.get("tool_calls")
+                            if isinstance(tool_calls, list):
+                                for tc in tool_calls:
+                                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                                    fn_name = fn.get("name", "")
+                                    args = fn.get("arguments", "")
+                                    if fn_name or args:
+                                        accumulated_content.append(f"{fn_name}({args})")
+        elif provider == "gemini":
+            candidates = find_nested_key(chunk, ("candidates",))
+            if isinstance(candidates, list):
+                for candidate in candidates:
+                    if isinstance(candidate, dict):
+                        content = candidate.get("content")
+                        if isinstance(content, dict):
+                            parts = content.get("parts")
+                            if isinstance(parts, list):
+                                for part in parts:
+                                    if isinstance(part, dict):
+                                        if "text" in part:
+                                            accumulated_content.append(part["text"])
+                                        func_call = part.get("functionCall")
+                                        if isinstance(func_call, dict):
+                                            accumulated_content.append(json.dumps(func_call))
+
+    return "".join(accumulated_content), reasoning_tokens
+
+
+def extract_detailed_token_counts(
+    req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str
+) -> dict[str, int]:
+    """Extracts normalized token counts and cache breakdown from request and response."""
+    counts = extract_token_counts(req_data, resp_data, provider)
+    return {
+        "input_tokens": counts[0],
+        "output_tokens": counts[1],
+        "cache_read_input_tokens": counts[2],
+        "cache_creation_input_tokens": getattr(counts, "cache_creation_tokens", 0),
+        "reasoning_tokens": getattr(counts, "reasoning_tokens", 0),
+    }
+
+
 def extract_sse_cache_read_tokens(resp_text: str) -> int:
     """Extracts cache_read_input_tokens from Anthropic SSE text if present.
 
@@ -289,7 +569,10 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
     input_tokens_parsed = None
     output_tokens_parsed = None
     cache_read_tokens_parsed = None
+    cache_creation_tokens_parsed = None
+    reasoning_tokens_parsed = None
     accumulated_content_len = 0
+    accumulated_thinking_len = 0
 
     # We split the stream by lines.
     lines = resp_text.splitlines()
@@ -321,6 +604,8 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                 if isinstance(usage, dict):
                     if "cache_read_input_tokens" in usage:
                         cache_read_tokens_parsed = safe_int(usage.get("cache_read_input_tokens"))
+                    if "cache_creation_input_tokens" in usage:
+                        cache_creation_tokens_parsed = safe_int(usage.get("cache_creation_input_tokens"))
                     if "input_tokens" in usage:
                         input_tokens_parsed = (
                             safe_int(usage.get("input_tokens"))
@@ -329,8 +614,11 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                         )
             elif event_type == "message_delta":
                 usage = find_nested_key(chunk, ("usage",))
-                if isinstance(usage, dict) and "output_tokens" in usage:
-                    output_tokens_parsed = safe_int(usage.get("output_tokens"))
+                if isinstance(usage, dict):
+                    if "output_tokens" in usage:
+                        output_tokens_parsed = safe_int(usage.get("output_tokens"))
+                    if "thinking_tokens" in usage:
+                        reasoning_tokens_parsed = safe_int(usage.get("thinking_tokens"))
             elif event_type == "content_block_delta":
                 delta = find_nested_key(chunk, ("delta",)) or {}
                 text = delta.get("text", "")
@@ -342,6 +630,7 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                 thinking = delta.get("thinking", "")
                 if thinking:
                     accumulated_content_len += len(thinking)
+                    accumulated_thinking_len += len(thinking)
 
         elif provider == "openai":
             # OpenAI SSE format
@@ -356,6 +645,9 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                     cache_read_tokens_parsed = safe_int(prompt_tokens_details.get("cached_tokens"))
                 elif "cached_tokens" in usage:
                     cache_read_tokens_parsed = safe_int(usage.get("cached_tokens"))
+                comp_details = usage.get("completion_tokens_details")
+                if isinstance(comp_details, dict) and "reasoning_tokens" in comp_details:
+                    reasoning_tokens_parsed = safe_int(comp_details.get("reasoning_tokens"))
 
             choices = find_nested_key(chunk, ("choices",))
             if choices and isinstance(choices, list):
@@ -387,6 +679,8 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
                     output_tokens_parsed = safe_int(usage.get("candidatesTokenCount"))
                 if "cachedContentTokenCount" in usage:
                     cache_read_tokens_parsed = safe_int(usage.get("cachedContentTokenCount"))
+                if "reasoningTokenCount" in usage:
+                    reasoning_tokens_parsed = safe_int(usage.get("reasoningTokenCount"))
 
             candidates = find_nested_key(chunk, ("candidates", "choices", "contents"))
             if candidates and isinstance(candidates, list):
@@ -433,7 +727,17 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
     if cache_read_tokens_parsed is not None:
         cache_read_tokens = cache_read_tokens_parsed
 
-    return input_tokens, output_tokens, cache_read_tokens
+    reasoning_tokens = reasoning_tokens_parsed or (
+        max(1, accumulated_thinking_len // 4) if accumulated_thinking_len > 0 else 0
+    )
+
+    return TokenCounts(
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens_parsed or 0,
+        reasoning_tokens=reasoning_tokens,
+    )
 
 
 def extract_token_counts(
@@ -462,6 +766,8 @@ def extract_token_counts(
     input_tokens = 0
     output_tokens = 0
     cache_read_tokens = 0
+    cache_creation_tokens = 0
+    reasoning_tokens = 0
     parsed = False
 
     try:
@@ -470,12 +776,10 @@ def extract_token_counts(
                 usage = resp_data.get("usage")
                 if isinstance(usage, dict) and "input_tokens" in usage and "output_tokens" in usage:
                     cache_read_tokens = safe_int(usage.get("cache_read_input_tokens"))
-                    input_tokens = (
-                        safe_int(usage.get("input_tokens"))
-                        + cache_read_tokens
-                        + safe_int(usage.get("cache_creation_input_tokens"))
-                    )
+                    cache_creation_tokens = safe_int(usage.get("cache_creation_input_tokens"))
+                    input_tokens = safe_int(usage.get("input_tokens")) + cache_read_tokens + cache_creation_tokens
                     output_tokens = safe_int(usage.get("output_tokens"))
+                    reasoning_tokens = safe_int(usage.get("reasoning_tokens")) or safe_int(usage.get("thinking_tokens"))
                     parsed = True
             elif provider == "openai":
                 usage = resp_data.get("usage")
@@ -487,14 +791,19 @@ def extract_token_counts(
                         cache_read_tokens = safe_int(prompt_tokens_details.get("cached_tokens"))
                     elif "cached_tokens" in usage:
                         cache_read_tokens = safe_int(usage.get("cached_tokens"))
+                    comp_details = usage.get("completion_tokens_details")
+                    if isinstance(comp_details, dict) and "reasoning_tokens" in comp_details:
+                        reasoning_tokens = safe_int(comp_details.get("reasoning_tokens"))
                     parsed = True
             elif provider == "gemini":
-                usage = resp_data.get("usageMetadata")
+                usage = resp_data.get("usageMetadata") or resp_data.get("usage")
                 if isinstance(usage, dict) and "promptTokenCount" in usage and "candidatesTokenCount" in usage:
                     input_tokens = safe_int(usage.get("promptTokenCount"))
                     output_tokens = safe_int(usage.get("candidatesTokenCount"))
                     if "cachedContentTokenCount" in usage:
                         cache_read_tokens = safe_int(usage.get("cachedContentTokenCount"))
+                    if "reasoningTokenCount" in usage:
+                        reasoning_tokens = safe_int(usage.get("reasoningTokenCount"))
                     parsed = True
     except Exception:
         logger.debug("Failed to parse token counts for provider %s from response; using estimation fallback", provider)
@@ -509,17 +818,118 @@ def extract_token_counts(
         input_tokens = max(1, input_chars // 4) if input_chars > 0 else 0
         output_tokens = max(1, output_chars // 4) if output_chars > 0 else 0
 
-    return input_tokens, output_tokens, cache_read_tokens
+    return TokenCounts(
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
 
 
 # mitmproxy addon entrypoint compatible function
 class MitmproxyAddon:
     """Addon for mitmproxy command line tool."""
 
-    def __init__(self):
-        self.interceptor = MITMProxyInterceptor()
+    def __init__(self, cache_dir: str | None = None, wire_log_dir: str | None = None):
+        self.interceptor = MITMProxyInterceptor(cache_dir=cache_dir)
+        self.wire_log_dir = wire_log_dir or os.getenv("WIRE_LOG_DIR", WIRE_LOG_DIR)
         self.total_requests = 0
         self.cache_hits = 0
+
+    def _dump_flow_transaction(
+        self,
+        flow: Any,
+        resp_data: Any,
+        status_code: int = 200,
+        is_hit: bool = False,
+        is_sse: bool = False,
+        ttft: float | None = None,
+        total_time: float | None = None,
+    ) -> None:
+        try:
+            url = getattr(flow.request, "pretty_url", "")
+            flow_headers = getattr(flow.request, "headers", {})
+            provider = getattr(flow, "provider", "unknown")
+
+            # IDs and Role
+            flow_id = getattr(flow, "id", None) or f"flow_{uuid.uuid4().hex[:8]}"
+            agent_id = getattr(flow_headers, "get", lambda _: None)("x-holon-agent-id") or os.getenv(
+                "HOLON_AGENT_ID", "antigravity"
+            )
+            agent_role = getattr(flow_headers, "get", lambda _: None)("x-holon-agent-role") or os.getenv(
+                "HOLON_ROLE", "executor"
+            )
+
+            raw_req = getattr(flow, "raw_request_data", None) or getattr(flow, "req_data", None) or {}
+            cleaned_req = getattr(flow, "req_data", None) or raw_req
+            turn_id = derive_turn_id(flow_headers, raw_req, self.total_requests)
+
+            clean_res = getattr(flow, "cleaner_result", None)
+            try:
+                raw_chars = len(json.dumps(raw_req)) if raw_req else 0
+                cleaned_chars = len(json.dumps(cleaned_req)) if cleaned_req else 0
+            except Exception:
+                raw_chars = 0
+                cleaned_chars = 0
+            chars_saved = max(0, raw_chars - cleaned_chars)
+            delta = {
+                "raw_chars": raw_chars,
+                "cleaned_chars": cleaned_chars,
+                "chars_saved": clean_res.chars_saved if clean_res else chars_saved,
+                "tool_outputs_omitted": clean_res.tool_outputs_omitted if clean_res else 0,
+                "turns_summarized": clean_res.turns_summarized if clean_res else 0,
+                "cache_control_injected": clean_res.cache_control_injected if clean_res else 0,
+            }
+
+            # Token metrics extraction
+            if is_hit:
+                detailed_tokens = extract_detailed_token_counts(raw_req, resp_data, provider)
+                detailed_tokens["cache_read_input_tokens"] = detailed_tokens["input_tokens"]
+            else:
+                detailed_tokens = extract_detailed_token_counts(cleaned_req, resp_data, provider)
+
+            # Content extraction
+            if is_sse:
+                content_val, _ = extract_sse_content(resp_data, provider)
+            elif isinstance(resp_data, dict):
+                content_val = resp_data
+            else:
+                content_val = str(resp_data)
+
+            record = {
+                "turn_id": turn_id,
+                "flow_id": flow_id,
+                "agent_id": agent_id,
+                "agent_role": agent_role,
+                "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "provider": provider,
+                "endpoint": scrub_string(url),
+                "headers": scrub_headers(flow_headers),
+                "raw_request": scrub_payload(raw_req),
+                "cleaned_request": scrub_payload(cleaned_req),
+                "delta": delta,
+                "cache_action": "HIT" if is_hit else "MISS",
+                "response": {
+                    "status": status_code,
+                    "usage": {
+                        "input_tokens": detailed_tokens["input_tokens"],
+                        "cache_creation_input_tokens": detailed_tokens["cache_creation_input_tokens"],
+                        "cache_read_input_tokens": detailed_tokens["cache_read_input_tokens"],
+                        "output_tokens": detailed_tokens["output_tokens"],
+                        "reasoning_tokens": detailed_tokens["reasoning_tokens"],
+                    },
+                    "content": scrub_payload(content_val),
+                },
+                "timing": {
+                    "ttft_ms": round(ttft * 1000, 2) if ttft is not None else (0.0 if is_hit else None),
+                    "total_ms": round(total_time * 1000, 2) if total_time is not None else 0.0,
+                },
+            }
+
+            dump_wire_transaction(record, self.wire_log_dir)
+        except Exception as exc:
+            logger.debug("Failed to record flow wire transaction: %s", exc)
 
     def request(self, flow: Any) -> None:
         """Mitmproxy request callback."""
@@ -543,9 +953,26 @@ class MitmproxyAddon:
 
             try:
                 if data is not None:
+                    flow.raw_request_data = copy.deepcopy(data)
                     cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
+                    clean_res = getattr(self.interceptor, "last_cleaning_result", None)
+                    flow.cleaner_result = clean_res
                     flow.req_data = cleaned_data
                     flow.request.set_text(json.dumps(cleaned_data))
+
+                    if clean_res and (
+                        clean_res.chars_saved > 0
+                        or clean_res.tool_outputs_omitted > 0
+                        or clean_res.turns_summarized > 0
+                        or clean_res.cache_control_injected > 0
+                    ):
+                        cleaner_log = (
+                            f"🧹 [CLEANER_METRICS] Chars Saved: {clean_res.chars_saved} | "
+                            f"Tool Outputs Omitted: {clean_res.tool_outputs_omitted} | "
+                            f"Turns Summarized: {clean_res.turns_summarized} | "
+                            f"Cache Control Injected: {clean_res.cache_control_injected}"
+                        )
+                        log_telemetry(cleaner_log)
 
                     if cached_resp:
                         self.cache_hits += 1
@@ -562,9 +989,12 @@ class MitmproxyAddon:
 
                         # Inject telemetry headers on cache hit
                         hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
-                        if getattr(flow, "response", None) is not None:
-                            if not hasattr(flow.response, "headers") or flow.response.headers is None:
-                                flow.response.headers = {}
+                        if (
+                            getattr(flow, "response", None) is not None
+                            and hasattr(flow.response, "headers")
+                            and flow.response.headers is not None
+                            and hasattr(flow.response.headers, "__setitem__")
+                        ):
                             flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
                             flow.response.headers["X-Holon-TTFT-Ms"] = "0.00"
                             flow.response.headers["X-Holon-Prefill-TPS"] = "0.0000"
@@ -580,6 +1010,9 @@ class MitmproxyAddon:
                             f"Total: 0.00ms"
                         )
                         log_telemetry(log_msg)
+
+                        # Dump wire transaction for cache hit
+                        self._dump_flow_transaction(flow, resp_data=cached_resp, status_code=200, is_hit=True)
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
@@ -683,20 +1116,19 @@ class MitmproxyAddon:
                     hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
 
                     # Inject telemetry headers on cache miss
-                    # Note: In HTTP chunked SSE streaming, socket headers are flushed at stream onset
-                    # (during responseheaders). Setting flow.response.headers["X-Holon-..."] stores
-                    # metrics on the in-memory mitmproxy flow record for inspection via proxy UI and
-                    # test assertions, while console 📊 [TELEMETRY] logs serve as the primary sink for
-                    # streaming metrics.
-                    if not hasattr(flow.response, "headers") or flow.response.headers is None:
-                        flow.response.headers = {}
-                    flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
-                    flow.response.headers["X-Holon-TTFT-Ms"] = f"{ttft * 1000:.2f}"
-                    flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
-                    flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{tail_prefill_tps:.4f}"
-                    flow.response.headers["X-Holon-Decode-Time-Sec"] = f"{generation_time:.3f}"
-                    flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
-                    flow.response.headers["X-Holon-Total-Time-Ms"] = f"{total_time * 1000:.2f}"
+                    if (
+                        getattr(flow, "response", None) is not None
+                        and hasattr(flow.response, "headers")
+                        and flow.response.headers is not None
+                        and hasattr(flow.response.headers, "__setitem__")
+                    ):
+                        flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                        flow.response.headers["X-Holon-TTFT-Ms"] = f"{ttft * 1000:.2f}"
+                        flow.response.headers["X-Holon-Prefill-TPS"] = f"{prefill_tps:.4f}"
+                        flow.response.headers["X-Holon-Tail-Prefill-TPS"] = f"{tail_prefill_tps:.4f}"
+                        flow.response.headers["X-Holon-Decode-Time-Sec"] = f"{generation_time:.3f}"
+                        flow.response.headers["X-Holon-Output-TPS"] = f"{output_tps:.4f}"
+                        flow.response.headers["X-Holon-Total-Time-Ms"] = f"{total_time * 1000:.2f}"
 
                     log_msg = (
                         f"📊 [TELEMETRY] Provider: {provider.upper()} | "
@@ -707,6 +1139,17 @@ class MitmproxyAddon:
                         f"Total: {total_time * 1000:.1f}ms"
                     )
                     log_telemetry(log_msg)
+
+                    # Persist wire transaction dump
+                    self._dump_flow_transaction(
+                        flow,
+                        resp_data=resp_data,
+                        status_code=status_code,
+                        is_hit=False,
+                        is_sse=is_sse,
+                        ttft=ttft,
+                        total_time=total_time,
+                    )
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request/response body for endpoint %s: %s", url, exc)
             except Exception:
