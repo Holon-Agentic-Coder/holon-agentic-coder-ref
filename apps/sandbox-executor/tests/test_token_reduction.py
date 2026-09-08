@@ -1,5 +1,6 @@
 """Unit tests for AI Agent Token Reduction Architecture - Phase 1."""
 
+import json
 import logging
 import os
 import stat
@@ -635,7 +636,6 @@ def test_mitm_interceptor_caching_disabled(tmp_path):
 
 
 def test_mitm_addon_lifecycle_and_hit_count(tmp_path):
-    import json
     import sqlite3
 
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
@@ -846,9 +846,7 @@ def test_mitm_addon_null_request_flow():
     addon.response(flow)
 
 
-def test_mitm_addon_error_response_caching_bypass(tmp_path):
-    import json
-
+def test_mitm_addon_error_response_caching_bypass(tmp_path, caplog):
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
 
     cache_dir = tmp_path / "cache"
@@ -884,6 +882,9 @@ def test_mitm_addon_error_response_caching_bypass(tmp_path):
         def get_text(self):
             return json.dumps(req_json)
 
+        def set_text(self, text):
+            pass
+
     class FakeResponse:
         status_code = 429
 
@@ -895,9 +896,16 @@ def test_mitm_addon_error_response_caching_bypass(tmp_path):
         response = FakeResponse()
 
     flow = FakeFlow()
-    addon.response(flow)
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.response(flow)
     _, cached_flow = interceptor.intercept_request(endpoint, req_json)
     assert cached_flow is None
+
+    telemetry_logs = [record.message for record in caplog.records if "⚠️ [TELEMETRY]" in record.message]
+    assert len(telemetry_logs) == 1
+    assert "Provider: ANTHROPIC" in telemetry_logs[0]
+    assert "Status: 429" in telemetry_logs[0]
 
 
 def test_hybrid_cache_anthropic_tool_result_content_block_extraction(tmp_path):
@@ -1000,8 +1008,6 @@ def test_hybrid_cache_multi_turn_recent_instruction_semantic_matching(tmp_path):
 
 
 def test_mitm_addon_response_make_import_fallback(monkeypatch):
-    import json
-
     from sandbox_executor.token_reduction import mitm_addon
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
 
@@ -1196,9 +1202,7 @@ def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
     assert envs["HTTPS_PROXY"] == "http://holon-proxy:8080"
 
 
-def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
-    import json
-
+def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch, caplog):
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1250,25 +1254,26 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
         "usage": {"input_tokens": 100, "cache_read_input_tokens": 60, "output_tokens": 50},
     }
 
-    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, json.dumps(resp_body)))
+    with caplog.at_level(logging.INFO):
+        flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, json.dumps(resp_body)))
 
-    addon.request(flow)
-    addon.responseheaders(flow)
-    addon.response(flow)
+        addon.request(flow)
+        addon.responseheaders(flow)
+        addon.response(flow)
 
-    assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
-    assert flow.response.headers["X-Holon-TTFT-Ms"] == "2500.00"
-    assert flow.response.headers["X-Holon-Prefill-TPS"] == "64.0000"  # (100 + 60) tokens / 2.5s = 64.0
-    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"  # 100 uncached tokens / 2.5s = 40.0
-    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
-    assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"  # 50 tokens / 2.5s = 20.0
-    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "5000.00"
+        assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
+        assert flow.response.headers["X-Holon-TTFT-Ms"] == "2500.00"
+        assert flow.response.headers["X-Holon-Prefill-TPS"] == "64.0000"  # (100 + 60) tokens / 2.5s = 64.0
+        assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "40.0000"  # 100 uncached tokens / 2.5s = 40.0
+        assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
+        assert flow.response.headers["X-Holon-Output-TPS"] == "20.0000"  # 50 tokens / 2.5s = 20.0
+        assert flow.response.headers["X-Holon-Total-Time-Ms"] == "5000.00"
 
-    # Now let's test a Cache Hit flow (which will be the 2nd request)
-    ts_iter = iter([20.0, 25.0])
+        # Now let's test a Cache Hit flow (which will be the 2nd request)
+        ts_iter = iter([20.0, 25.0])
 
-    flow_hit = FakeFlow(FakeRequest(url, json.dumps(req_body)))
-    addon.request(flow_hit)
+        flow_hit = FakeFlow(FakeRequest(url, json.dumps(req_body)))
+        addon.request(flow_hit)
 
     assert flow_hit.is_cached is True
     assert flow_hit.response.headers["X-Holon-Cache-Hit-Rate"] == "0.5000"  # 1 hit / 2 requests
@@ -1279,10 +1284,13 @@ def test_mitm_addon_telemetry_headers(tmp_path, monkeypatch):
     assert flow_hit.response.headers["X-Holon-Output-TPS"] == "0.0000"
     assert flow_hit.response.headers["X-Holon-Total-Time-Ms"] == "0.00"
 
+    hit_logs = [record.message for record in caplog.records if "Cache: HIT" in record.message]
+    assert len(hit_logs) == 1
+    assert "Provider: ANTHROPIC" in hit_logs[0]
+    assert "Cache: HIT (Hit Rate: 50.0%)" in hit_logs[0]
+
 
 def test_mitm_addon_telemetry_providers_and_fallback(tmp_path, monkeypatch):
-    import json
-
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1385,9 +1393,10 @@ def test_extract_token_counts_anthropic_prompt_caching():
             "output_tokens": 50,
         }
     }
-    input_tokens, output_tokens = extract_token_counts(req_data, resp_data, provider="anthropic")
+    input_tokens, output_tokens, cache_read_tokens = extract_token_counts(req_data, resp_data, provider="anthropic")
     assert input_tokens == 800
     assert output_tokens == 50
+    assert cache_read_tokens == 500
 
 
 def test_mitm_interceptor_generic_googleapis_unaffected():
@@ -1436,3 +1445,759 @@ def test_detect_provider_schemeless_urls():
     assert interceptor.detect_provider("api.anthropic.com/v1/messages") == "anthropic"
     assert interceptor.detect_provider("api.openai.com/v1/chat/completions") == "openai"
     assert interceptor.detect_provider("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") == "unknown"
+
+
+def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, headers=None):
+            self.status_code = status_code
+            self.headers = FakeHeaders(headers or {})
+            self.stream = None
+
+        def get_text(self):
+            return ""
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.is_cached = False
+
+    timestamps = [10.0, 11.5, 11.5, 13.0]
+    ts_iter = iter(timestamps)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    url = "https://api.anthropic.com/v1/messages"
+    req_body = {"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "Hello"}]}
+
+    sse_events = [
+        (
+            b'data: {"type": "message_start", "message": {"usage": '
+            b'{"input_tokens": 80, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 10}}}\n'
+        ),
+        b'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}\n',
+        b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}\n',
+        b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world!"}}\n',
+        b'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 25}}\n',
+    ]
+
+    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, {"Content-Type": "text/event-stream"}))
+
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.responseheaders(flow)
+        assert flow.response.stream is not None
+
+        for event in sse_events:
+            flow.response.stream(event)
+
+        assert len(flow.sse_chunks) == len(sse_events)
+        addon.response(flow)
+
+    assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
+    assert flow.response.headers["X-Holon-TTFT-Ms"] == "1500.00"
+    assert flow.response.headers["X-Holon-Prefill-TPS"] == "80.0000"
+    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "60.0000"
+    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "1.500"
+    assert flow.response.headers["X-Holon-Output-TPS"] == "16.6667"
+    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "3000.00"
+
+    telemetry_logs = [record.message for record in caplog.records if "[TELEMETRY]" in record.message]
+    assert len(telemetry_logs) == 1
+    assert "Provider: ANTHROPIC" in telemetry_logs[0]
+    assert "TTFT: 1500.0ms" in telemetry_logs[0]
+    assert "Prefill: 80.00 t/s (120 tok)" in telemetry_logs[0]
+    assert "Output: 16.67 t/s (25 tok in 1.50s)" in telemetry_logs[0]
+    assert "Total: 3000.0ms" in telemetry_logs[0]
+
+
+def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, headers=None):
+            self.status_code = status_code
+            self.headers = FakeHeaders(headers or {})
+            self.stream = None
+
+        def get_text(self):
+            return ""
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.is_cached = False
+
+    timestamps = [20.0, 22.0, 22.0, 26.0]
+    ts_iter = iter(timestamps)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    url = "https://api.openai.com/v1/chat/completions"
+    req_body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}
+
+    sse_events = [
+        b'data: {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]}\n',
+        b'data: {"choices": [{"index": 0, "delta": {"content": "Hello"}}]}\n',
+        b'data: {"choices": [{"index": 0, "delta": {"content": " world!"}}]}\n',
+        b'data: {"choices": [], "usage": {"prompt_tokens": 15, "completion_tokens": 12, "total_tokens": 27}}\n',
+        b"data: [DONE]\n",
+    ]
+
+    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, {"Content-Type": "text/event-stream"}))
+
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.responseheaders(flow)
+        assert flow.response.stream is not None
+
+        for event in sse_events:
+            flow.response.stream(event)
+
+        addon.response(flow)
+
+    assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
+    assert flow.response.headers["X-Holon-TTFT-Ms"] == "2000.00"
+    assert flow.response.headers["X-Holon-Prefill-TPS"] == "7.5000"
+    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "7.5000"
+    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "4.000"
+    assert flow.response.headers["X-Holon-Output-TPS"] == "3.0000"
+    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "6000.00"
+
+    telemetry_logs = [record.message for record in caplog.records if "[TELEMETRY]" in record.message]
+    assert len(telemetry_logs) == 1
+    assert "Provider: OPENAI" in telemetry_logs[0]
+    assert "TTFT: 2000.0ms" in telemetry_logs[0]
+    assert "Prefill: 7.50 t/s (15 tok)" in telemetry_logs[0]
+    assert "Output: 3.00 t/s (12 tok in 4.00s)" in telemetry_logs[0]
+    assert "Total: 6000.0ms" in telemetry_logs[0]
+
+
+def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypatch, caplog):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, headers=None):
+            self.status_code = status_code
+            self.headers = FakeHeaders(headers or {})
+            self.stream = None
+
+        def get_text(self):
+            return ""
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.is_cached = False
+
+    timestamps = [20.0, 22.0, 22.0, 26.0]
+    ts_iter = iter(timestamps)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    url = "https://api.openai.com/v1/chat/completions"
+    req_body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}
+
+    sse_events = [
+        b'data: {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]}\n',
+        b'data: {"choices": [{"index": 0, "delta": {"content": "Hello"}}]}\n',
+        b'data: {"choices": [{"index": 0, "delta": {"content": " world! 12345"}}]}\n',
+        b"data: [DONE]\n",
+    ]
+
+    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, {"Content-Type": "text/event-stream"}))
+
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.responseheaders(flow)
+        assert flow.response.stream is not None
+
+        for event in sse_events:
+            flow.response.stream(event)
+
+        addon.response(flow)
+
+    assert flow.response.headers["X-Holon-Cache-Hit-Rate"] == "0.0000"
+    assert flow.response.headers["X-Holon-TTFT-Ms"] == "2000.00"
+    assert flow.response.headers["X-Holon-Prefill-TPS"] == "0.5000"
+    assert flow.response.headers["X-Holon-Tail-Prefill-TPS"] == "0.5000"
+    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "4.000"
+    assert flow.response.headers["X-Holon-Output-TPS"] == "1.0000"
+    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "6000.00"
+
+    telemetry_logs = [record.message for record in caplog.records if "[TELEMETRY]" in record.message]
+    assert len(telemetry_logs) == 1
+    assert "Provider: OPENAI" in telemetry_logs[0]
+    assert "TTFT: 2000.0ms" in telemetry_logs[0]
+    assert "Prefill: 0.50 t/s (1 tok)" in telemetry_logs[0]
+    assert "Output: 1.00 t/s (4 tok in 4.00s)" in telemetry_logs[0]
+    assert "Total: 6000.0ms" in telemetry_logs[0]
+
+
+def test_find_nested_key_and_cloudcode_pa_sse_parsing():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts, find_nested_key
+
+    data = {
+        "response": {
+            "result": {
+                "candidates": [{"content": {"parts": [{"text": "Sample code from Cloud Code PA"}]}}],
+                "usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 40},
+            }
+        }
+    }
+    assert find_nested_key(data, ("usageMetadata", "usage")) == {"promptTokenCount": 120, "candidatesTokenCount": 40}
+    expected_cand = [{"content": {"parts": [{"text": "Sample code from Cloud Code PA"}]}}]
+    assert find_nested_key(data, ("candidates", "choices")) == expected_cand
+
+    nested_sse = (
+        'data: {"response": {"candidates": [{"content": {"parts": [{"text": "Hello world"}]}}], '
+        '"usageMetadata": {"promptTokenCount": 150, "candidatesTokenCount": 45}}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(nested_sse, {}, provider="gemini")
+    assert in_tok == 150
+    assert out_tok == 45
+    assert cache_tok == 0
+
+
+def test_anthropic_sse_cache_read_token_extraction():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_cache_read_tokens, extract_sse_token_counts
+
+    sse_text = (
+        "event: message_start\n"
+        'data: {"type": "message_start", "message": {"id": "msg_123", '
+        '"usage": {"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50}}}\n\n'
+        "event: message_delta\n"
+        'data: {"type": "message_delta", "usage": {"output_tokens": 80}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(sse_text, {}, provider="anthropic")
+    assert in_tok == 550
+    assert out_tok == 80
+    assert cache_tok == 400
+    # Direct test assertion for standalone extract_sse_cache_read_tokens helper
+    assert extract_sse_cache_read_tokens(sse_text) == 400
+
+
+def test_response_stream_preserves_existing_callback(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    existing_calls = []
+
+    def upstream_stream_fn(chunk: bytes) -> bytes:
+        existing_calls.append(chunk)
+        return chunk + b"_transformed"
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = FakeHeaders({"Content-Type": "text/event-stream"})
+            self.stream = upstream_stream_fn
+
+    class FakeFlow:
+        def __init__(self):
+            self.provider = "anthropic"
+            self.response = FakeResponse()
+            self.sse_chunks = None
+
+    flow = FakeFlow()
+    addon.responseheaders(flow)
+
+    assert flow.response.stream is not None
+    assert callable(flow.response.stream)
+
+    test_chunk = b'data: {"test": 1}\n\n'
+    res = flow.response.stream(test_chunk)
+
+    # Chunks are tracked in flow.sse_chunks
+    assert flow.sse_chunks == [test_chunk]
+    # Upstream stream function was invoked
+    assert existing_calls == [test_chunk]
+    # Returned result is from upstream_stream_fn
+    assert res == test_chunk + b"_transformed"
+
+
+def test_extract_sse_token_counts_filters_non_data_lines():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    sse_text = (
+        ": comment line here\n"
+        "id: 42\n"
+        "event: message_start\n"
+        "retry: 2000\n"
+        'data: {"type": "message_start", "message": {"usage": {"input_tokens": 50, "cache_read_input_tokens": 10}}}\n'
+        ": another comment\n"
+        "event: message_delta\n"
+        'data: {"type": "message_delta", "usage": {"output_tokens": 25}}\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(sse_text, {}, provider="anthropic")
+    assert in_tok == 60
+    assert out_tok == 25
+    assert cache_tok == 10
+
+
+def test_intercept_request_bypasses_cache_for_streaming(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    cache_dir = tmp_path / "cache"
+    interceptor = MITMProxyInterceptor(cache_dir=str(cache_dir), enable_caching=True)
+    endpoint = "https://api.openai.com/v1/chat/completions"
+    req_json = {"messages": [{"role": "user", "content": "Hello"}], "stream": False}
+    resp_json = {"choices": [{"message": {"content": "Hi"}}]}
+
+    # Populate cache
+    interceptor.intercept_response(endpoint, req_json, resp_json, status_code=200)
+    _, cached = interceptor.intercept_request(endpoint, req_json)
+    assert cached is not None
+
+    # Request with stream=True must bypass cache lookup
+    streaming_req = {"messages": [{"role": "user", "content": "Hello"}], "stream": True}
+    _, cached_stream = interceptor.intercept_request(endpoint, streaming_req)
+    assert cached_stream is None
+
+
+def test_extract_sse_token_counts_tool_calls_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    # 1. OpenAI tool call chunk without usage metadata
+    openai_tool_sse = (
+        'data: {"choices": [{"index": 0, "delta": {"role": "assistant"}}]}\n'
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "id": "call_1", "function": {"name": "run_cmd", "arguments": "{\\"cmd\\": \\"ls\\"}"}}'
+        "]}}]}\n"
+        "data: [DONE]\n"
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(openai_tool_sse, {"prompt": "Run ls"}, provider="openai")
+    assert in_tok > 0
+    expected_openai_len = len("run_cmd") + len('{"cmd": "ls"}')
+    assert out_tok == max(1, expected_openai_len // 4)
+    assert cache_tok == 0
+
+    # 2. Gemini functionCall chunk without usage metadata
+    gemini_tool_sse = (
+        'data: {"candidates": [{"content": {"parts": ['
+        '{"functionCall": {"name": "read_file", "args": {"path": "/tmp/foo"}}}'
+        "]}}]}\n"
+    )
+    in_tok_g, out_tok_g, cache_tok_g = extract_sse_token_counts(
+        gemini_tool_sse, {"prompt": "Read file"}, provider="gemini"
+    )
+    assert in_tok_g > 0
+    expected_args_len = len("read_file") + len(json.dumps({"path": "/tmp/foo"}))
+    assert out_tok_g == max(1, expected_args_len // 4)
+    assert cache_tok_g == 0
+
+
+def test_extract_sse_token_counts_openai_multiple_choices_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    # Multiple choices in a single SSE chunk without usage metadata
+    openai_multi_choice_sse = (
+        'data: {"choices": ['
+        '{"index": 0, "delta": {"content": "First choice content"}},'
+        '{"index": 1, "delta": {"content": "Second choice content"}}'
+        "]}\n"
+        "data: [DONE]\n"
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(
+        openai_multi_choice_sse, {"prompt": "Two alternatives"}, provider="openai"
+    )
+    assert in_tok > 0
+    expected_len = len("First choice content") + len("Second choice content")
+    assert out_tok == max(1, expected_len // 4)
+    assert cache_tok == 0
+
+
+def test_gemini_stream_generate_content_bypasses_cache(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    cache_dir = str(tmp_path / "cache")
+    interceptor = MITMProxyInterceptor(cache_dir=cache_dir, enable_caching=True)
+
+    endpoint_non_stream = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    endpoint_stream = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:streamGenerateContent"
+    req_json = {"contents": [{"role": "user", "parts": [{"text": "Hello Gemini"}]}]}
+    resp_json = {"candidates": [{"content": {"parts": [{"text": "Hi human"}]}}]}
+
+    # Populate cache using non-streaming endpoint
+    interceptor.intercept_response(endpoint_non_stream, req_json, resp_json, status_code=200)
+
+    # Non-streaming request should hit cache
+    _, cached = interceptor.intercept_request(endpoint_non_stream, req_json)
+    assert cached is not None
+
+    # Streaming request with :streamGenerateContent should bypass cache
+    _, cached_stream = interceptor.intercept_request(endpoint_stream, req_json)
+    assert cached_stream is None
+
+    # Attempting to put response for streaming endpoint should be ignored
+    interceptor.intercept_response(endpoint_stream, req_json, resp_json, status_code=200)
+
+
+def test_responseheaders_case_insensitive_content_type():
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    addon = MitmproxyAddon()
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = FakeHeaders({"Content-Type": "Text/Event-Stream; charset=utf-8"})
+            self.stream = None
+
+    class FakeFlow:
+        def __init__(self):
+            self.provider = "openai"
+            self.response = FakeResponse()
+            self.sse_chunks = None
+
+    flow = FakeFlow()
+    addon.responseheaders(flow)
+    assert flow.response.stream is not None
+    assert flow.sse_chunks == []
+
+
+def test_mitm_addon_ttft_vs_ttfb_timing(tmp_path, monkeypatch, caplog):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
+
+    addon = MitmproxyAddon()
+    addon.interceptor.cache_dir = str(tmp_path / "cache")
+
+    class FakeHeaders(dict):
+        def get(self, key, default=None):
+            for k, v in self.items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    class FakeRequest:
+        def __init__(self, url, text):
+            self.pretty_url = url
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+    class FakeResponse:
+        def __init__(self, status_code=200, headers=None):
+            self.status_code = status_code
+            self.headers = FakeHeaders(headers or {})
+            self.stream = None
+
+        def get_text(self):
+            return ""
+
+    class FakeFlow:
+        def __init__(self, request, response=None):
+            self.request = request
+            self.response = response
+            self.is_cached = False
+
+    # Timestamps:
+    # 1. req_start = 100.0
+    # 2. responseheaders (TTFB) = 101.0 (TTFB = 1.0s / 1000ms)
+    # 3. first chunk (TTFT) = 101.5 (TTFT = 1.5s / 1500ms)
+    # 4. response (now) = 104.0 (total = 4.0s / 4000ms, decode = 2.5s)
+    timestamps = [100.0, 101.0, 101.5, 104.0]
+    ts_iter = iter(timestamps)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ts_iter))
+
+    url = "https://api.openai.com/v1/chat/completions"
+    req_body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}]}
+    sse_events = [
+        b'data: {"choices": [{"index": 0, "delta": {"content": "Hello"}}]}\n',
+        b'data: {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}\n',
+        b"data: [DONE]\n",
+    ]
+
+    flow = FakeFlow(FakeRequest(url, json.dumps(req_body)), FakeResponse(200, {"Content-Type": "text/event-stream"}))
+
+    with caplog.at_level(logging.INFO):
+        addon.request(flow)
+        addon.responseheaders(flow)
+        assert flow.first_chunk_time is None
+
+        for event in sse_events:
+            flow.response.stream(event)
+
+        assert flow.first_chunk_time == 101.5
+        addon.response(flow)
+
+    assert flow.response.headers["X-Holon-TTFT-Ms"] == "1500.00"
+    assert flow.response.headers["X-Holon-Decode-Time-Sec"] == "2.500"
+    assert flow.response.headers["X-Holon-Total-Time-Ms"] == "4000.00"
+
+    telemetry_logs = [record.message for record in caplog.records if "[TELEMETRY]" in record.message]
+    assert "TTFT: 1500.0ms" in telemetry_logs[0]
+
+
+def test_prompt_cache_token_extraction_gemini_and_openai():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts, extract_token_counts
+
+    # 1. Gemini SSE with cachedContentTokenCount
+    gemini_sse = (
+        'data: {"candidates": [{"content": {"parts": [{"text": "Hello"}]}}], '
+        '"usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 20, "cachedContentTokenCount": 60}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(gemini_sse, {}, provider="gemini")
+    assert in_tok == 100
+    assert out_tok == 20
+    assert cache_tok == 60
+
+    # 2. Gemini non-SSE with cachedContentTokenCount
+    gemini_resp = {
+        "candidates": [{"content": {"parts": [{"text": "Hello"}]}}],
+        "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 20, "cachedContentTokenCount": 60},
+    }
+    in_tok, out_tok, cache_tok = extract_token_counts({}, gemini_resp, provider="gemini")
+    assert in_tok == 100
+    assert out_tok == 20
+    assert cache_tok == 60
+
+    # 3. OpenAI SSE with prompt_tokens_details.cached_tokens
+    openai_sse = (
+        'data: {"choices": [{"delta": {"content": "Hello"}}], '
+        '"usage": {"prompt_tokens": 120, "completion_tokens": 30, '
+        '"prompt_tokens_details": {"cached_tokens": 80}}}\n\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(openai_sse, {}, provider="openai")
+    assert in_tok == 120
+    assert out_tok == 30
+    assert cache_tok == 80
+
+    # 4. OpenAI non-SSE with prompt_tokens_details.cached_tokens
+    openai_resp = {
+        "choices": [{"message": {"content": "Hello"}}],
+        "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+    }
+    in_tok, out_tok, cache_tok = extract_token_counts({}, openai_resp, provider="openai")
+    assert in_tok == 120
+    assert out_tok == 30
+    assert cache_tok == 80
+
+
+def test_anthropic_sse_usage_non_dict_guard():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    # Malformed SSE with non-dict usage
+    malformed_sse = (
+        'data: {"type": "message_start", "message": {"usage": 12345}}\n'
+        'data: {"type": "message_delta", "usage": "invalid"}\n'
+        'data: {"type": "content_block_delta", "delta": {"text": "hello"}}\n'
+    )
+    in_tok, out_tok, cache_tok = extract_sse_token_counts(malformed_sse, {"prompt": "test"}, provider="anthropic")
+    # Should not raise exception, falls back to char estimation
+    assert in_tok >= 0
+    assert out_tok >= 0
+    assert cache_tok == 0
+
+
+def test_sse_stream_wrapper_bounded_buffer_ceiling(monkeypatch):
+    import sandbox_executor.token_reduction.mitm_addon as mitm_module
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    # Set ceiling to 30 bytes for testing
+    monkeypatch.setattr(mitm_module, "_MAX_SSE_BUFFER_BYTES", 30)
+
+    addon = MitmproxyAddon()
+
+    existing_stream_chunks = []
+
+    def dummy_stream(chunk: bytes) -> bytes:
+        existing_stream_chunks.append(chunk)
+        return chunk
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = {"content-type": "text/event-stream"}
+            self.stream = dummy_stream
+
+    class FakeFlow:
+        def __init__(self):
+            self.provider = "anthropic"
+            self.response = FakeResponse()
+            self.sse_chunks = None
+
+    flow = FakeFlow()
+    addon.responseheaders(flow)
+    assert flow.sse_chunks == []
+    assert flow.sse_bytes == 0
+
+    chunk1 = b"1234567890"  # 10 bytes -> total 10 <= 30
+    chunk2 = b"1234567890"  # 10 bytes -> total 20 <= 30
+    chunk3 = b"1234567890"  # 10 bytes -> total 30 <= 30
+    chunk4 = b"1234567890"  # 10 bytes -> total 40 > 30 (exceeded)
+
+    ret1 = flow.response.stream(chunk1)
+    ret2 = flow.response.stream(chunk2)
+    ret3 = flow.response.stream(chunk3)
+    ret4 = flow.response.stream(chunk4)
+
+    # Transparent pass-through
+    assert ret1 == chunk1
+    assert ret2 == chunk2
+    assert ret3 == chunk3
+    assert ret4 == chunk4
+    assert existing_stream_chunks == [chunk1, chunk2, chunk3, chunk4]
+
+    # Accumulated chunks should only hold first 3
+    assert flow.sse_chunks == [chunk1, chunk2, chunk3]
+    assert flow.sse_bytes == 40
+
+
+def test_is_streaming_alt_sse_parameter(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(cache_dir=str(tmp_path / "cache"), enable_caching=True)
+    endpoint_standard = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    endpoint_sse = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?alt=sse"
+    req_json = {"contents": [{"role": "user", "parts": [{"text": "Hello"}]}]}
+    resp_json = {"candidates": [{"content": {"parts": [{"text": "World"}]}}]}
+
+    # Pre-populate cache using standard endpoint
+    interceptor.intercept_response(endpoint_standard, req_json, resp_json, status_code=200)
+
+    # Standard endpoint should hit cache
+    _, cached = interceptor.intercept_request(endpoint_standard, req_json)
+    assert cached is not None
+
+    # alt=sse endpoint should bypass cache lookup
+    _, cached_sse = interceptor.intercept_request(endpoint_sse, req_json)
+    assert cached_sse is None
+
+    # alt=sse endpoint should bypass cache store
+    interceptor_fresh = MITMProxyInterceptor(cache_dir=str(tmp_path / "cache_fresh"), enable_caching=True)
+    interceptor_fresh.intercept_response(endpoint_sse, req_json, resp_json, status_code=200)
+    _, cached_lookup = interceptor_fresh.intercept_request(endpoint_standard, req_json)
+    assert cached_lookup is None
+
+
+def test_anthropic_sse_thinking_delta_fallback():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_token_counts
+
+    sse_data = (
+        'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}\n'
+        'data: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "1234567890123456"}}\n'
+        'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "12345678"}}\n'
+        'data: {"type": "message_stop"}\n'
+    )
+    # Total chars = 16 (thinking) + 8 (text) = 24 chars -> output_tokens = 24 // 4 = 6
+    _, out_tokens, _ = extract_sse_token_counts(sse_data, {"prompt": "think"}, provider="anthropic")
+    assert out_tokens == 6
+
+
+def test_find_nested_key_type_guard():
+    from sandbox_executor.token_reduction.mitm_addon import find_nested_key
+
+    assert find_nested_key(12345, "key") is None
+    assert find_nested_key("string_value", "key") is None
+    assert find_nested_key(None, "key") is None
+    assert find_nested_key(3.1415, "key") is None
+    assert find_nested_key(True, "key") is None
+    assert find_nested_key(object(), "key") is None
+    # Valid dict and list should still work
+    assert find_nested_key({"target": "found"}, "target") == "found"
+    assert find_nested_key([{"target": "found"}], "target") == "found"
+
+
+def test_log_telemetry_ctx_handling(monkeypatch, caplog):
+    import sandbox_executor.token_reduction.mitm_addon as mitm_module
+    from sandbox_executor.token_reduction.mitm_addon import log_telemetry
+
+    # 1. Test when ctx is available and has log.info
+    fake_ctx_log = MagicMock()
+    fake_ctx = SimpleNamespace(log=SimpleNamespace(info=fake_ctx_log))
+    monkeypatch.setattr(mitm_module, "ctx", fake_ctx)
+
+    log_telemetry("test ctx message")
+    fake_ctx_log.assert_called_once_with("test ctx message")
+
+    # 2. Test when ctx is None, falls back to logger.info
+    monkeypatch.setattr(mitm_module, "ctx", None)
+    with caplog.at_level(logging.INFO):
+        log_telemetry("test fallback message")
+    assert any("test fallback message" in r.message for r in caplog.records)
