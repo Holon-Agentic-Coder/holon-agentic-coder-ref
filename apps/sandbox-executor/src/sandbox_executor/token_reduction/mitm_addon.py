@@ -41,6 +41,8 @@ _SECRET_HEADER_NAMES = {
     "cookie",
     "set-cookie",
     "x-auth-token",
+    "openai-api-key",
+    "x-session-token",
 }
 
 _URL_QUERY_SECRET_PATTERN = re.compile(r'(?i)([?&](?:key|api_key|apiKey|token|access_token)=)[^&\s"\'`<>#]+')
@@ -136,9 +138,19 @@ def is_wire_logging_enabled() -> bool:
     return flag not in ("0", "false", "no", "off")
 
 
-_wire_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mitm_wire_logger")
+_wire_log_executor: concurrent.futures.ThreadPoolExecutor | None = None
 _pending_wire_log_futures: set[concurrent.futures.Future] = set()
 _wire_log_lock = threading.Lock()
+
+
+def _get_wire_log_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _wire_log_executor
+    with _wire_log_lock:
+        if _wire_log_executor is None or getattr(_wire_log_executor, "_shutdown", False):
+            _wire_log_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mitm_wire_logger"
+            )
+        return _wire_log_executor
 
 
 def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
@@ -152,10 +164,10 @@ def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
         filepath = os.path.join(wire_log_dir, filename)
 
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2, ensure_ascii=False)
+            json.dump(record, f, indent=2, ensure_ascii=False, default=str)
 
         jsonl_path = os.path.join(wire_log_dir, "transactions.jsonl")
-        line = json.dumps(record, ensure_ascii=False) + "\n"
+        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
         with open(jsonl_path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception as exc:
@@ -170,7 +182,7 @@ def dump_wire_transaction(record: dict[str, Any], wire_log_dir: str | None = Non
         dummy.set_result(None)
         return dummy
 
-    future = _wire_log_executor.submit(_write_transaction_sync, record, target_dir)
+    future = _get_wire_log_executor().submit(_write_transaction_sync, record, target_dir)
     with _wire_log_lock:
         _pending_wire_log_futures.add(future)
     future.add_done_callback(_discard_pending_future)
@@ -249,7 +261,6 @@ class MITMProxyInterceptor:
         self.cache_dir = cache_dir or os.getenv("CACHE_DIR", os.path.expanduser("~/.holon/cache"))
         self.enable_caching = enable_caching
         self._cache_store: HybridCacheStore | None = None
-        self.last_cleaning_result: CleaningResult | None = None
 
     @property
     def cache_store(self) -> HybridCacheStore:
@@ -306,37 +317,34 @@ class MITMProxyInterceptor:
 
         return "unknown"
 
-    def intercept_request(
+    def intercept_request_with_stats(
         self, endpoint: str, request_json: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        """Intercepts and optimizes an outgoing JSON API request payload.
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, CleaningResult | None]:
+        """Intercepts and optimizes an outgoing JSON API request payload, returning per-request stats cleanly.
 
         Tuple Return Design:
             1. First Element (cleaned_request_json): The cleaned request body (with deduplicated tool
                outputs and cache control breakpoints).
             2. Second Element (cached_response_or_none): The pre-cached LLM response payload served from the
                local SQLite database (llm_cache.db), or None on a cache miss.
-
-        Operational Impact in MitmproxyAddon:
-            This allows MitmproxyAddon.request(flow) to short-circuit HTTP network requests directly on cache
-            hits without sending outbound traffic to LLM provider endpoints (Anthropic/OpenAI/Gemini).
+            3. Third Element (cleaner_result_or_none): The CleaningResult dataclass capturing cleaner metrics,
+               or None if provider is unknown.
 
         Args:
             endpoint: The API endpoint URL or path.
             request_json: Incoming JSON body from agent.
 
         Returns:
-            tuple[dict[str, Any], dict[str, Any] | None]:
-                (cleaned_request_json, cached_response_or_none)
+            tuple[dict[str, Any], dict[str, Any] | None, CleaningResult | None]:
+                (cleaned_request_json, cached_response_or_none, cleaner_result_or_none)
         """
         provider = self.detect_provider(endpoint, request_json)
         if provider == "unknown":
             logger.warning("Unknown LLM provider for endpoint: %s. Bypassing payload cleaning.", endpoint)
-            return request_json, None
+            return request_json, None, None
 
         # Step 1: Clean and optimize request payload
         clean_res = self.cleaner.process_payload_with_stats(request_json, provider=provider)
-        self.last_cleaning_result = clean_res
         cleaned_request = clean_res.payload
 
         # Step 2: Check local cache if enabled (bypassed for streaming requests)
@@ -350,11 +358,18 @@ class MITMProxyInterceptor:
                 cached_response = self.cache_store.get(cleaned_request, provider=provider)
                 if cached_response is not None:
                     logger.info("Serving response from local cache for endpoint %s", endpoint)
-                    return cleaned_request, cached_response
+                    return cleaned_request, cached_response, clean_res
             except Exception:
                 logger.exception("Cache lookup failed for endpoint %s; bypassing cache.", endpoint)
 
-        return cleaned_request, None
+        return cleaned_request, None, clean_res
+
+    def intercept_request(
+        self, endpoint: str, request_json: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Intercepts and optimizes an outgoing JSON API request payload (backward-compatible 2-tuple)."""
+        cleaned_request, cached_response, _ = self.intercept_request_with_stats(endpoint, request_json)
+        return cleaned_request, cached_response
 
     def intercept_response(
         self,
@@ -921,6 +936,13 @@ class MitmproxyAddon:
     def done(self) -> None:
         """Called when mitmproxy is shutting down to flush in-flight logs."""
         flush_wire_logs(timeout=5.0)
+        global _wire_log_executor
+        with _wire_log_lock:
+            if _wire_log_executor is not None and not getattr(_wire_log_executor, "_shutdown", False):
+                try:
+                    _wire_log_executor.shutdown(wait=False)
+                except Exception as exc:
+                    logger.debug("Error shutting down wire log executor: %s", exc)
 
     def _dump_flow_transaction(
         self,
@@ -1041,8 +1063,14 @@ class MitmproxyAddon:
             try:
                 if data is not None:
                     flow.raw_request_data = copy.deepcopy(data)
-                    cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
-                    clean_res = getattr(self.interceptor, "last_cleaning_result", None)
+                    if (
+                        hasattr(self.interceptor, "intercept_request_with_stats")
+                        and "intercept_request" not in self.interceptor.__dict__
+                    ):
+                        cleaned_data, cached_resp, clean_res = self.interceptor.intercept_request_with_stats(url, data)
+                    else:
+                        cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
+                        clean_res = None
                     flow.cleaner_result = clean_res
                     flow.req_data = cleaned_data
                     flow.request.set_text(json.dumps(cleaned_data))

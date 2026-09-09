@@ -29,12 +29,48 @@ from pathlib import Path
 from typing import Any
 
 # Pricing constants ($ per MTok)
-PRICING = {
+PRICING: dict[str, dict[str, float]] = {
+    "claude-3-7-sonnet": {
+        "input": 3.00,
+        "output": 15.00,
+        "cache_write": 3.75,
+        "cache_read": 0.30,
+    },
     "claude-3-5-sonnet": {
         "input": 3.00,
         "output": 15.00,
         "cache_write": 3.75,
         "cache_read": 0.30,
+    },
+    "claude-3-5-haiku": {
+        "input": 0.80,
+        "output": 4.00,
+        "cache_write": 1.00,
+        "cache_read": 0.08,
+    },
+    "gpt-4o": {
+        "input": 2.50,
+        "output": 10.00,
+        "cache_write": 2.50,
+        "cache_read": 1.25,
+    },
+    "gpt-4o-mini": {
+        "input": 0.15,
+        "output": 0.60,
+        "cache_write": 0.15,
+        "cache_read": 0.075,
+    },
+    "gemini-1.5-pro": {
+        "input": 1.25,
+        "output": 5.00,
+        "cache_write": 1.25,
+        "cache_read": 0.3125,
+    },
+    "gemini-1.5-flash": {
+        "input": 0.075,
+        "output": 0.30,
+        "cache_write": 0.075,
+        "cache_read": 0.01875,
     },
     "gemini-2.5-flash": {
         "input": 0.10,
@@ -43,6 +79,17 @@ PRICING = {
         "cache_read": 0.025,
     },
 }
+
+
+def get_model_pricing(model_name: str) -> dict[str, float]:
+    """Resolves token pricing for standard frontier or lightweight models, defaulting to claude-3-5-sonnet."""
+    model_lower = model_name.lower()
+    for key, price_dict in PRICING.items():
+        if key in model_lower:
+            return price_dict
+    if any(lightweight in model_lower for lightweight in ("flash", "haiku", "mini")):
+        return PRICING["gemini-1.5-flash"]
+    return PRICING["claude-3-5-sonnet"]
 
 
 @dataclass
@@ -127,7 +174,7 @@ class BenchmarkSummary:
         return self._mean_std(lambda it: it.monetary_cost)
 
 
-def pre_clean_environment(cache_dir: Path, wire_log_dir: Path) -> None:
+def pre_clean_environment(cache_dir: Path, wire_log_dir: Path, clean_global_cache: bool = False) -> None:
     """Purges/isolates the SQLite cache database and archives previous transaction logs."""
     # 1. Purge/isolate SQLite cache
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -137,9 +184,9 @@ def pre_clean_environment(cache_dir: Path, wire_log_dir: Path) -> None:
             with contextlib.suppress(OSError):
                 sf.unlink()
 
-    # Also clean default ~/.holon/cache if present
+    # Avoid deleting global ~/.holon/cache if user specified custom --cache-dir
     default_holon_cache = Path.home() / ".holon" / "cache"
-    if default_holon_cache.exists():
+    if clean_global_cache and default_holon_cache.exists():
         for pat in sqlite_patterns:
             for sf in default_holon_cache.glob(pat):
                 with contextlib.suppress(OSError):
@@ -208,7 +255,7 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
 
     for tx in transactions:
         result.total_calls += 1
-        cache_action = tx.get("cache_action", "MISS")
+        cache_action = tx.get("cache_action") or (tx.get("cache") or {}).get("action") or "MISS"
         if cache_action == "HIT":
             result.local_cache_hits += 1
 
@@ -228,19 +275,19 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
 
         result.prompt_tokens += inp
         result.output_tokens += out
-        result.cache_read_tokens += c_read
+        if cache_action != "HIT":
+            result.cache_read_tokens += c_read
         result.cache_write_tokens += c_write
 
         # Model routing split
         raw_model = (tx.get("raw_request") or {}).get("model")
         clean_model = (tx.get("cleaned_request") or {}).get("model")
         model = str(raw_model or clean_model or tx.get("endpoint") or "").lower()
-        if "flash" in model:
+        pricing = get_model_pricing(model)
+        if any(lightweight in model for lightweight in ("flash", "haiku", "mini")):
             result.tier2_tokens += inp + out
-            pricing = PRICING["gemini-2.5-flash"]
         else:
             result.tier1_tokens += inp + out
-            pricing = PRICING["claude-3-5-sonnet"]
 
         # Financial cost calculation
         if cache_action == "HIT":
@@ -432,7 +479,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="A/B Benchmark Token Reduction Measurement")
     parser.add_argument("--iterations", "-n", type=int, default=3, help="Number of benchmark iterations (N >= 3)")
     parser.add_argument("--wire-log-dir", type=str, default=os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs"))
-    parser.add_argument("--cache-dir", type=str, default=os.getenv("CACHE_DIR", "todo/cache"))
+    parser.add_argument(
+        "--cache-dir", type=str, default=None, help="Cache directory (default: todo/cache or CACHE_DIR env)"
+    )
     parser.add_argument("--task-name", type=str, default="Refactor auth middleware & add unit tests")
     parser.add_argument(
         "--synthetic", action=argparse.BooleanOptionalAction, default=True, help="Run in synthetic benchmark mode"
@@ -456,7 +505,12 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
     wire_log_dir = (repo_root / args.wire_log_dir).resolve()
-    cache_dir = (repo_root / args.cache_dir).resolve()
+    user_specified_cache = args.cache_dir is not None
+    cache_dir_str = args.cache_dir or os.getenv("CACHE_DIR", "todo/cache")
+    cache_path = Path(cache_dir_str)
+    cache_dir = cache_path if cache_path.is_absolute() else (repo_root / cache_path).resolve()
+    # Avoid deleting global ~/.holon/cache if user specified custom --cache-dir
+    clean_global_cache = not user_specified_cache and "CACHE_DIR" not in os.environ
 
     print(f"🚀 Starting Token Reduction A/B Benchmark (N={args.iterations}, Temperature=0.0, Seed=42)...")
     print(f"📁 Wire Logs: {wire_log_dir}")
@@ -464,7 +518,7 @@ def main() -> int:
 
     # Step 1: Pre-clean environment
     print("\n🧹 Step 1: Executing Benchmark Pre-clean...")
-    pre_clean_environment(cache_dir, wire_log_dir)
+    pre_clean_environment(cache_dir, wire_log_dir, clean_global_cache=clean_global_cache)
 
     # Step 2: Run Baseline & Optimized iterations
     baseline_summary = BenchmarkSummary(name="Baseline (Direct)")
@@ -489,6 +543,13 @@ def main() -> int:
             if "--token-reduce" not in optimized_cmd:
                 optimized_cmd.append("--token-reduce")
         else:
+            print(
+                "\n⚠️  [WARNING] No custom workload --command provided in live mode (--no-synthetic).\n"
+                "   Defaulting to test suite ('uv run pytest apps/sandbox-executor/tests/test_token_reduction.py').\n"
+                "   Note: Unit tests mock network calls without sending traffic through proxy (127.0.0.1:8080).\n"
+                "   Workloads must route through proxy sidecar to measure live traffic and produce wire logs, e.g.:\n"
+                "   --command 'python apps/sandbox-executor/src/sandbox_executor/cli.py execute ... --token-reduce'\n"
+            )
             uv_bin = shutil.which("uv")
             if uv_bin:
                 default_test_cmd = ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_token_reduction.py"]
@@ -515,14 +576,14 @@ def main() -> int:
         for i in range(1, args.iterations + 1):
             reset_workspace_state(repo_root, force=args.force_reset_workspace)
             # Baseline run (direct egress)
-            pre_clean_environment(cache_dir, wire_log_dir)
+            pre_clean_environment(cache_dir, wire_log_dir, clean_global_cache=clean_global_cache)
             test_exit = subprocess.run(baseline_cmd, env=baseline_env, check=False).returncode
             b_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)
             baseline_summary.iterations.append(b_res)
 
             # Optimized run (proxy egress with token reduction)
             reset_workspace_state(repo_root, force=args.force_reset_workspace)
-            pre_clean_environment(cache_dir, wire_log_dir)
+            pre_clean_environment(cache_dir, wire_log_dir, clean_global_cache=clean_global_cache)
             test_exit = subprocess.run(optimized_cmd, env=optimized_env, check=False).returncode
             o_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)
             optimized_summary.iterations.append(o_res)

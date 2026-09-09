@@ -315,6 +315,21 @@ def _published_loopback_port(container_name: str) -> int | None:
     return None
 
 
+def _find_git_root(start_dir: str | None = None) -> str:
+    """Traverse upwards to find the git repository root containing .git, or fallback to start_dir / getcwd."""
+    for base in (start_dir, os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
+        if not base:
+            continue
+        cur = os.path.abspath(base)
+        while True:
+            if os.path.exists(os.path.join(cur, ".git")):
+                return cur
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+    return os.path.abspath(start_dir or os.getcwd())
+
+
 def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:
     """Start this run's mitmproxy sidecar and return the sandbox mounts and env vars.
 
@@ -347,22 +362,29 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     # the two files it expects, read-only, instead of the whole certificate directory.
     mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
 
-    host_wire_log_dir = os.getenv("WIRE_LOG_DIR") or os.path.abspath(
-        os.path.join(os.getcwd(), "todo", "mitm_wire_logs")
-    )
+    repo_root = _find_git_root()
+    host_wire_log_dir = os.getenv("WIRE_LOG_DIR") or os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
     os.makedirs(host_wire_log_dir, exist_ok=True)
 
-    host_cache_dir = os.getenv("CACHE_DIR") or os.path.abspath(os.path.join(os.getcwd(), "todo", "cache"))
+    host_cache_dir = os.getenv("CACHE_DIR") or os.path.abspath(os.path.join(repo_root, "todo", "cache"))
     os.makedirs(host_cache_dir, exist_ok=True)
 
     # Ensure non-root container UID 1000 can write without permission errors on Linux hosts
     for d in (host_wire_log_dir, host_cache_dir):
         try:
-            os.chmod(d, 0o777)
+            os.chmod(d, 0o775)
         except OSError as e:
-            logger.debug("Could not chmod 0o777 on %s: %s", d, e)
+            logger.debug("Could not chmod 0o775 on %s: %s", d, e)
 
     web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
+    if mitm_web:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(PROXY_CONNECT_TIMEOUT_SECONDS)
+            if s.connect_ex(("127.0.0.1", web_port)) == 0:
+                raise RuntimeError(
+                    f"Port {web_port} is already in use on 127.0.0.1. "
+                    "Specify a different dashboard port using HOLON_MITM_WEB_PORT=<port>."
+                )
 
     _sidecar_state.network_name = network_name
     _sidecar_state.network_created = _ensure_network(network_name)

@@ -2699,3 +2699,163 @@ def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
     res = ab_module.parse_wire_logs_into_result(wire_dir, 1, 0)
     assert res.tier2_tokens == 120
     assert res.tier1_tokens == 0
+
+
+def test_cli_directory_permissions_0o775_and_socket_conflict(monkeypatch):
+    chmod_calls = []
+    monkeypatch.setattr(cli.os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    # Test permissions 0o775
+    setup_token_reduction_proxy(mitm_web=False)
+    teardown_token_reduction_proxy()
+
+    wire_and_cache_modes = [mode for path, mode in chmod_calls if "mitm_wire_logs" in path or "cache" in path]
+    assert len(wire_and_cache_modes) >= 2
+    for mode in wire_and_cache_modes:
+        assert mode == 0o775
+
+    # Test socket conflict check when port is in use
+    class InUseSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect_ex(self, addr):
+            return 0  # In use
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: InUseSocket())
+    with pytest.raises(RuntimeError, match="already in use"):
+        setup_token_reduction_proxy(mitm_web=True)
+
+
+def test_write_transaction_sync_resilient_serialization(tmp_path):
+    import datetime
+
+    from sandbox_executor.token_reduction.mitm_addon import _write_transaction_sync
+
+    target_dir = tmp_path / "resilient_logs"
+    record = {
+        "turn_id": 1,
+        "flow_id": "f_non_primitive",
+        "timestamp": datetime.datetime(2026, 9, 10, 12, 0, 0, tzinfo=datetime.UTC),
+        "raw_request": {
+            "bytes_val": b"binary_data",
+            "set_val": {1, 2, 3},
+        },
+        "response": {"status": 200, "content": "ok"},
+    }
+
+    # Should not raise TypeError
+    _write_transaction_sync(record, str(target_dir))
+
+    jsonl = target_dir / "transactions.jsonl"
+    assert jsonl.is_file()
+    with open(jsonl) as f:
+        loaded = json.loads(f.readline())
+    assert loaded["turn_id"] == 1
+    assert "2026-09-10" in loaded["timestamp"]
+    assert "binary_data" in loaded["raw_request"]["bytes_val"]
+
+
+def test_mitm_addon_intercept_request_with_stats_no_state_leak(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(cache_dir=str(tmp_path))
+    assert not hasattr(interceptor, "last_cleaning_result")
+
+    url = "https://api.anthropic.com/v1/messages"
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    cleaned_req, cached_resp, stats = interceptor.intercept_request_with_stats(url, payload)
+    assert cleaned_req is not None
+    assert cached_resp is None
+    assert stats is not None
+    assert hasattr(stats, "chars_saved")
+    assert not hasattr(interceptor, "last_cleaning_result")
+
+
+def test_mitm_addon_secret_headers_extended():
+    from sandbox_executor.token_reduction.mitm_addon import scrub_headers
+
+    headers = {
+        "authorization": "Bearer secret1",
+        "openai-api-key": "sk-123456789012345678901234",
+        "x-session-token": "sess-token-abc-xyz",
+        "content-type": "application/json",
+    }
+    scrubbed = scrub_headers(headers)
+    assert scrubbed["authorization"] == "[REDACTED]"
+    assert scrubbed["openai-api-key"] == "[REDACTED]"
+    assert scrubbed["x-session-token"] == "[REDACTED]"
+    assert scrubbed["content-type"] == "application/json"
+
+
+def test_ab_measure_pricing_and_cache_hit_gate(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab_module
+    spec.loader.exec_module(ab_module)
+
+    # Test frontier model pricing
+    for m in [
+        "claude-3-7-sonnet",
+        "claude-3-5-sonnet",
+        "claude-3-5-haiku",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+    ]:
+        pricing = ab_module.get_model_pricing(m)
+        assert pricing is not None
+        assert "input" in pricing
+        assert "output" in pricing
+
+    # Test local cache hit gate on cache_read_tokens
+    tx_hit = {
+        "turn_id": 1,
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "cache_action": "HIT",
+        "response": {
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 1000,
+            }
+        },
+    }
+    wire_dir = tmp_path / "hit_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx_hit) + "\n")
+
+    res = ab_module.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.local_cache_hits == 1
+    # cache_read_tokens must NOT be incremented for local cache HIT
+    assert res.cache_read_tokens == 0
+    assert res.monetary_cost == 0.0
+
+    # Test pre_clean_environment isolates custom cache
+    custom_cache = tmp_path / "custom_cache"
+    custom_cache.mkdir()
+    (custom_cache / "test.db").write_text("data")
+    ab_module.pre_clean_environment(custom_cache, wire_dir, clean_global_cache=False)
+    assert not (custom_cache / "test.db").exists()
