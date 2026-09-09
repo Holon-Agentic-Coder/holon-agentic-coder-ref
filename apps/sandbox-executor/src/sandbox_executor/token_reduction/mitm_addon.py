@@ -115,7 +115,7 @@ def scrub_payload(data: Any) -> Any:
         return data
 
 
-_wire_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="mitm_wire_logger")
+_wire_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mitm_wire_logger")
 _pending_wire_log_futures: set[concurrent.futures.Future] = set()
 _wire_log_lock = threading.Lock()
 

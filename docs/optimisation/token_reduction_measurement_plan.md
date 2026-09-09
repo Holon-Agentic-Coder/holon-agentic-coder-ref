@@ -361,7 +361,7 @@ done
 
 $$\text{Cleaning Reduction Ratio} = \frac{\text{Tokens}_{\text{raw}} - \text{Tokens}_{\text{cleaned}}}{\text{Tokens}_{\text{raw}}} \times 100\%$$
 
-_(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0$)_
+_(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0$)\_
 
 > [!NOTE] **Tokenizer Discrepancy & Heuristics vs Exact Counts**: While character heuristic counters (e.g., ~4
 > chars/token) provide lightweight, zero-overhead telemetry within the proxy event loop for real-time diffing, official
@@ -408,7 +408,7 @@ _(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0
 
 $$\text{Local Cache Hit Rate} = \frac{\text{Requests}_{\text{cached}}}{\text{Requests}_{\text{total}}} \times 100\%$$
 
-_(with denominator guard: defaults to $0.0\%$ if $\text{Requests}_{\text{total}} = 0$)_
+_(with denominator guard: defaults to $0.0\%$ if $\text{Requests}_{\text{total}} = 0$)\_
 
 $$\text{Tokens Avoided} = \sum_{\text{cache hits}} (\text{Prompt Tokens} + \text{Completion Tokens})$$
 
@@ -486,7 +486,7 @@ simplifying net monetary savings strictly to cache read discounts._
 
 $$\text{Turn 0 Token Reduction} = \frac{\text{Tokens}_{\text{naive\_repo}} - \text{Tokens}_{\text{rag\_injected}}}{\text{Tokens}_{\text{naive\_repo}}} \times 100\%$$
 
-_(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{naive\_repo}} = 0$)_
+_(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{naive_repo}} = 0$)\_
 
 $$\text{Net RAG Trajectory Savings} = \sum \text{Tokens}_{\text{naive\_session}} - \sum \text{Tokens}_{\text{rag\_session}}$$
 
@@ -521,7 +521,7 @@ $$\text{Net Tokens Saved} = \sum \text{Tokens}_{\text{cold\_start}} - \sum \text
 
 $$\text{Token ROI (Ratio)} = \frac{\sum \text{Tokens}_{\text{cold\_start}} - \sum \text{Tokens}_{\text{with\_memory}}}{\sum \text{Tokens}_{\text{memory\_injected}}}$$
 
-_(with denominator guard: defaults to $0.0$ if $\sum \text{Tokens}_{\text{memory\_injected}} = 0$)_
+_(with denominator guard: defaults to $0.0$ if $\sum \text{Tokens}_{\text{memory_injected}} = 0$)\_
 
 _Note on Ephemeral vs Persistent Context Overhead_: In multi-turn chat architectures, prompt context grows monotonically
 ($O(N)$ or $O(N^2)$ prompt accumulation), making turns saved toward the end of an execution trajectory yield
@@ -568,7 +568,7 @@ output) and Tier 2 models (e.g., Gemini 2.5 Flash: \$0.10/MTok input vs \$0.40/M
 extended thinking/reasoning (e.g., Claude 3.7 Sonnet or OpenAI o-series), output tokens ($\text{Tokens}_{\text{out}}$)
 must explicitly aggregate both visible response tokens and internal reasoning/thinking tokens (e.g., Anthropic
 `thinking` blocks or OpenAI `completion_tokens_details.reasoning_tokens`), as provider pricing bills reasoning tokens at
-full completion rates._
+full completion rates.\_
 
 #### Instrumentation:
 
@@ -576,7 +576,7 @@ full completion rates._
   [`ringer_orchestrator.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/ringer_orchestrator.py),
   record separate token ledgers for the architect and each subagent child conversation.
 - Measure compression ratio: $\frac{\text{Tokens}_{\text{summary}}}{\text{Tokens}_{\text{raw\_subagent\_history}}}$
-  _(with denominator guard: defaults to $0.0$ if $\text{Tokens}_{\text{raw\_subagent\_history}} = 0$)_.
+  _(with denominator guard: defaults to $0.0$ if $\text{Tokens}_{\text{raw_subagent_history}} = 0$)\_.
 
 ---
 

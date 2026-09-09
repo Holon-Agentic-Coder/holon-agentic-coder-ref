@@ -196,7 +196,7 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         result.duplicate_tools_omitted += delta.get("tool_outputs_omitted", 0)
 
         turn_id = tx.get("turn_id", 0)
-        usage = tx.get("response", {}).get("usage") or {}
+        usage = (tx.get("response") or {}).get("usage") or {}
         inp = usage.get("input_tokens", 0)
         out = usage.get("output_tokens", 0)
         c_read = usage.get("cache_read_input_tokens", 0)
@@ -211,7 +211,9 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         result.cache_write_tokens += c_write
 
         # Model routing split
-        model = str(tx.get("raw_request", {}).get("model") or tx.get("cleaned_request", {}).get("model") or "").lower()
+        raw_model = (tx.get("raw_request") or {}).get("model")
+        clean_model = (tx.get("cleaned_request") or {}).get("model")
+        model = str(raw_model or clean_model or "").lower()
         if "flash" in model:
             result.tier2_tokens += inp + out
             pricing = PRICING["gemini-2.5-flash"]
