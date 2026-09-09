@@ -347,6 +347,12 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     # the two files it expects, read-only, instead of the whole certificate directory.
     mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
 
+    host_wire_log_dir = os.getenv("WIRE_LOG_DIR") or os.path.abspath(
+        os.path.join(os.getcwd(), "todo", "mitm_wire_logs")
+    )
+    os.makedirs(host_wire_log_dir, exist_ok=True)
+    web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
+
     _sidecar_state.network_name = network_name
     _sidecar_state.network_created = _ensure_network(network_name)
     _sidecar_state.container_name = container_name
@@ -371,10 +377,12 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         f"127.0.0.1::{PROXY_LISTEN_PORT}",
     ]
     if mitm_web:
-        docker_run_proxy.extend(["-p", "127.0.0.1:8081:8081"])
+        docker_run_proxy.extend(["-p", f"127.0.0.1:{web_port}:{web_port}"])
 
     docker_run_proxy.extend(
         [
+            "-e",
+            "WIRE_LOG_DIR=/tmp/wire_logs",
             "-v",
             f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
             "-v",
@@ -383,6 +391,8 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
             f"{mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
             "-v",
             f"{addon_path}:/tmp/mitm_addon.py:ro",
+            "-v",
+            f"{host_wire_log_dir}:/tmp/wire_logs",
             "mitmproxy/mitmproxy:12.2.3",
             "mitmweb" if mitm_web else "mitmdump",
             "-s",
@@ -394,7 +404,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         ]
     )
     if mitm_web:
-        docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", "8081"])
+        docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", str(web_port)])
 
     logger.info(
         "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
@@ -426,8 +436,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         )
 
     if mitm_web:
-        logger.info("🌐 mitmweb dashboard active at http://localhost:8081")
-        print("🌐 mitmweb dashboard active at http://localhost:8081")
+        logger.info("🌐 mitmweb dashboard active at http://localhost:%s", web_port)
 
     mounts = ["--network", network_name, *_gateway_host_args(), *_ca_mount_args(ca_cert_path)]
     return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")

@@ -118,6 +118,10 @@ class BenchmarkSummary:
         return self._mean_std(lambda it: it.local_cache_hits)
 
     @property
+    def cache_read_tokens_stats(self) -> tuple[float, float]:
+        return self._mean_std(lambda it: it.cache_read_tokens)
+
+    @property
     def monetary_cost_stats(self) -> tuple[float, float]:
         return self._mean_std(lambda it: it.monetary_cost)
 
@@ -126,17 +130,19 @@ def pre_clean_environment(cache_dir: Path, wire_log_dir: Path) -> None:
     """Purges/isolates the SQLite cache database and archives previous transaction logs."""
     # 1. Purge/isolate SQLite cache
     cache_dir.mkdir(parents=True, exist_ok=True)
-    sqlite_files = list(cache_dir.glob("*.db")) + list(cache_dir.glob("*.sqlite*"))
-    for sf in sqlite_files:
-        with contextlib.suppress(OSError):
-            sf.unlink()
+    sqlite_patterns = ("*.db", "*.db-wal", "*.db-shm", "*.sqlite*")
+    for pat in sqlite_patterns:
+        for sf in cache_dir.glob(pat):
+            with contextlib.suppress(OSError):
+                sf.unlink()
 
     # Also clean default ~/.holon/cache if present
     default_holon_cache = Path.home() / ".holon" / "cache"
     if default_holon_cache.exists():
-        for sf in default_holon_cache.glob("*.db"):
-            with contextlib.suppress(OSError):
-                sf.unlink()
+        for pat in sqlite_patterns:
+            for sf in default_holon_cache.glob(pat):
+                with contextlib.suppress(OSError):
+                    sf.unlink()
 
     # 2. Archive wire log dir
     if wire_log_dir.exists() and any(wire_log_dir.iterdir()):
@@ -149,8 +155,22 @@ def pre_clean_environment(cache_dir: Path, wire_log_dir: Path) -> None:
     wire_log_dir.mkdir(parents=True, exist_ok=True)
 
 
-def reset_workspace_state(repo_root: Path) -> None:
+def reset_workspace_state(repo_root: Path, force: bool = False) -> None:
     """Guarantees statistical independence between runs by discarding unstaged/untracked files."""
+    if not force:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status.stdout.strip():
+            print(
+                "⚠️ Warning: Workspace is dirty. Skipping git reset (pass --force-reset-workspace to force clean).",
+                file=sys.stderr,
+            )
+            return
     try:
         subprocess.run(["git", "checkout", "--", "."], cwd=str(repo_root), capture_output=True, check=False)
         subprocess.run(
@@ -202,7 +222,7 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         c_read = usage.get("cache_read_input_tokens", 0)
         c_write = usage.get("cache_creation_input_tokens", 0)
 
-        if turn_id == 0 and result.turn_0_prompt_tokens == 0:
+        if (turn_id in (0, 1) or result.total_calls == 1) and result.turn_0_prompt_tokens == 0:
             result.turn_0_prompt_tokens = inp
 
         result.prompt_tokens += inp
@@ -222,12 +242,16 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
             pricing = PRICING["claude-3-5-sonnet"]
 
         # Financial cost calculation
-        cost = (
-            (inp * pricing["input"] / 1_000_000.0)
-            + (out * pricing["output"] / 1_000_000.0)
-            + (c_write * pricing["cache_write"] / 1_000_000.0)
-            + (c_read * pricing["cache_read"] / 1_000_000.0)
-        )
+        if cache_action == "HIT":
+            cost = 0.0
+        else:
+            uncached_inp = max(0, inp - c_read - c_write)
+            cost = (
+                (uncached_inp * pricing["input"] / 1_000_000.0)
+                + (out * pricing["output"] / 1_000_000.0)
+                + (c_write * pricing["cache_write"] / 1_000_000.0)
+                + (c_read * pricing["cache_read"] / 1_000_000.0)
+            )
         result.monetary_cost += cost
 
     return result
@@ -311,8 +335,19 @@ def format_scorecard(
     t0_pct = (t0_diff / max(1.0, b_t0_mean)) * 100.0
 
     o_prune_mean, o_prune_std = optimized.pruned_bytes_stats
+    o_dups_mean, _ = optimized.duplicate_tools_stats
     o_hit_rate, o_hit_std = optimized.cache_hit_rate_stats
+    o_cread_mean, _ = optimized.cache_read_tokens_stats
     o_cache_hits, _ = optimized.local_cache_hits_stats
+
+    total_calls_mean = sum(it.total_calls for it in optimized.iterations) / max(1, len(optimized.iterations))
+    call_pct = (o_cache_hits / max(1.0, total_calls_mean)) * 100.0
+
+    o_t1 = sum(it.tier1_tokens for it in optimized.iterations) / max(1, len(optimized.iterations))
+    o_t2 = sum(it.tier2_tokens for it in optimized.iterations) / max(1, len(optimized.iterations))
+    tot_tokens = max(1.0, o_t1 + o_t2)
+    o_t1_pct = round((o_t1 / tot_tokens) * 100)
+    o_t2_pct = round((o_t2 / tot_tokens) * 100)
 
     b_cost_mean, b_cost_std = baseline.monetary_cost_stats
     o_cost_mean, o_cost_std = optimized.monetary_cost_stats
@@ -358,19 +393,20 @@ def format_scorecard(
         ),
         (
             f"| **Tool Output Redundancy Pruned** | 0 bytes | "
-            f"{o_prune_mean:,.0f} ± {o_prune_std:,.0f} bytes | **12 duplicate file reads omitted** |"
+            f"{o_prune_mean:,.0f} ± {o_prune_std:,.0f} bytes | **{int(o_dups_mean)} duplicate file reads omitted** |"
         ),
         (
             f"| **Provider Prompt Cache Hit Rate** | 0% | "
-            f"{o_hit_rate:.1f}% ± {o_hit_std:.1f}% | **37,788 tokens billed at 90% discount** |"
+            f"{o_hit_rate:.1f}% ± {o_hit_std:.1f}% | **{o_cread_mean:,.0f} tokens billed at 90% discount** |"
         ),
         (
             f"| **Local Cache Short-Circuits** | 0 calls | "
-            f"{int(o_cache_hits)} calls | **{int(o_cache_hits)} calls (11%) served at 0 tokens** |"
+            f"{int(o_cache_hits)} calls | **{int(o_cache_hits)} calls ({call_pct:.0f}%) served at 0 tokens** |"
         ),
         (
-            "| **Architect / Executor Token Split** | 100% Sonnet | "
-            "25% Sonnet / 75% Flash | **75% of execution delegated to cheap tier** |"
+            f"| **Architect / Executor Token Split** | 100% Sonnet | "
+            f"{o_t1_pct:.0f}% Sonnet / {o_t2_pct:.0f}% Flash | "
+            f"**{o_t2_pct:.0f}% of execution delegated to cheap tier** |"
         ),
         ("| **Episodic Memory Turns Saved** | 0 turns | 3 turns | **Setup error avoided via OpenBrain memory** |"),
         (
@@ -401,6 +437,12 @@ def main() -> int:
         "--synthetic", action=argparse.BooleanOptionalAction, default=True, help="Run in synthetic benchmark mode"
     )
     parser.add_argument(
+        "--force-reset-workspace",
+        action="store_true",
+        default=False,
+        help="Force git reset/clean between benchmark iterations in live mode",
+    )
+    parser.add_argument(
         "--output", "-o", type=str, default="todo/scorecard_report.md", help="Output scorecard markdown path"
     )
     args = parser.parse_args()
@@ -422,13 +464,11 @@ def main() -> int:
     optimized_summary = BenchmarkSummary(name="Optimized (All 6 Active)")
 
     if args.synthetic:
-        print("\n🔬 Step 2: Executing benchmark iterations with statistical independent resets...")
+        print("\n🔬 Step 2: Executing benchmark iterations...")
         for i in range(1, args.iterations + 1):
-            reset_workspace_state(repo_root)
             b_res = generate_synthetic_iteration(i, optimized=False)
             baseline_summary.iterations.append(b_res)
 
-            reset_workspace_state(repo_root)
             o_res = generate_synthetic_iteration(i, optimized=True)
             optimized_summary.iterations.append(o_res)
             print(f"   ✓ Iteration {i}/{args.iterations} completed (Exit Code 0, Guardrail Met)")
@@ -437,7 +477,7 @@ def main() -> int:
         print("\n⚙️ Running live task suite execution...")
         test_cmd = ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_token_reduction.py"]
         for i in range(1, args.iterations + 1):
-            reset_workspace_state(repo_root)
+            reset_workspace_state(repo_root, force=args.force_reset_workspace)
             # Baseline run
             pre_clean_environment(cache_dir, wire_log_dir)
             test_exit = subprocess.run(test_cmd, check=False).returncode
@@ -445,7 +485,7 @@ def main() -> int:
             baseline_summary.iterations.append(b_res)
 
             # Optimized run
-            reset_workspace_state(repo_root)
+            reset_workspace_state(repo_root, force=args.force_reset_workspace)
             pre_clean_environment(cache_dir, wire_log_dir)
             test_exit = subprocess.run(test_cmd, check=False).returncode
             o_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)

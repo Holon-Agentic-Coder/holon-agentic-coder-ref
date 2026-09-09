@@ -2276,6 +2276,7 @@ def test_secret_scrubbing():
         "github_pat_11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
         "AKIAIOSFODNN7EXAMPLE",
         "ASIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
         "hf_abcdefghijklmnopqrstuvwxyz012345678",
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
         "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----",
@@ -2294,6 +2295,9 @@ def test_secret_scrubbing():
         "Holon-Agent-Key": "agent-key",
         "Proxy-Authorization": "Basic dXNlcjpwYXNz",
         "X-Amz-Security-Token": "amz-token",
+        "Cookie": "session=xyz123; user=admin",
+        "Set-Cookie": "auth=secrettoken",
+        "X-Auth-Token": "my-x-auth-token",
         "Content-Type": "application/json",
     }
     scrubbed_h = scrub_headers(headers)
@@ -2305,6 +2309,9 @@ def test_secret_scrubbing():
         "holon-agent-key",
         "proxy-authorization",
         "x-amz-security-token",
+        "cookie",
+        "set-cookie",
+        "x-auth-token",
     ]:
         assert scrubbed_h[k] == "[REDACTED]"
     assert scrubbed_h["content-type"] == "application/json"
@@ -2319,12 +2326,20 @@ def test_secret_scrubbing():
             }
         ],
         "metadata": {"token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
+        "credentials": {
+            "password": "super-secret-password",
+            "api_key": "custom-unmatched-secret-value",
+            "access_token": "my-custom-access-token",
+        },
     }
     scrubbed_p = scrub_payload(payload)
     assert "sk-ant-" not in json.dumps(scrubbed_p)
     assert "ghp_" not in json.dumps(scrubbed_p)
     assert "[REDACTED_SECRET]" in scrubbed_p["messages"][0]["content"]
     assert "[REDACTED_SECRET]" in scrubbed_p["metadata"]["token"]
+    assert scrubbed_p["credentials"]["password"] == "[REDACTED]"
+    assert scrubbed_p["credentials"]["api_key"] == "[REDACTED]"
+    assert scrubbed_p["credentials"]["access_token"] == "[REDACTED]"
 
 
 def test_derive_turn_id_precedence():
@@ -2425,7 +2440,7 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 
-    _mounts, _ = setup_token_reduction_proxy(mitm_web=True)
+    setup_token_reduction_proxy(mitm_web=True)
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
     joined_run = " ".join(run_cmd)
 
@@ -2436,6 +2451,9 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     # Verify web host and port arguments
     assert "--web-host 0.0.0.0" in joined_run
     assert "--web-port 8081" in joined_run
+    # Verify WIRE_LOG_DIR is mounted and set
+    assert "-e WIRE_LOG_DIR=/tmp/wire_logs" in joined_run
+    assert ":/tmp/wire_logs" in joined_run
     teardown_token_reduction_proxy()
 
 
@@ -2470,3 +2488,105 @@ def test_extract_detailed_token_counts_sse_streams():
     assert counts_oai["cache_read_input_tokens"] == 80
     assert counts_oai["cache_creation_input_tokens"] == 0
     assert counts_oai["reasoning_tokens"] == 15
+
+
+def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setenv("HOLON_MITM_WEB_PORT", "9090")
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    setup_token_reduction_proxy(mitm_web=True)
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    joined_run = " ".join(run_cmd)
+
+    assert "127.0.0.1:9090:9090" in joined_run
+    assert "--web-port 9090" in joined_run
+    teardown_token_reduction_proxy()
+
+
+def test_turn_id_sanitization_prevents_traversal(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import _write_transaction_sync
+
+    target_dir = tmp_path / "wire_logs"
+    record = {
+        "turn_id": "../../etc/malicious",
+        "flow_id": "../../escape",
+        "timestamp": "2026-09-10T00:00:00Z",
+    }
+    _write_transaction_sync(record, str(target_dir))
+
+    # All generated files must reside strictly within target_dir
+    files = list(target_dir.iterdir())
+    assert len(files) == 2  # turn_*.json and transactions.jsonl
+    turn_file = next(f for f in files if f.name.startswith("turn_"))
+    assert ".." not in turn_file.name
+    assert "/" not in turn_file.name
+    assert turn_file.name == "turn_______etc_malicious_______escape.json"
+
+
+def test_enable_wire_logging_toggle(tmp_path, monkeypatch):
+    from sandbox_executor.token_reduction.mitm_addon import dump_wire_transaction
+
+    target_dir = tmp_path / "disabled_logs"
+
+    monkeypatch.setenv("ENABLE_WIRE_LOGGING", "0")
+    record = {"turn_id": 1, "flow_id": "f1"}
+    future = dump_wire_transaction(record, str(target_dir))
+    future.result()
+
+    assert not target_dir.exists()
+
+
+def test_extract_sse_content_anthropic_tools():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_content
+
+    anthropic_tool_sse = (
+        'data: {"type": "content_block_start", "index": 0, '
+        '"content_block": {"type": "tool_use", "id": "t1", "name": "run_command"}}\n\n'
+        'data: {"type": "content_block_delta", "index": 0, '
+        '"delta": {"type": "input_json_delta", "partial_json": "{\\"command\\": "}}\n\n'
+        'data: {"type": "content_block_delta", "index": 0, '
+        '"delta": {"type": "input_json_delta", "partial_json": "\\"ls\\"}"}}\n\n'
+        'data: {"type": "content_block_stop", "index": 0}\n\n'
+    )
+    extracted = extract_sse_content(anthropic_tool_sse, "anthropic")
+    assert 'run_command({"command": "ls"})' in extracted
+
+
+def test_mitm_addon_done_and_non_200_logging(tmp_path):
+    import time
+
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    wire_dir = tmp_path / "addon_logs"
+    addon = MitmproxyAddon(wire_log_dir=str(wire_dir))
+
+    flow = SimpleNamespace(
+        id="flow_400",
+        provider="anthropic",
+        is_cached=False,
+        request=SimpleNamespace(
+            pretty_url="https://api.anthropic.com/v1/messages",
+            headers={"x-holon-agent-id": "test_agent"},
+            get_text=lambda: '{"model": "claude-3-5-sonnet", "messages": []}',
+        ),
+        response=SimpleNamespace(
+            status_code=400,
+            headers={"content-type": "application/json"},
+            get_text=lambda: '{"error": {"type": "invalid_request_error", "message": "Bad request"}}',
+        ),
+        request_start_time=time.perf_counter() - 0.1,
+    )
+
+    addon.response(flow)
+    addon.done()
+
+    # Verify transaction was dumped
+    jsonl = wire_dir / "transactions.jsonl"
+    assert jsonl.is_file()
+    with open(jsonl) as f:
+        data = json.loads(f.readline())
+    assert data["response"]["status"] == 400
+    assert "error" in data["response"]["content"]

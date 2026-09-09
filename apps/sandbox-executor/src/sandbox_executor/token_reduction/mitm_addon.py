@@ -1,5 +1,6 @@
 """MITM proxy interceptor & addon for LLM API request optimization and response caching (Phase 3)."""
 
+import atexit
 import concurrent.futures
 import copy
 import json
@@ -37,6 +38,9 @@ _SECRET_HEADER_NAMES = {
     "holon-agent-key",
     "proxy-authorization",
     "x-amz-security-token",
+    "cookie",
+    "set-cookie",
+    "x-auth-token",
 }
 
 _URL_QUERY_SECRET_PATTERN = re.compile(r'(?i)([?&](?:key|api_key|apiKey|token|access_token)=)[^&\s"\'`<>#]+')
@@ -56,7 +60,7 @@ _BODY_SECRET_PATTERNS = [
     re.compile(r"\bASIA[0-9A-Z]{16}\b"),
     # AWS secret access key
     re.compile(
-        r'(?i)\b(?:aws_secret_access_key|aws_secret_key|secret_access_key)\s*[:=]\s*["\']?([A-Za-z0-9/+=]{40})["\']?'
+        r'(?i)\b(?:aws_secret_access_key|aws_secret_key|secret_access_key)\s*[:=]\s*["\']?(?:[A-Za-z0-9/+=]{40})["\']?'
     ),
     # Hugging Face
     re.compile(r"\bhf_[a-zA-Z0-9]{34,}\b"),
@@ -68,6 +72,10 @@ _BODY_SECRET_PATTERNS = [
         r"[\s\S]*?-----END (?:[A-Z\s]+ )?PRIVATE KEY(?: BLOCK)?-----"
     ),
 ]
+
+_SECRET_DICT_KEY_PATTERN = re.compile(
+    r"(?i)^(?:password|passwd|api_key|api-key|apikey|secret|access_token|access-token|auth_token|auth-token|secret_key|private_key)$"
+)
 
 
 def scrub_string(text: str) -> str:
@@ -106,13 +114,26 @@ def scrub_headers(headers: Any) -> dict[str, str]:
 def scrub_payload(data: Any) -> Any:
     """Recursively scrubs sensitive keys and credentials in JSON-serializable payloads."""
     if isinstance(data, dict):
-        return {k: scrub_payload(v) for k, v in data.items()}
+        cleaned: dict[str, Any] = {}
+        for k, v in data.items():
+            k_str = str(k).lower()
+            if _SECRET_DICT_KEY_PATTERN.match(k_str):
+                cleaned[k] = "[REDACTED]"
+            else:
+                cleaned[k] = scrub_payload(v)
+        return cleaned
     elif isinstance(data, list):
         return [scrub_payload(elem) for elem in data]
     elif isinstance(data, str):
         return scrub_string(data)
     else:
         return data
+
+
+def is_wire_logging_enabled() -> bool:
+    """Checks whether wire logging is enabled via environment configuration."""
+    flag = os.getenv("ENABLE_WIRE_LOGGING", "1").lower().strip()
+    return flag not in ("0", "false", "no", "off")
 
 
 _wire_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mitm_wire_logger")
@@ -125,8 +146,9 @@ def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
         os.makedirs(wire_log_dir, exist_ok=True)
         turn_id = record.get("turn_id", 0)
         flow_id = record.get("flow_id", "flow")
+        safe_turn_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(turn_id))
         safe_flow_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(flow_id))
-        filename = f"turn_{turn_id}_{safe_flow_id}.json"
+        filename = f"turn_{safe_turn_id}_{safe_flow_id}.json"
         filepath = os.path.join(wire_log_dir, filename)
 
         with open(filepath, "w", encoding="utf-8") as f:
@@ -143,10 +165,15 @@ def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
 def dump_wire_transaction(record: dict[str, Any], wire_log_dir: str | None = None) -> concurrent.futures.Future:
     """Asynchronously writes turn-scoped JSON dump and atomic JSONL entry."""
     target_dir = wire_log_dir or os.getenv("WIRE_LOG_DIR", WIRE_LOG_DIR)
+    if not is_wire_logging_enabled() or not target_dir:
+        dummy: concurrent.futures.Future = concurrent.futures.Future()
+        dummy.set_result(None)
+        return dummy
+
     future = _wire_log_executor.submit(_write_transaction_sync, record, target_dir)
     with _wire_log_lock:
         _pending_wire_log_futures.add(future)
-    future.add_done_callback(lambda f: _discard_pending_future(f))
+    future.add_done_callback(_discard_pending_future)
     return future
 
 
@@ -161,6 +188,9 @@ def flush_wire_logs(timeout: float = 5.0) -> None:
         pending = list(_pending_wire_log_futures)
     if pending:
         concurrent.futures.wait(pending, timeout=timeout)
+
+
+atexit.register(flush_wire_logs)
 
 
 def derive_turn_id(
@@ -471,6 +501,7 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
     """Extracts aggregated completion text from SSE lines."""
     accumulated_content: list[str] = []
     lines = resp_text.splitlines()
+    in_anthropic_tool = False
     for line in lines:
         line = line.strip()
         if not line.startswith("data:"):
@@ -486,6 +517,13 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
             continue
 
         if provider == "anthropic":
+            content_block = chunk.get("content_block") or {}
+            if content_block.get("type") == "tool_use":
+                in_anthropic_tool = True
+                name = content_block.get("name", "")
+                if name:
+                    accumulated_content.append(f"{name}(")
+
             delta = find_nested_key(chunk, ("delta",)) or {}
             text = delta.get("text", "")
             if text:
@@ -493,6 +531,13 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
             thinking = delta.get("thinking", "")
             if thinking:
                 accumulated_content.append(thinking)
+            partial_json = delta.get("partial_json", "")
+            if partial_json:
+                accumulated_content.append(partial_json)
+
+            if in_anthropic_tool and chunk.get("type") == "content_block_stop":
+                accumulated_content.append(")")
+                in_anthropic_tool = False
         elif provider == "openai":
             choices = find_nested_key(chunk, ("choices",))
             if isinstance(choices, list):
@@ -849,6 +894,10 @@ class MitmproxyAddon:
         self.total_requests = 0
         self.cache_hits = 0
 
+    def done(self) -> None:
+        """Called when mitmproxy is shutting down to flush in-flight logs."""
+        flush_wire_logs(timeout=5.0)
+
     def _dump_flow_transaction(
         self,
         flow: Any,
@@ -859,6 +908,8 @@ class MitmproxyAddon:
         ttft: float | None = None,
         total_time: float | None = None,
     ) -> None:
+        if not is_wire_logging_enabled():
+            return
         try:
             url = getattr(flow.request, "pretty_url", "")
             flow_headers = getattr(flow.request, "headers", {})
@@ -1172,6 +1223,37 @@ class MitmproxyAddon:
             elapsed_ms = (time.perf_counter() - start_t) * 1000
             log_msg = f"⚠️ [TELEMETRY] Provider: {provider.upper()} | Status: {status_code} | Total: {elapsed_ms:.1f}ms"
             log_telemetry(log_msg)
+
+            try:
+                req_data = getattr(flow, "req_data", None)
+                if req_data is None and getattr(flow, "request", None) and hasattr(flow.request, "get_text"):
+                    req_text = flow.request.get_text()
+                    if req_text:
+                        try:
+                            req_data = json.loads(req_text)
+                        except Exception:
+                            req_data = req_text
+
+                resp_data = None
+                if getattr(flow, "response", None) and hasattr(flow.response, "get_text"):
+                    resp_text = flow.response.get_text()
+                    if resp_text:
+                        try:
+                            resp_data = json.loads(resp_text)
+                        except Exception:
+                            resp_data = resp_text
+
+                self._dump_flow_transaction(
+                    flow,
+                    resp_data=resp_data,
+                    status_code=status_code,
+                    is_hit=False,
+                    is_sse=False,
+                    ttft=None,
+                    total_time=(elapsed_ms / 1000.0),
+                )
+            except Exception as exc:
+                logger.debug("Failed to record non-200 wire transaction: %s", exc)
 
 
 addons = [MitmproxyAddon()]
