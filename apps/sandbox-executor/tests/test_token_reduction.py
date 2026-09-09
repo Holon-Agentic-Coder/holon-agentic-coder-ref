@@ -2454,6 +2454,9 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     # Verify WIRE_LOG_DIR is mounted and set
     assert "-e WIRE_LOG_DIR=/tmp/wire_logs" in joined_run
     assert ":/tmp/wire_logs" in joined_run
+    # Verify CACHE_DIR is mounted and set
+    assert "-e CACHE_DIR=/tmp/cache" in joined_run
+    assert ":/tmp/cache" in joined_run
     teardown_token_reduction_proxy()
 
 
@@ -2488,6 +2491,19 @@ def test_extract_detailed_token_counts_sse_streams():
     assert counts_oai["cache_read_input_tokens"] == 80
     assert counts_oai["cache_creation_input_tokens"] == 0
     assert counts_oai["reasoning_tokens"] == 15
+
+    # Google Gemini SSE stream with usageMetadata, cachedContentTokenCount, candidatesTokenCount, reasoningTokenCount
+    gemini_sse = (
+        'data: {"candidates": [{"content": {"parts": [{"text": "Hello world"}]}}], '
+        '"usageMetadata": {"promptTokenCount": 95, "candidatesTokenCount": 42, '
+        '"cachedContentTokenCount": 30, "reasoningTokenCount": 18}}\n\n'
+    )
+    counts_gem = extract_detailed_token_counts({}, gemini_sse, "gemini")
+    assert counts_gem["input_tokens"] == 95
+    assert counts_gem["output_tokens"] == 42
+    assert counts_gem["cache_read_input_tokens"] == 30
+    assert counts_gem["cache_creation_input_tokens"] == 0
+    assert counts_gem["reasoning_tokens"] == 18
 
 
 def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
@@ -2555,6 +2571,62 @@ def test_extract_sse_content_anthropic_tools():
     assert 'run_command({"command": "ls"})' in extracted
 
 
+def test_extract_sse_content_openai_tools():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_content
+
+    openai_tool_sse = (
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "function": {"name": "run_command", "arguments": ""}}]}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "function": {"arguments": "{\\"command\\": "}}]}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "function": {"arguments": "\\"ls\\"}"}}]}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    extracted = extract_sse_content(openai_tool_sse, "openai")
+    assert 'run_command({"command": "ls"})' in extracted
+
+
+def test_dump_flow_transaction_case_insensitive_agent_headers(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    wire_dir = tmp_path / "addon_logs"
+    addon = MitmproxyAddon(wire_log_dir=str(wire_dir))
+
+    flow = SimpleNamespace(
+        id="flow_headers_case",
+        provider="anthropic",
+        is_cached=False,
+        request=SimpleNamespace(
+            pretty_url="https://api.anthropic.com/v1/messages",
+            headers={
+                "X-Holon-Agent-Id": "custom_architect",
+                "X-Holon-Agent-Role": "planner",
+                "X-Holon-Turn-Id": "7",
+            },
+            get_text=lambda: '{"model": "claude-3-5-sonnet", "messages": []}',
+        ),
+        response=SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            get_text=lambda: '{"usage": {"input_tokens": 10, "output_tokens": 5}}',
+        ),
+        request_start_time=1.0,
+    )
+
+    addon.response(flow)
+    addon.done()
+
+    jsonl = wire_dir / "transactions.jsonl"
+    assert jsonl.is_file()
+    with open(jsonl) as f:
+        data = json.loads(f.readline())
+    assert data["agent_id"] == "custom_architect"
+    assert data["agent_role"] == "planner"
+    assert data["turn_id"] == 7
+
+
 def test_mitm_addon_done_and_non_200_logging(tmp_path):
     import time
 
@@ -2590,3 +2662,39 @@ def test_mitm_addon_done_and_non_200_logging(tmp_path):
         data = json.loads(f.readline())
     assert data["response"]["status"] == 400
     assert "error" in data["response"]["content"]
+
+
+def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab_module
+    spec.loader.exec_module(ab_module)
+
+    # Test endpoint model resolution fallback when model is absent from request payload
+    tx = {
+        "turn_id": 1,
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+        "raw_request": {},
+        "cleaned_request": {},
+        "response": {
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+            }
+        },
+    }
+    wire_dir = tmp_path / "endpoint_wire_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    res = ab_module.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.tier2_tokens == 120
+    assert res.tier1_tokens == 0

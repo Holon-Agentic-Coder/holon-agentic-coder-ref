@@ -193,6 +193,21 @@ def flush_wire_logs(timeout: float = 5.0) -> None:
 atexit.register(flush_wire_logs)
 
 
+def get_header_case_insensitive(headers: Any, target_header: str) -> str | None:
+    """Extracts header value matching target_header case-insensitively."""
+    if headers:
+        if hasattr(headers, "items"):
+            target_lower = target_header.lower()
+            for k, v in headers.items():
+                if str(k).lower() == target_lower and v:
+                    return str(v)
+        elif hasattr(headers, "get"):
+            val = headers.get(target_header)
+            if val:
+                return str(val)
+    return None
+
+
 def derive_turn_id(
     headers: Any,
     payload: dict[str, Any] | None,
@@ -204,20 +219,12 @@ def derive_turn_id(
     3. Sequential fallback counter
     """
     if headers:
-        if hasattr(headers, "items"):
-            for k, v in headers.items():
-                if str(k).lower() == "x-holon-turn-id" and v:
-                    try:
-                        return int(v)
-                    except ValueError:
-                        return v
-        elif isinstance(headers, dict):
-            for k, v in headers.items():
-                if k.lower() == "x-holon-turn-id" and v:
-                    try:
-                        return int(v)
-                    except ValueError:
-                        return v
+        val = get_header_case_insensitive(headers, "x-holon-turn-id")
+        if val is not None:
+            try:
+                return int(val)
+            except ValueError:
+                return val
 
     if isinstance(payload, dict):
         messages = payload.get("messages")
@@ -502,6 +509,7 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
     accumulated_content: list[str] = []
     lines = resp_text.splitlines()
     in_anthropic_tool = False
+    in_openai_tool = False
     for line in lines:
         line = line.strip()
         if not line.startswith("data:"):
@@ -547,6 +555,9 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
                         if isinstance(delta, dict):
                             content = delta.get("content")
                             if isinstance(content, str):
+                                if in_openai_tool:
+                                    accumulated_content.append(")")
+                                    in_openai_tool = False
                                 accumulated_content.append(content)
                             tool_calls = delta.get("tool_calls")
                             if isinstance(tool_calls, list):
@@ -554,8 +565,16 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
                                     fn = tc.get("function", {}) if isinstance(tc, dict) else {}
                                     fn_name = fn.get("name", "")
                                     args = fn.get("arguments", "")
-                                    if fn_name or args:
-                                        accumulated_content.append(f"{fn_name}({args})")
+                                    if fn_name:
+                                        if in_openai_tool:
+                                            accumulated_content.append(")")
+                                        accumulated_content.append(f"{fn_name}(")
+                                        in_openai_tool = True
+                                    if args:
+                                        accumulated_content.append(args)
+                        if choice.get("finish_reason") in ("tool_calls", "stop") and in_openai_tool:
+                            accumulated_content.append(")")
+                            in_openai_tool = False
         elif provider == "gemini":
             candidates = find_nested_key(chunk, ("candidates",))
             if isinstance(candidates, list):
@@ -572,6 +591,9 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
                                         func_call = part.get("functionCall")
                                         if isinstance(func_call, dict):
                                             accumulated_content.append(json.dumps(func_call))
+
+    if in_openai_tool:
+        accumulated_content.append(")")
 
     return "".join(accumulated_content)
 
@@ -917,10 +939,10 @@ class MitmproxyAddon:
 
             # IDs and Role
             flow_id = getattr(flow, "id", None) or f"flow_{uuid.uuid4().hex[:8]}"
-            agent_id = getattr(flow_headers, "get", lambda _: None)("x-holon-agent-id") or os.getenv(
+            agent_id = get_header_case_insensitive(flow_headers, "x-holon-agent-id") or os.getenv(
                 "HOLON_AGENT_ID", "antigravity"
             )
-            agent_role = getattr(flow_headers, "get", lambda _: None)("x-holon-agent-role") or os.getenv(
+            agent_role = get_header_case_insensitive(flow_headers, "x-holon-agent-role") or os.getenv(
                 "HOLON_ROLE", "executor"
             )
 

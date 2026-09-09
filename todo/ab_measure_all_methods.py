@@ -20,6 +20,7 @@ import datetime
 import json
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -233,7 +234,7 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         # Model routing split
         raw_model = (tx.get("raw_request") or {}).get("model")
         clean_model = (tx.get("cleaned_request") or {}).get("model")
-        model = str(raw_model or clean_model or "").lower()
+        model = str(raw_model or clean_model or tx.get("endpoint") or "").lower()
         if "flash" in model:
             result.tier2_tokens += inp + out
             pricing = PRICING["gemini-2.5-flash"]
@@ -437,6 +438,12 @@ def main() -> int:
         "--synthetic", action=argparse.BooleanOptionalAction, default=True, help="Run in synthetic benchmark mode"
     )
     parser.add_argument(
+        "--command",
+        type=str,
+        default=None,
+        help="Target workload command to execute in live benchmark mode (default runs test suite)",
+    )
+    parser.add_argument(
         "--force-reset-workspace",
         action="store_true",
         default=False,
@@ -475,19 +482,48 @@ def main() -> int:
     else:
         # Live execution path
         print("\n⚙️ Running live task suite execution...")
-        test_cmd = ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_token_reduction.py"]
+        if args.command:
+            cmd_tokens = shlex.split(args.command)
+            baseline_cmd = [arg for arg in cmd_tokens if arg not in ("--token-reduce", "--mitm-web")]
+            optimized_cmd = list(cmd_tokens)
+            if "--token-reduce" not in optimized_cmd:
+                optimized_cmd.append("--token-reduce")
+        else:
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                default_test_cmd = ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_token_reduction.py"]
+            else:
+                default_test_cmd = [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "apps/sandbox-executor/tests/test_token_reduction.py",
+                ]
+            baseline_cmd = list(default_test_cmd)
+            optimized_cmd = list(default_test_cmd)
+
+        baseline_env = os.environ.copy()
+        baseline_env["HOLON_TOKEN_REDUCE"] = "0"
+        for proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
+            baseline_env.pop(proxy_var, None)
+
+        optimized_env = os.environ.copy()
+        optimized_env["HOLON_TOKEN_REDUCE"] = "1"
+        optimized_env["WIRE_LOG_DIR"] = str(wire_log_dir)
+        optimized_env["CACHE_DIR"] = str(cache_dir)
+
         for i in range(1, args.iterations + 1):
             reset_workspace_state(repo_root, force=args.force_reset_workspace)
-            # Baseline run
+            # Baseline run (direct egress)
             pre_clean_environment(cache_dir, wire_log_dir)
-            test_exit = subprocess.run(test_cmd, check=False).returncode
+            test_exit = subprocess.run(baseline_cmd, env=baseline_env, check=False).returncode
             b_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)
             baseline_summary.iterations.append(b_res)
 
-            # Optimized run
+            # Optimized run (proxy egress with token reduction)
             reset_workspace_state(repo_root, force=args.force_reset_workspace)
             pre_clean_environment(cache_dir, wire_log_dir)
-            test_exit = subprocess.run(test_cmd, check=False).returncode
+            test_exit = subprocess.run(optimized_cmd, env=optimized_env, check=False).returncode
             o_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)
             optimized_summary.iterations.append(o_res)
 

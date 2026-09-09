@@ -351,6 +351,17 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         os.path.join(os.getcwd(), "todo", "mitm_wire_logs")
     )
     os.makedirs(host_wire_log_dir, exist_ok=True)
+
+    host_cache_dir = os.getenv("CACHE_DIR") or os.path.abspath(os.path.join(os.getcwd(), "todo", "cache"))
+    os.makedirs(host_cache_dir, exist_ok=True)
+
+    # Ensure non-root container UID 1000 can write without permission errors on Linux hosts
+    for d in (host_wire_log_dir, host_cache_dir):
+        try:
+            os.chmod(d, 0o777)
+        except OSError as e:
+            logger.debug("Could not chmod 0o777 on %s: %s", d, e)
+
     web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
 
     _sidecar_state.network_name = network_name
@@ -383,8 +394,12 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         [
             "-e",
             "WIRE_LOG_DIR=/tmp/wire_logs",
+            "-e",
+            "CACHE_DIR=/tmp/cache",
             "-v",
             f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
+            "-v",
+            f"{host_cache_dir}:/tmp/cache",
             "-v",
             f"{mitm_ca_combined}:{MITM_PROXY_CA_DIR}/mitmproxy-ca.pem:ro",
             "-v",
@@ -644,7 +659,7 @@ def main() -> None:
     plan_parser.add_argument(
         "--mitm-web",
         action="store_true",
-        help="Launch mitmweb dashboard on port 8081 for real-time traffic inspection.",
+        help="Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection.",
     )
 
     # Subcommand: execute
@@ -660,7 +675,7 @@ def main() -> None:
     exec_parser.add_argument(
         "--mitm-web",
         action="store_true",
-        help="Launch mitmweb dashboard on port 8081 for real-time traffic inspection.",
+        help="Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection.",
     )
 
     args = parser.parse_args()
