@@ -2425,7 +2425,7 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 
-    _mounts, _envs = setup_token_reduction_proxy(mitm_web=True)
+    _mounts, _ = setup_token_reduction_proxy(mitm_web=True)
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
     joined_run = " ".join(run_cmd)
 
@@ -2437,3 +2437,36 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     assert "--web-host 0.0.0.0" in joined_run
     assert "--web-port 8081" in joined_run
     teardown_token_reduction_proxy()
+
+
+def test_extract_detailed_token_counts_sse_streams():
+    from sandbox_executor.token_reduction.mitm_addon import extract_detailed_token_counts
+
+    # Anthropic SSE stream with message_start (cache_read, cache_creation, input) and message_delta (output, thinking)
+    anthropic_sse = (
+        "event: message_start\n"
+        'data: {"type": "message_start", "message": {"id": "msg_123", '
+        '"usage": {"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50}}}\n\n'
+        "event: message_delta\n"
+        'data: {"type": "message_delta", "usage": {"output_tokens": 80, "thinking_tokens": 25}}\n\n'
+    )
+    counts_ant = extract_detailed_token_counts({}, anthropic_sse, "anthropic")
+    assert counts_ant["input_tokens"] == 550
+    assert counts_ant["output_tokens"] == 80
+    assert counts_ant["cache_read_input_tokens"] == 400
+    assert counts_ant["cache_creation_input_tokens"] == 50
+    assert counts_ant["reasoning_tokens"] == 25
+
+    # OpenAI SSE stream with cached_tokens and reasoning_tokens
+    openai_sse = (
+        'data: {"choices": [{"delta": {"content": "Hello"}}], '
+        '"usage": {"prompt_tokens": 120, "completion_tokens": 30, '
+        '"prompt_tokens_details": {"cached_tokens": 80}, '
+        '"completion_tokens_details": {"reasoning_tokens": 15}}}\n\n'
+    )
+    counts_oai = extract_detailed_token_counts({}, openai_sse, "openai")
+    assert counts_oai["input_tokens"] == 120
+    assert counts_oai["output_tokens"] == 30
+    assert counts_oai["cache_read_input_tokens"] == 80
+    assert counts_oai["cache_creation_input_tokens"] == 0
+    assert counts_oai["reasoning_tokens"] == 15

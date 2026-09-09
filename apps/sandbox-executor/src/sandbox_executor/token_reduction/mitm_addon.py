@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import UTC, datetime
@@ -116,6 +117,7 @@ def scrub_payload(data: Any) -> Any:
 
 _wire_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="mitm_wire_logger")
 _pending_wire_log_futures: set[concurrent.futures.Future] = set()
+_wire_log_lock = threading.Lock()
 
 
 def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
@@ -142,22 +144,30 @@ def dump_wire_transaction(record: dict[str, Any], wire_log_dir: str | None = Non
     """Asynchronously writes turn-scoped JSON dump and atomic JSONL entry."""
     target_dir = wire_log_dir or os.getenv("WIRE_LOG_DIR", WIRE_LOG_DIR)
     future = _wire_log_executor.submit(_write_transaction_sync, record, target_dir)
-    _pending_wire_log_futures.add(future)
-    future.add_done_callback(lambda f: _pending_wire_log_futures.discard(f))
+    with _wire_log_lock:
+        _pending_wire_log_futures.add(future)
+    future.add_done_callback(lambda f: _discard_pending_future(f))
     return future
+
+
+def _discard_pending_future(future: concurrent.futures.Future) -> None:
+    with _wire_log_lock:
+        _pending_wire_log_futures.discard(future)
 
 
 def flush_wire_logs(timeout: float = 5.0) -> None:
     """Blocks until all queued background wire log writes complete."""
-    if _pending_wire_log_futures:
-        concurrent.futures.wait(list(_pending_wire_log_futures), timeout=timeout)
+    with _wire_log_lock:
+        pending = list(_pending_wire_log_futures)
+    if pending:
+        concurrent.futures.wait(pending, timeout=timeout)
 
 
 def derive_turn_id(
     headers: Any,
     payload: dict[str, Any] | None,
     fallback_id: int = 1,
-) -> int:
+) -> int | str:
     """Derives conversation turn ID using 3-tier precedence:
     1. X-Holon-Turn-Id header
     2. Assistant completion count in message tree (+ 1)
@@ -457,10 +467,9 @@ class TokenCounts(tuple):
         return inst
 
 
-def extract_sse_content(resp_text: str, provider: str) -> tuple[str, int]:
-    """Extracts aggregated completion text and reasoning tokens from SSE lines."""
+def extract_sse_content(resp_text: str, provider: str) -> str:
+    """Extracts aggregated completion text from SSE lines."""
     accumulated_content: list[str] = []
-    reasoning_tokens = 0
     lines = resp_text.splitlines()
     for line in lines:
         line = line.strip()
@@ -519,14 +528,17 @@ def extract_sse_content(resp_text: str, provider: str) -> tuple[str, int]:
                                         if isinstance(func_call, dict):
                                             accumulated_content.append(json.dumps(func_call))
 
-    return "".join(accumulated_content), reasoning_tokens
+    return "".join(accumulated_content)
 
 
 def extract_detailed_token_counts(
     req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str
 ) -> dict[str, int]:
     """Extracts normalized token counts and cache breakdown from request and response."""
-    counts = extract_token_counts(req_data, resp_data, provider)
+    if isinstance(resp_data, str):
+        counts = extract_sse_token_counts(resp_data, req_data, provider)
+    else:
+        counts = extract_token_counts(req_data, resp_data, provider)
     return {
         "input_tokens": counts[0],
         "output_tokens": counts[1],
@@ -891,7 +903,7 @@ class MitmproxyAddon:
 
             # Content extraction
             if is_sse:
-                content_val, _ = extract_sse_content(resp_data, provider)
+                content_val = extract_sse_content(resp_data, provider)
             elif isinstance(resp_data, dict):
                 content_val = resp_data
             else:

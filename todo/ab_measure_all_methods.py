@@ -152,8 +152,9 @@ def pre_clean_environment(cache_dir: Path, wire_log_dir: Path) -> None:
 def reset_workspace_state(repo_root: Path) -> None:
     """Guarantees statistical independence between runs by discarding unstaged/untracked files."""
     try:
+        subprocess.run(["git", "checkout", "--", "."], cwd=str(repo_root), capture_output=True, check=False)
         subprocess.run(
-            ["git", "clean", "-fdx", "--exclude=todo/", "--exclude=.venv", "--exclude=docs/"],
+            ["git", "clean", "-fdx", "--exclude=todo/", "--exclude=.venv", "--exclude=docs/", "--exclude=.subagent/"],
             cwd=str(repo_root),
             capture_output=True,
             check=False,
@@ -186,20 +187,20 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
 
     for tx in transactions:
         result.total_calls += 1
-        source = tx.get("source", "upstream")
-        if source == "local_cache":
+        cache_action = tx.get("cache_action", "MISS")
+        if cache_action == "HIT":
             result.local_cache_hits += 1
 
-        stats = tx.get("cleaning_stats") or {}
-        result.pruned_bytes += stats.get("chars_saved", 0)
-        result.duplicate_tools_omitted += stats.get("tool_outputs_omitted", 0)
+        delta = tx.get("delta") or {}
+        result.pruned_bytes += delta.get("chars_saved", 0)
+        result.duplicate_tools_omitted += delta.get("tool_outputs_omitted", 0)
 
         turn_id = tx.get("turn_id", 0)
-        tokens = tx.get("tokens") or {}
-        inp = tokens.get("input", 0)
-        out = tokens.get("output", 0)
-        c_read = tokens.get("cache_read", 0)
-        c_write = tokens.get("cache_creation", 0)
+        usage = tx.get("response", {}).get("usage") or {}
+        inp = usage.get("input_tokens", 0)
+        out = usage.get("output_tokens", 0)
+        c_read = usage.get("cache_read_input_tokens", 0)
+        c_write = usage.get("cache_creation_input_tokens", 0)
 
         if turn_id == 0 and result.turn_0_prompt_tokens == 0:
             result.turn_0_prompt_tokens = inp
@@ -210,7 +211,7 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         result.cache_write_tokens += c_write
 
         # Model routing split
-        model = str(tx.get("model", "")).lower()
+        model = str(tx.get("raw_request", {}).get("model") or tx.get("cleaned_request", {}).get("model") or "").lower()
         if "flash" in model:
             result.tier2_tokens += inp + out
             pricing = PRICING["gemini-2.5-flash"]
@@ -394,7 +395,9 @@ def main() -> int:
     parser.add_argument("--wire-log-dir", type=str, default=os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs"))
     parser.add_argument("--cache-dir", type=str, default=os.getenv("CACHE_DIR", "todo/cache"))
     parser.add_argument("--task-name", type=str, default="Refactor auth middleware & add unit tests")
-    parser.add_argument("--synthetic", action="store_true", default=True, help="Run in synthetic benchmark mode")
+    parser.add_argument(
+        "--synthetic", action=argparse.BooleanOptionalAction, default=True, help="Run in synthetic benchmark mode"
+    )
     parser.add_argument(
         "--output", "-o", type=str, default="todo/scorecard_report.md", help="Output scorecard markdown path"
     )

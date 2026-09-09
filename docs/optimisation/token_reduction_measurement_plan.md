@@ -4,11 +4,8 @@ This document outlines the architecture, instrumentation strategy, and step-by-s
 wire-level LLM traffic and measuring the empirical effectiveness of all six token reduction techniques across the
 `holon-agentic-coder-ref` ecosystem.
 
-> [!NOTE] **Repository Topology & Relative Links**: Relative file paths targeting `../../holon-agentic-coder-ref/...`
-> navigate from this document's directory (`docs/optimisation/`) to the repository root where `holon-agentic-coder-ref`
-> resides as a submodule or nested folder. In standalone GitHub web views, cross-repository relative links do not
-> resolve across separate repository boundaries; refer directly to the upstream
-> [`holon-agentic-coder-ref`](https://github.com/Holon-Agentic-Coder/holon-agentic-coder-ref) repository.
+> [!NOTE] **Repository Topology & Relative Links**: Relative file paths targeting `../../apps/...` navigate from this
+> document's directory (`docs/optimisation/`) to the repository root.
 
 ---
 
@@ -20,8 +17,8 @@ During live runs, token counters increment, but developers cannot see the actual
 This occurs because:
 
 1. **Summarized Console Logging**:
-   [`mitm_addon.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)
-   outputs only single-line `📊 [TELEMETRY]` summaries to standard output.
+   [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py) outputs only
+   single-line `📊 [TELEMETRY]` summaries to standard output.
 2. **Streaming (SSE) Buffering Without Inspection Sinks**: When agents stream responses via Server-Sent Events (SSE),
    chunks are assembled in-memory solely to parse usage metadata and count tokens, without emitting the full
    reconstructed text or prompt diffs to disk or console.
@@ -85,9 +82,8 @@ To inspect the raw traffic going out and coming back in real time:
 ### 1. Structured Wire Logger (`todo/mitm_wire_logs/`)
 
 Add a structured file logger to
-[`mitm_addon.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)
-that appends full transaction details to `${WIRE_LOG_DIR}/turn_{turn_id}_{flow_id}.json` and
-`${WIRE_LOG_DIR}/transactions.jsonl`.
+[`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py) that appends full
+transaction details to `${WIRE_LOG_DIR}/turn_{turn_id}_{flow_id}.json` and `${WIRE_LOG_DIR}/transactions.jsonl`.
 
 - **Log Directory Parameterization & Git Ignore**: Configure the destination directory via the `WIRE_LOG_DIR`
   environment variable:
@@ -248,8 +244,8 @@ docker run --rm -it \
   -e WIRE_LOG_DIR=/tmp/wire_logs \
   -e CACHE_DIR=/tmp/cache \
   -e PYTHONPATH=/tmp/src \
-  -v "${REPO_ROOT}/holon-agentic-coder-ref/develop/apps/sandbox-executor/src":/tmp/src:ro \
-  -v "${REPO_ROOT}/holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py":/tmp/mitm_addon.py:ro \
+  -v "${REPO_ROOT}/apps/sandbox-executor/src":/tmp/src:ro \
+  -v "${REPO_ROOT}/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py":/tmp/mitm_addon.py:ro \
   -v "${REPO_ROOT}/todo/mitm_wire_logs":/tmp/wire_logs \
   -v "${REPO_ROOT}/todo/cache":/tmp/cache \
   -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy \
@@ -290,8 +286,8 @@ docker run -d --name mitmproxy-wire-logger \
   -e WIRE_LOG_DIR=/tmp/wire_logs \
   -e CACHE_DIR=/tmp/cache \
   -e PYTHONPATH=/tmp/src \
-  -v "${REPO_ROOT}/holon-agentic-coder-ref/develop/apps/sandbox-executor/src":/tmp/src:ro \
-  -v "${REPO_ROOT}/holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py":/tmp/mitm_addon.py:ro \
+  -v "${REPO_ROOT}/apps/sandbox-executor/src":/tmp/src:ro \
+  -v "${REPO_ROOT}/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py":/tmp/mitm_addon.py:ro \
   -v "${REPO_ROOT}/todo/mitm_wire_logs":/tmp/wire_logs \
   -v "${REPO_ROOT}/todo/cache":/tmp/cache \
   -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy \
@@ -375,8 +371,7 @@ _(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0
 
 #### Instrumentation:
 
-- In
-  [`mitm_addon.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py):`request()`,
+- In [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py):`request()`,
   calculate hash and length of `data` (incoming) vs `cleaned_data` (outgoing) to compute character-level deltas.
 - Obtain structured reduction statistics by extending the `JSONContextCleaner` API contract to return a
   `CleaningResult(payload=..., stats=...)` dataclass (or invoke `process_payload_with_stats()`), or alternatively
@@ -392,13 +387,13 @@ _(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0
 ### Method 2: Local & Semantic Cache
 
 > [!NOTE] **Streaming Request Bypass & Cache Evaluation Constraint**: In the current implementation of
-> [`mitm_addon.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py),
-> streaming requests (`stream: true` or SSE endpoints) bypass local cache storage and retrieval (`put()` and `get()`)
-> because returning cached completions requires token-by-token stream replay. Therefore, when evaluating Method 2
-> (_Local Hybrid & Semantic Caching_) in benchmarks, agent harnesses must be configured in non-streaming mode to observe
-> cache hits and short-circuited token savings. Synthetic SSE stream replay for cached responses is planned for a future
-> iteration (architected as a mock generator emitting chunked `text/event-stream` payloads matching provider schemas,
-> e.g. OpenAI `chat.completion.chunk` and Anthropic `content_block_delta` event sequences).
+> [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py), streaming requests
+> (`stream: true` or SSE endpoints) bypass local cache storage and retrieval (`put()` and `get()`) because returning
+> cached completions requires token-by-token stream replay. Therefore, when evaluating Method 2 (_Local Hybrid &
+> Semantic Caching_) in benchmarks, agent harnesses must be configured in non-streaming mode to observe cache hits and
+> short-circuited token savings. Synthetic SSE stream replay for cached responses is planned for a future iteration
+> (architected as a mock generator emitting chunked `text/event-stream` payloads matching provider schemas, e.g. OpenAI
+> `chat.completion.chunk` and Anthropic `content_block_delta` event sequences).
 
 #### What to Measure:
 
@@ -419,9 +414,8 @@ $$\text{Tokens Avoided} = \sum_{\text{cache hits}} (\text{Prompt Tokens} + \text
 
 #### Instrumentation:
 
-- In
-  [`hybrid_cache.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/hybrid_cache.py):`get()`,
-  log cache query results with `key`, `hit_type` (`EXACT`, `SEMANTIC`, `MISS`), `similarity_score`, and `hit_count`.
+- In [`hybrid_cache.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/hybrid_cache.py):`get()`, log
+  cache query results with `key`, `hit_type` (`EXACT`, `SEMANTIC`, `MISS`), `similarity_score`, and `hit_count`.
 
 ---
 
@@ -471,7 +465,7 @@ simplifying net monetary savings strictly to cache read discounts._
 #### Instrumentation:
 
 - In
-  [`mitm_addon.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py):`extract_token_counts()`,
+  [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py):`extract_token_counts()`,
   parse the exact usage dictionary from JSON or SSE chunks.
 - Validate that `cache_control` breakpoints were injected and honored by the upstream provider.
 
@@ -504,9 +498,8 @@ lifecycle.
 
 #### Instrumentation:
 
-- In
-  [`rag_indexer.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/rag_indexer.py),
-  log the token count of generated context blocks.
+- In [`rag_indexer.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/rag_indexer.py), log the token
+  count of generated context blocks.
 - Track agent tool invocations (`grep`, `find`, `semantic_search`) during the execution phase.
 
 ---
@@ -544,9 +537,8 @@ trajectory formula directly captures this distinction without relying on impreci
 
 #### Instrumentation:
 
-- In
-  [`openbrain_memory.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/openbrain_memory.py),
-  log retrieved memory IDs, similarity scores, and injected token counts.
+- In [`openbrain_memory.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/openbrain_memory.py), log
+  retrieved memory IDs, similarity scores, and injected token counts.
 - Compare task success speed on regression benchmark suites.
 
 ---
@@ -581,7 +573,7 @@ full completion rates._
 #### Instrumentation:
 
 - In
-  [`ringer_orchestrator.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/ringer_orchestrator.py),
+  [`ringer_orchestrator.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/ringer_orchestrator.py),
   record separate token ledgers for the architect and each subagent child conversation.
 - Measure compression ratio: $\frac{\text{Tokens}_{\text{summary}}}{\text{Tokens}_{\text{raw\_subagent\_history}}}$
   _(with denominator guard: defaults to $0.0$ if $\text{Tokens}_{\text{raw\_subagent\_history}} = 0$)_.
@@ -663,12 +655,11 @@ gantt
 ### Action Items:
 
 1. **Update
-   [`payload_cleaner.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/payload_cleaner.py)**:
+   [`payload_cleaner.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/payload_cleaner.py)**:
    - Extend `JSONContextCleaner` to track and return execution stats (`tool_outputs_omitted`, `turns_summarized`,
      `cache_control_injected`) via a `CleaningResult(payload=..., stats=...)` dataclass (or provide
      `process_payload_with_stats()`) to avoid redundant post-hoc AST diffing or tree traversals.
-2. **Update
-   [`mitm_addon.py`](../../holon-agentic-coder-ref/develop/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)**:
+2. **Update [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)**:
    - Parameterize log directory using `WIRE_LOG_DIR` environment variable (default: `todo/mitm_wire_logs/`) and cache
      directory using `CACHE_DIR` environment variable (default: `~/.holon/cache/`) so SQLite cache persistence can be
      mapped to host directories (`-e CACHE_DIR=/tmp/cache -v "${REPO_ROOT}/todo/cache":/tmp/cache`).
