@@ -2662,6 +2662,7 @@ def test_mitm_addon_done_and_non_200_logging(tmp_path):
         data = json.loads(f.readline())
     assert data["response"]["status"] == 400
     assert "error" in data["response"]["content"]
+    assert data["raw_request"]["model"] == "claude-3-5-sonnet"
 
 
 def test_ab_measure_all_methods_endpoint_fallback(tmp_path):

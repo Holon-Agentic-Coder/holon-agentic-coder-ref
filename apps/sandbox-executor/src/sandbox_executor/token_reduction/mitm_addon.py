@@ -594,6 +594,8 @@ def extract_sse_content(resp_text: str, provider: str) -> str:
 
     if in_openai_tool:
         accumulated_content.append(")")
+    if in_anthropic_tool:
+        accumulated_content.append(")")
 
     return "".join(accumulated_content)
 
@@ -1247,14 +1249,17 @@ class MitmproxyAddon:
             log_telemetry(log_msg)
 
             try:
-                req_data = getattr(flow, "req_data", None)
-                if req_data is None and getattr(flow, "request", None) and hasattr(flow.request, "get_text"):
+                if (
+                    getattr(flow, "req_data", None) is None
+                    and getattr(flow, "request", None)
+                    and hasattr(flow.request, "get_text")
+                ):
                     req_text = flow.request.get_text()
                     if req_text:
                         try:
-                            req_data = json.loads(req_text)
+                            flow.req_data = json.loads(req_text)
                         except Exception:
-                            req_data = req_text
+                            flow.req_data = req_text
 
                 resp_data = None
                 if getattr(flow, "response", None) and hasattr(flow.response, "get_text"):
