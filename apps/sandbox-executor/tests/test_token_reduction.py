@@ -2457,6 +2457,9 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     # Verify CACHE_DIR is mounted and set
     assert "-e CACHE_DIR=/tmp/cache" in joined_run
     assert ":/tmp/cache" in joined_run
+    # Verify PYTHONPATH and src directory are mounted
+    assert "-e PYTHONPATH=/tmp/src" in joined_run
+    assert ":/tmp/src:ro" in joined_run
     teardown_token_reduction_proxy()
 
 
@@ -3057,3 +3060,158 @@ def test_scorecard_dynamic_guardrail_status():
     )
     sc2 = ab.format_scorecard(b1, o2)
     assert "**0% (Functional correctness guardrail NOT MET)**" in sc2
+
+
+def test_write_transaction_sync_orphaned_tmp_cleanup(tmp_path, monkeypatch):
+    """Verifies that _write_transaction_sync unlinks .tmp file if atomic replace fails."""
+    import os
+
+    from sandbox_executor.token_reduction import mitm_addon
+
+    target_dir = tmp_path / "tmp_cleanup_logs"
+    record = {"turn_id": 99, "flow_id": "fail_replace"}
+
+    # Mock os.replace to raise an exception midway
+    def failing_replace(src, dst):
+        assert os.path.exists(src)
+        raise OSError("Disk failure during replace")
+
+    monkeypatch.setattr(mitm_addon.os, "replace", failing_replace)
+
+    mitm_addon._write_transaction_sync(record, str(target_dir))
+
+    # Assert no .tmp files exist in target_dir
+    tmp_files = list(target_dir.glob("*.tmp"))
+    assert len(tmp_files) == 0
+
+
+def test_scrub_headers_defense_in_depth():
+    """Verifies that custom token/secret headers are redacted by defense-in-depth."""
+    from sandbox_executor.token_reduction.mitm_addon import scrub_headers
+
+    headers = {
+        "x-custom-token": "opaque_custom_token_123",
+        "client_secret": "my-top-secret",
+        "session-token": "sess-xyz",
+        "content-type": "application/json",
+        "accept": "*/*",
+    }
+    cleaned = scrub_headers(headers)
+    assert cleaned["x-custom-token"] == "[REDACTED]"
+    assert cleaned["client_secret"] == "[REDACTED]"
+    assert cleaned["session-token"] == "[REDACTED]"
+    assert cleaned["content-type"] == "application/json"
+    assert cleaned["accept"] == "*/*"
+
+
+def test_mitm_addon_subclass_override_detection(tmp_path):
+    """Verifies that a subclass overriding intercept_request is respected by MitmproxyAddon."""
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
+
+    calls = []
+
+    class CustomInterceptor(MITMProxyInterceptor):
+        def intercept_request(self, endpoint, request_json):
+            calls.append(endpoint)
+            return request_json, None
+
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(tmp_path / "logs"))
+    addon.interceptor = CustomInterceptor(cache_dir=str(tmp_path / "cache"))
+
+    class MockRequest:
+        def __init__(self):
+            self.pretty_url = "https://api.anthropic.com/v1/messages"
+            self.headers = {"content-type": "application/json"}
+            self._text = json.dumps({"model": "claude-3-5-sonnet", "messages": []})
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    flow = SimpleNamespace(
+        request=MockRequest(),
+        response=None,
+        is_cached=False,
+    )
+    addon.request(flow)
+    assert len(calls) == 1
+    assert calls[0] == "https://api.anthropic.com/v1/messages"
+
+
+@pytest.mark.parametrize("status_code", [429, 503])
+def test_non_200_transaction_logging_429_503(tmp_path, status_code):
+    """Verifies that HTTP 429 and 503 responses are properly logged into transactions.jsonl."""
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    wire_dir = tmp_path / "error_wire_logs"
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(wire_dir))
+
+    class MockResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = {"content-type": "application/json"}
+
+        def get_text(self):
+            return json.dumps({"error": {"message": f"HTTP {status_code} Error"}})
+
+    flow = SimpleNamespace(
+        id=f"flow_{status_code}",
+        provider="openai",
+        request_start_time=100.0,
+        response_headers_time=100.2,
+        first_chunk_time=None,
+        request=SimpleNamespace(
+            pretty_url="https://api.openai.com/v1/chat/completions",
+            headers={"content-type": "application/json"},
+        ),
+        response=MockResponse(),
+        raw_request_data={"model": "gpt-4o", "messages": []},
+        req_data={"model": "gpt-4o", "messages": []},
+        cleaner_result=None,
+        is_cached=False,
+    )
+
+    addon.response(flow)
+    addon.done()
+
+    jsonl_file = wire_dir / "transactions.jsonl"
+    assert jsonl_file.exists()
+    lines = [json.loads(line) for line in jsonl_file.read_text(encoding="utf-8").strip().split("\n")]
+    assert any(rec.get("response", {}).get("status") == status_code for rec in lines)
+
+
+def test_ab_measure_non_dict_raw_request(tmp_path):
+    """Verifies parse_wire_logs_into_result gracefully handles non-dict raw_request bodies."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "str_req_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    tx = {
+        "turn_id": 1,
+        "flow_id": "f_str",
+        "provider": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "status_code": 400,
+        "raw_request": "unparseable string body",
+        "cleaned_request": "unparseable string body",
+        "response": {"error": "bad request"},
+        "token_counts": {"input_tokens": 0, "output_tokens": 0},
+    }
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    # Should not raise AttributeError: 'str' object has no attribute 'get'
+    res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res is not None

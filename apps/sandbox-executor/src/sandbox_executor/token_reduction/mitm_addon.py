@@ -2,6 +2,7 @@
 
 import atexit
 import concurrent.futures
+import contextlib
 import copy
 import json
 import logging
@@ -46,7 +47,9 @@ _SECRET_HEADER_NAMES = {
     "x-session-token",
 }
 
-_URL_QUERY_SECRET_PATTERN = re.compile(r'(?i)([?&](?:key|api_key|apiKey|token|access_token)=)[^&\s"\'`<>#]+')
+_URL_QUERY_SECRET_PATTERN = re.compile(
+    r'(?i)([?&](?:key|api_key|apiKey|api-key|apikey|token|access_token|auth_token|secret)=)[^&\s"\'`<>#]+'
+)
 
 _BODY_SECRET_PATTERNS = [
     # Anthropic
@@ -77,7 +80,7 @@ _BODY_SECRET_PATTERNS = [
 ]
 
 _SECRET_DICT_KEY_PATTERN = re.compile(
-    r"(?i)^(?:password|passwd|api_key|api-key|apikey|secret|access_token|access-token|auth_token|auth-token|secret_key|private_key)$"
+    r"(?i)^(?:password|passwd|api_key|api-key|apikey|secret|access_token|access-token|auth_token|auth-token|secret_key|private_key|client_secret|session_token)$"
 )
 
 
@@ -107,7 +110,12 @@ def scrub_headers(headers: Any) -> dict[str, str]:
 
     for k, v in items:
         k_str = str(k).lower()
-        if k_str in _SECRET_HEADER_NAMES:
+        if (
+            k_str in _SECRET_HEADER_NAMES
+            or _SECRET_DICT_KEY_PATTERN.match(k_str)
+            or "token" in k_str
+            or "secret" in k_str
+        ):
             cleaned[k_str] = "[REDACTED]"
         else:
             cleaned[k_str] = scrub_string(str(v))
@@ -173,9 +181,15 @@ def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
         filepath = os.path.join(wire_log_dir, filename)
 
         tmp_filepath = f"{filepath}.{uuid.uuid4().hex[:6]}.tmp"
-        with open(tmp_filepath, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2, ensure_ascii=False, default=str)
-        os.replace(tmp_filepath, filepath)
+        try:
+            with open(tmp_filepath, "w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2, ensure_ascii=False, default=str)
+            os.replace(tmp_filepath, filepath)
+        except Exception:
+            if os.path.exists(tmp_filepath):
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_filepath)
+            raise
 
         jsonl_path = os.path.join(wire_log_dir, "transactions.jsonl")
         line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
@@ -1082,6 +1096,7 @@ class MitmproxyAddon:
                         if (
                             hasattr(self.interceptor, "intercept_request_with_stats")
                             and "intercept_request" not in self.interceptor.__dict__
+                            and type(self.interceptor).intercept_request is MITMProxyInterceptor.intercept_request
                         ):
                             cleaned_data, cached_resp, clean_res = self.interceptor.intercept_request_with_stats(
                                 url, data

@@ -377,7 +377,12 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         except OSError as e:
             logger.debug("Could not chmod 0o775 on %s: %s", d, e)
 
-    web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
+    try:
+        web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
+    except ValueError:
+        logger.warning("Invalid HOLON_MITM_WEB_PORT; falling back to 8081.")
+        web_port = 8081
+
     if mitm_web:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(PROXY_CONNECT_TIMEOUT_SECONDS)
@@ -390,6 +395,8 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     _sidecar_state.network_name = network_name
     _sidecar_state.network_created = _ensure_network(network_name)
     _sidecar_state.container_name = container_name
+
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
     docker_run_proxy = [
         "docker",
@@ -420,11 +427,15 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     docker_run_proxy.extend(
         [
             "-e",
+            "PYTHONPATH=/tmp/src",
+            "-e",
             "WIRE_LOG_DIR=/tmp/wire_logs",
             "-e",
             "CACHE_DIR=/tmp/cache",
             "-e",
             f"HOLON_PASSIVE_MONITORING={passive_val}",
+            "-v",
+            f"{src_dir}:/tmp/src:ro",
             "-v",
             f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
             "-v",
@@ -559,7 +570,8 @@ def get_token_reduction_mounts_and_envs(
         return [], {}
 
     try:
-        if token_reduce or mitm_web:
+        is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
+        if token_reduce or mitm_web or is_passive:
             if mitm_web:
                 return setup_token_reduction_proxy(mitm_web=True)
             return setup_token_reduction_proxy()

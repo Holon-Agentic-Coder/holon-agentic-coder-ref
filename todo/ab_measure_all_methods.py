@@ -280,8 +280,10 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         result.cache_write_tokens += c_write
 
         # Model routing split
-        raw_model = (tx.get("raw_request") or {}).get("model")
-        clean_model = (tx.get("cleaned_request") or {}).get("model")
+        raw_req = tx.get("raw_request")
+        clean_req = tx.get("cleaned_request")
+        raw_model = raw_req.get("model") if isinstance(raw_req, dict) else None
+        clean_model = clean_req.get("model") if isinstance(clean_req, dict) else None
         model = str(raw_model or clean_model or tx.get("endpoint") or "").lower()
         pricing = get_model_pricing(model)
         if any(lightweight in model for lightweight in ("flash", "haiku", "mini")):
@@ -464,7 +466,8 @@ def format_scorecard(
         ("| **Episodic Memory Turns Saved** | 0 turns | 3 turns | **Setup error avoided via OpenBrain memory** |"),
         (
             f"| **Total Monetary Cost** | **${b_cost_mean:.2f} ± ${b_cost_std:.2f}** | "
-            f"**${o_cost_mean:.2f} ± ${o_cost_std:.2f}** | **{cost_pct:.1f}% (${abs(cost_diff):.2f} saved per task)** |"
+            f"**${o_cost_mean:.2f} ± ${o_cost_std:.2f}** | **{cost_pct:.1f}% (${abs(cost_diff):.2f} "
+            f"{'extra per task' if cost_diff > 0 else 'saved per task'})** |"
         ),
         "",
         (

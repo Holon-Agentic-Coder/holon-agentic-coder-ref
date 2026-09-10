@@ -141,7 +141,7 @@ transaction details to `${WIRE_LOG_DIR}/turn_{turn_id}_{flow_id}.json` and `${WI
   - Anthropic API keys: `r'\bsk-ant-[a-zA-Z0-9_\-]+\b'`
   - OpenAI Project, Service Account & User API keys: `r'\bsk-(?:proj-|admin-|svcacct-)?[a-zA-Z0-9_\-]{20,}\b'`
   - Google Cloud / Vertex AI / AI Studio keys: `r'\bAIza[0-9A-Za-z\-_]{35}\b'`
-  - GitHub Tokens (PAT, OAuth, App, Refresh): `r'\bgh[pousr]_[a-zA-Z0-9]{36}\b'`, `r'\bgithub_pat_[a-zA-Z0-9_]{82}\b'`
+  - GitHub Tokens (PAT, OAuth, App, Refresh): `r'\bgh[pousr]_[a-zA-Z0-9]{36}\b'`, `r'\bgithub_pat_[a-zA-Z0-9_]{22,}\b'`
   - AWS Access Key IDs & Secret Access Keys: `r'\bAKIA[0-9A-Z]{16}\b'`, `r'\bASIA[0-9A-Z]{16}\b'`, and key-value pattern
     `r'(?i)\b(?:aws_secret_access_key|aws_secret_key|secret_access_key)\s*[:=]\s*["\']?([A-Za-z0-9/+=]{40})["\']?'`
   - Hugging Face Access Tokens: `r'\bhf_[a-zA-Z0-9]{34,}\b'`
