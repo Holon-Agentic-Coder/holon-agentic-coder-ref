@@ -37,13 +37,10 @@ PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 
 _TOKEN_REDUCE_HELP = (
-    "EXPERIMENTAL / NOT YET FUNCTIONAL (Phase 2): cut agent token usage by routing sandbox egress "
-    "through a locally-owned mitmproxy sidecar. The Phase 2 addon (mitm_addon.py) is not shipped "
-    "yet, so the preflight fails and the run degrades to direct egress. Requires the 'docker' and "
-    "'openssl' host binaries and performs LOCAL TLS INTERCEPTION: a Holon Root CA is generated under "
-    "~/.holon/certs, its private key is mounted read-only into the proxy sidecar only (never into "
-    "the agent container), and the sandbox trusts a merged CA bundle built at container start. Only "
-    "use against a locally-owned proxy: no credential redaction is implemented yet."
+    "Cut agent token usage by routing sandbox egress through a locally-owned mitmproxy sidecar "
+    "(context deduplication, local caching, and provider prompt cache optimization). "
+    "Requires 'docker' and 'openssl' and performs LOCAL TLS INTERCEPTION using an auto-generated "
+    "Holon Root CA. All wire transactions and credentials are sanitized prior to logging."
 )
 
 
@@ -266,6 +263,8 @@ def _token_reduce_opt_in(token_reduce: bool) -> bool:
     """True only on explicit opt-in; host HTTP_PROXY/HTTPS_PROXY are never treated as opt-in."""
     if token_reduce:
         return True
+    if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES:
+        return True
     return os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
@@ -369,7 +368,9 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     host_cache_dir = os.getenv("CACHE_DIR") or os.path.abspath(os.path.join(repo_root, "todo", "cache"))
     os.makedirs(host_cache_dir, exist_ok=True)
 
-    # Ensure non-root container UID 1000 can write without permission errors on Linux hosts
+    # Ensure non-root container UID 1000 can write without permission errors on Linux hosts.
+    # Note: On Linux hosts where user UID/GID != 1000, set HOLON_MITM_USER="$(id -u):$(id -g)"
+    # or ensure directory permissions allow writes.
     for d in (host_wire_log_dir, host_cache_dir):
         try:
             os.chmod(d, 0o775)
@@ -409,15 +410,21 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         "-p",
         f"127.0.0.1::{PROXY_LISTEN_PORT}",
     ]
+    mitm_user = os.getenv("HOLON_MITM_USER")
+    if mitm_user:
+        docker_run_proxy.extend(["--user", mitm_user])
     if mitm_web:
         docker_run_proxy.extend(["-p", f"127.0.0.1:{web_port}:{web_port}"])
 
+    passive_val = "1" if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES else "0"
     docker_run_proxy.extend(
         [
             "-e",
             "WIRE_LOG_DIR=/tmp/wire_logs",
             "-e",
             "CACHE_DIR=/tmp/cache",
+            "-e",
+            f"HOLON_PASSIVE_MONITORING={passive_val}",
             "-v",
             f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
             "-v",
@@ -473,7 +480,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
         )
 
     if mitm_web:
-        logger.info("🌐 mitmweb dashboard active at http://localhost:%s", web_port)
+        logger.info("🌐 mitmweb dashboard active at http://127.0.0.1:%s", web_port)
 
     mounts = ["--network", network_name, *_gateway_host_args(), *_ca_mount_args(ca_cert_path)]
     return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")

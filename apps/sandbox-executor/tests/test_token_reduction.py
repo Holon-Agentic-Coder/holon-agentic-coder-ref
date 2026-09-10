@@ -2859,3 +2859,201 @@ def test_ab_measure_pricing_and_cache_hit_gate(tmp_path):
     (custom_cache / "test.db").write_text("data")
     ab_module.pre_clean_environment(custom_cache, wire_dir, clean_global_cache=False)
     assert not (custom_cache / "test.db").exists()
+
+
+def test_setup_token_reduction_proxy_chmod_oserror_fallback(monkeypatch):
+    """Verifies that OSError on os.chmod is logged and does not halt proxy startup."""
+    from sandbox_executor import cli
+
+    original_chmod = os.chmod
+
+    def fake_chmod(path, mode):
+        if "mitm_wire_logs" in str(path) or "cache" in str(path):
+            raise OSError("Permission denied (mocked)")
+        return original_chmod(path, mode)
+
+    monkeypatch.setattr(cli.os, "chmod", fake_chmod)
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    # Must complete without raising OSError
+    _mounts, envs = setup_token_reduction_proxy(mitm_web=False)
+    teardown_token_reduction_proxy()
+    assert "HTTP_PROXY" in envs
+
+
+def test_write_transaction_sync_atomic_swapping(tmp_path):
+    """Verifies that _write_transaction_sync writes atomically and leaves no lingering tmp files."""
+    from sandbox_executor.token_reduction.mitm_addon import _write_transaction_sync
+
+    target_dir = tmp_path / "atomic_wire_logs"
+    record = {
+        "turn_id": 42,
+        "flow_id": "atomic_test",
+        "raw_request": {"messages": [{"role": "user", "content": "hello"}]},
+        "response": {"choices": [{"message": {"role": "assistant", "content": "hi"}}]},
+    }
+    _write_transaction_sync(record, str(target_dir))
+
+    target_file = target_dir / "turn_42_atomic_test.json"
+    assert target_file.exists()
+    loaded = json.loads(target_file.read_text(encoding="utf-8"))
+    assert loaded["turn_id"] == 42
+    # Ensure no temporary files (.tmp) remain in the directory
+    tmp_files = list(target_dir.glob("*.tmp"))
+    assert len(tmp_files) == 0
+
+
+def test_scrub_payload_recursion_depth_guard():
+    """Verifies that scrub_payload respects max_depth and does not overflow on deep structures."""
+    from sandbox_executor.token_reduction.mitm_addon import scrub_payload
+
+    # Construct nested structure 60 levels deep
+    nested = "deep_value"
+    for _ in range(60):
+        nested = {"level": nested}
+
+    # Should safely return without RecursionError
+    scrubbed = scrub_payload(nested, max_depth=10)
+    assert scrubbed is not None
+
+
+def test_secret_headers_anthropic_api_key():
+    """Verifies x-anthropic-api-key is scrubbed."""
+    from sandbox_executor.token_reduction.mitm_addon import _SECRET_HEADER_NAMES
+
+    assert "x-anthropic-api-key" in _SECRET_HEADER_NAMES
+
+
+def test_mitm_addon_passive_monitoring_mode(monkeypatch, tmp_path):
+    """Verifies that MitmproxyAddon in passive monitoring mode preserves request bodies and skips caching."""
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    monkeypatch.setenv("HOLON_PASSIVE_MONITORING", "1")
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(tmp_path / "logs"))
+
+    # Construct mock flow
+    request_data = {
+        "model": "claude-3-5-sonnet-20241022",
+        "messages": [
+            {"role": "user", "content": "test tool output repeated repeated repeated"},
+        ],
+    }
+
+    class MockRequest:
+        def __init__(self):
+            self.pretty_url = "https://api.anthropic.com/v1/messages"
+            self.headers = {"content-type": "application/json"}
+            self._text = ""
+
+        def get_text(self):
+            return json.dumps(request_data)
+
+        def set_text(self, text):
+            self._text = text
+
+    flow = SimpleNamespace(
+        request=MockRequest(),
+        response=None,
+        is_cached=False,
+    )
+
+    addon.request(flow)
+    # In passive mode, cleaner_result must be None and request body must NOT be altered
+    assert flow.cleaner_result is None
+    assert flow.req_data == request_data
+    assert not flow.is_cached
+
+
+def test_scorecard_dynamic_guardrail_status():
+    """Verifies that format_scorecard dynamically reflects guardrail status when pass rate < 100%."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    # Case 1: 100% pass rate
+    b1 = ab.BenchmarkSummary(
+        name="baseline",
+        iterations=[
+            ab.IterationResult(
+                iteration=1,
+                success=True,
+                prompt_tokens=1000,
+                output_tokens=200,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                turn_0_prompt_tokens=500,
+                pruned_bytes=0,
+                duplicate_tools_omitted=0,
+                local_cache_hits=0,
+                total_calls=1,
+                tier1_tokens=1000,
+                tier2_tokens=0,
+                turns_saved_memory=0,
+                monetary_cost=0.01,
+                wall_clock_s=5.0,
+            )
+        ],
+    )
+    o1 = ab.BenchmarkSummary(
+        name="optimized",
+        iterations=[
+            ab.IterationResult(
+                iteration=1,
+                success=True,
+                prompt_tokens=500,
+                output_tokens=200,
+                cache_read_tokens=100,
+                cache_write_tokens=0,
+                turn_0_prompt_tokens=200,
+                pruned_bytes=500,
+                duplicate_tools_omitted=2,
+                local_cache_hits=1,
+                total_calls=1,
+                tier1_tokens=300,
+                tier2_tokens=200,
+                turns_saved_memory=3,
+                monetary_cost=0.005,
+                wall_clock_s=3.0,
+            )
+        ],
+    )
+    sc1 = ab.format_scorecard(b1, o1)
+    assert "**100% (Functional correctness guardrail met)**" in sc1
+
+    # Case 2: 0% pass rate (test failed)
+    o2 = ab.BenchmarkSummary(
+        name="optimized",
+        iterations=[
+            ab.IterationResult(
+                iteration=1,
+                success=False,
+                prompt_tokens=500,
+                output_tokens=200,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                turn_0_prompt_tokens=200,
+                pruned_bytes=0,
+                duplicate_tools_omitted=0,
+                local_cache_hits=0,
+                total_calls=1,
+                tier1_tokens=500,
+                tier2_tokens=0,
+                turns_saved_memory=0,
+                monetary_cost=0.005,
+                wall_clock_s=3.0,
+            )
+        ],
+    )
+    sc2 = ab.format_scorecard(b1, o2)
+    assert "**0% (Functional correctness guardrail NOT MET)**" in sc2

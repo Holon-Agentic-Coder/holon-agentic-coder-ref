@@ -194,7 +194,7 @@ def pre_clean_environment(cache_dir: Path, wire_log_dir: Path, clean_global_cach
 
     # 2. Archive wire log dir
     if wire_log_dir.exists() and any(wire_log_dir.iterdir()):
-        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S_%f")
         archive_dir = wire_log_dir.parent / f"{wire_log_dir.name}_archive_{timestamp}"
         archive_dir.mkdir(parents=True, exist_ok=True)
         for item in wire_log_dir.iterdir():
@@ -406,6 +406,11 @@ def format_scorecard(
     o_pass = sum(1 for i in optimized.iterations if i.success)
     b_sr = baseline.success_rate * 100
     o_sr = optimized.success_rate * 100
+    guardrail_status = (
+        "**100% (Functional correctness guardrail met)**"
+        if o_sr == 100.0
+        else f"**{o_sr:.0f}% (Functional correctness guardrail NOT MET)**"
+    )
 
     lines = [
         "# Token Reduction Efficacy Scorecard",
@@ -425,7 +430,7 @@ def format_scorecard(
         "| :--- | :--- | :--- | :--- |",
         (
             f"| **Task Success Rate / Test Pass Rate** | {b_sr:.0f}% ({b_pass}/{baseline.count} pass) | "
-            f"{o_sr:.0f}% ({o_pass}/{optimized.count} pass) | **100% (Functional correctness guardrail met)** |"
+            f"{o_sr:.0f}% ({o_pass}/{optimized.count} pass) | {guardrail_status} |"
         ),
         (
             f"| **Total Prompt Tokens (Cumulative)** | {b_p_mean:,.0f} ± {b_p_std:,.0f} | "
@@ -538,7 +543,12 @@ def main() -> int:
         print("\n⚙️ Running live task suite execution...")
         if args.command:
             cmd_tokens = shlex.split(args.command)
-            baseline_cmd = [arg for arg in cmd_tokens if arg not in ("--token-reduce", "--mitm-web")]
+            # In live benchmarking, both baseline and optimized route through the proxy sidecar
+            # so wire logs are recorded. Baseline runs in passive monitoring mode (no payload cleaning
+            # or local response caching), while optimized runs with full reduction active.
+            baseline_cmd = list(cmd_tokens)
+            if "--token-reduce" not in baseline_cmd:
+                baseline_cmd.append("--token-reduce")
             optimized_cmd = list(cmd_tokens)
             if "--token-reduce" not in optimized_cmd:
                 optimized_cmd.append("--token-reduce")
@@ -564,12 +574,14 @@ def main() -> int:
             optimized_cmd = list(default_test_cmd)
 
         baseline_env = os.environ.copy()
-        baseline_env["HOLON_TOKEN_REDUCE"] = "0"
-        for proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
-            baseline_env.pop(proxy_var, None)
+        baseline_env["HOLON_TOKEN_REDUCE"] = "1"
+        baseline_env["HOLON_PASSIVE_MONITORING"] = "1"
+        baseline_env["WIRE_LOG_DIR"] = str(wire_log_dir)
+        baseline_env["CACHE_DIR"] = str(cache_dir)
 
         optimized_env = os.environ.copy()
         optimized_env["HOLON_TOKEN_REDUCE"] = "1"
+        optimized_env["HOLON_PASSIVE_MONITORING"] = "0"
         optimized_env["WIRE_LOG_DIR"] = str(wire_log_dir)
         optimized_env["CACHE_DIR"] = str(cache_dir)
 

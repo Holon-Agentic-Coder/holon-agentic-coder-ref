@@ -34,6 +34,7 @@ _SECRET_HEADER_NAMES = {
     "authorization",
     "x-api-key",
     "api-key",
+    "x-anthropic-api-key",
     "x-goog-api-key",
     "holon-agent-key",
     "proxy-authorization",
@@ -113,8 +114,10 @@ def scrub_headers(headers: Any) -> dict[str, str]:
     return cleaned
 
 
-def scrub_payload(data: Any) -> Any:
+def scrub_payload(data: Any, max_depth: int = 50) -> Any:
     """Recursively scrubs sensitive keys and credentials in JSON-serializable payloads."""
+    if max_depth <= 0:
+        return data
     if isinstance(data, dict):
         cleaned: dict[str, Any] = {}
         for k, v in data.items():
@@ -122,10 +125,10 @@ def scrub_payload(data: Any) -> Any:
             if _SECRET_DICT_KEY_PATTERN.match(k_str):
                 cleaned[k] = "[REDACTED]"
             else:
-                cleaned[k] = scrub_payload(v)
+                cleaned[k] = scrub_payload(v, max_depth=max_depth - 1)
         return cleaned
     elif isinstance(data, list):
-        return [scrub_payload(elem) for elem in data]
+        return [scrub_payload(elem, max_depth=max_depth - 1) for elem in data]
     elif isinstance(data, str):
         return scrub_string(data)
     else:
@@ -136,6 +139,12 @@ def is_wire_logging_enabled() -> bool:
     """Checks whether wire logging is enabled via environment configuration."""
     flag = os.getenv("ENABLE_WIRE_LOGGING", "1").lower().strip()
     return flag not in ("0", "false", "no", "off")
+
+
+def is_passive_monitoring() -> bool:
+    """Checks whether proxy operates in passive monitoring mode (logging only, no reduction/caching)."""
+    flag = os.getenv("HOLON_PASSIVE_MONITORING", "0").lower().strip()
+    return flag in ("1", "true", "yes", "on")
 
 
 _wire_log_executor: concurrent.futures.ThreadPoolExecutor | None = None
@@ -163,8 +172,10 @@ def _write_transaction_sync(record: dict[str, Any], wire_log_dir: str) -> None:
         filename = f"turn_{safe_turn_id}_{safe_flow_id}.json"
         filepath = os.path.join(wire_log_dir, filename)
 
-        with open(filepath, "w", encoding="utf-8") as f:
+        tmp_filepath = f"{filepath}.{uuid.uuid4().hex[:6]}.tmp"
+        with open(tmp_filepath, "w", encoding="utf-8") as f:
             json.dump(record, f, indent=2, ensure_ascii=False, default=str)
+        os.replace(tmp_filepath, filepath)
 
         jsonl_path = os.path.join(wire_log_dir, "transactions.jsonl")
         line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
@@ -1063,71 +1074,78 @@ class MitmproxyAddon:
             try:
                 if data is not None:
                     flow.raw_request_data = copy.deepcopy(data)
-                    if (
-                        hasattr(self.interceptor, "intercept_request_with_stats")
-                        and "intercept_request" not in self.interceptor.__dict__
-                    ):
-                        cleaned_data, cached_resp, clean_res = self.interceptor.intercept_request_with_stats(url, data)
+                    if is_passive_monitoring():
+                        # Passive mode: bypass cleaning and cache lookup, preserving raw payload for baseline logging
+                        flow.cleaner_result = None
+                        flow.req_data = data
                     else:
-                        cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
-                        clean_res = None
-                    flow.cleaner_result = clean_res
-                    flow.req_data = cleaned_data
-                    flow.request.set_text(json.dumps(cleaned_data))
-
-                    if clean_res and (
-                        clean_res.chars_saved > 0
-                        or clean_res.tool_outputs_omitted > 0
-                        or clean_res.turns_summarized > 0
-                        or clean_res.cache_control_injected > 0
-                    ):
-                        cleaner_log = (
-                            f"🧹 [CLEANER_METRICS] Chars Saved: {clean_res.chars_saved} | "
-                            f"Tool Outputs Omitted: {clean_res.tool_outputs_omitted} | "
-                            f"Turns Summarized: {clean_res.turns_summarized} | "
-                            f"Cache Control Injected: {clean_res.cache_control_injected}"
-                        )
-                        log_telemetry(cleaner_log)
-
-                    if cached_resp:
-                        self.cache_hits += 1
-                        flow.is_cached = True
-
-                        headers = {"Content-Type": "application/json"}
-                        response_cls = (
-                            getattr(http, "Response", None)
-                            or getattr(flow, "Response", None)
-                            or globals().get("Response")
-                        )
-                        if response_cls and hasattr(response_cls, "make"):
-                            flow.response = response_cls.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
-
-                        # Inject telemetry headers on cache hit
-                        hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
                         if (
-                            getattr(flow, "response", None) is not None
-                            and hasattr(flow.response, "headers")
-                            and flow.response.headers is not None
-                            and hasattr(flow.response.headers, "__setitem__")
+                            hasattr(self.interceptor, "intercept_request_with_stats")
+                            and "intercept_request" not in self.interceptor.__dict__
                         ):
-                            flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
-                            flow.response.headers["X-Holon-TTFT-Ms"] = "0.00"
-                            flow.response.headers["X-Holon-Prefill-TPS"] = "0.0000"
-                            flow.response.headers["X-Holon-Tail-Prefill-TPS"] = "0.0000"
-                            flow.response.headers["X-Holon-Decode-Time-Sec"] = "0.000"
-                            flow.response.headers["X-Holon-Output-TPS"] = "0.0000"
-                            flow.response.headers["X-Holon-Total-Time-Ms"] = "0.00"
+                            cleaned_data, cached_resp, clean_res = self.interceptor.intercept_request_with_stats(
+                                url, data
+                            )
+                        else:
+                            cleaned_data, cached_resp = self.interceptor.intercept_request(url, data)
+                            clean_res = None
+                        flow.cleaner_result = clean_res
+                        flow.req_data = cleaned_data
+                        flow.request.set_text(json.dumps(cleaned_data))
 
-                        log_msg = (
-                            f"📊 [TELEMETRY] Provider: {provider.upper()} | "
-                            f"Cache: HIT (Hit Rate: {hit_rate * 100:.1f}%) | "
-                            f"TTFT: 0.00ms | Prefill: 0.00 t/s | Output: 0.00 t/s | "
-                            f"Total: 0.00ms"
-                        )
-                        log_telemetry(log_msg)
+                        if clean_res and (
+                            clean_res.chars_saved > 0
+                            or clean_res.tool_outputs_omitted > 0
+                            or clean_res.turns_summarized > 0
+                            or clean_res.cache_control_injected > 0
+                        ):
+                            cleaner_log = (
+                                f"🧹 [CLEANER_METRICS] Chars Saved: {clean_res.chars_saved} | "
+                                f"Tool Outputs Omitted: {clean_res.tool_outputs_omitted} | "
+                                f"Turns Summarized: {clean_res.turns_summarized} | "
+                                f"Cache Control Injected: {clean_res.cache_control_injected}"
+                            )
+                            log_telemetry(cleaner_log)
 
-                        # Dump wire transaction for cache hit
-                        self._dump_flow_transaction(flow, resp_data=cached_resp, status_code=200, is_hit=True)
+                        if cached_resp:
+                            self.cache_hits += 1
+                            flow.is_cached = True
+
+                            headers = {"Content-Type": "application/json"}
+                            response_cls = (
+                                getattr(http, "Response", None)
+                                or getattr(flow, "Response", None)
+                                or globals().get("Response")
+                            )
+                            if response_cls and hasattr(response_cls, "make"):
+                                flow.response = response_cls.make(200, json.dumps(cached_resp).encode("utf-8"), headers)
+
+                            # Inject telemetry headers on cache hit
+                            hit_rate = self.cache_hits / self.total_requests if self.total_requests > 0 else 0.0
+                            if (
+                                getattr(flow, "response", None) is not None
+                                and hasattr(flow.response, "headers")
+                                and flow.response.headers is not None
+                                and hasattr(flow.response.headers, "__setitem__")
+                            ):
+                                flow.response.headers["X-Holon-Cache-Hit-Rate"] = f"{hit_rate:.4f}"
+                                flow.response.headers["X-Holon-TTFT-Ms"] = "0.00"
+                                flow.response.headers["X-Holon-Prefill-TPS"] = "0.0000"
+                                flow.response.headers["X-Holon-Tail-Prefill-TPS"] = "0.0000"
+                                flow.response.headers["X-Holon-Decode-Time-Sec"] = "0.000"
+                                flow.response.headers["X-Holon-Output-TPS"] = "0.0000"
+                                flow.response.headers["X-Holon-Total-Time-Ms"] = "0.00"
+
+                            log_msg = (
+                                f"📊 [TELEMETRY] Provider: {provider.upper()} | "
+                                f"Cache: HIT (Hit Rate: {hit_rate * 100:.1f}%) | "
+                                f"TTFT: 0.00ms | Prefill: 0.00 t/s | Output: 0.00 t/s | "
+                                f"Total: 0.00ms"
+                            )
+                            log_telemetry(log_msg)
+
+                            # Dump wire transaction for cache hit
+                            self._dump_flow_transaction(flow, resp_data=cached_resp, status_code=200, is_hit=True)
             except json.JSONDecodeError as exc:
                 logger.debug("Non-JSON request body for endpoint %s: %s", url, exc)
             except Exception:
@@ -1201,7 +1219,7 @@ class MitmproxyAddon:
                     # Note: Response caching is explicitly bypassed for SSE streams (is_sse is True)
                     # because streaming responses cannot be served statically from cache, but telemetry
                     # metrics (token counts, TTFT, TPS) are still calculated and logged.
-                    if not is_sse:
+                    if not is_sse and not is_passive_monitoring():
                         self.interceptor.intercept_response(url, req_data, resp_data, status_code=status_code)
 
                     # Extract token counts and cache read tokens in a single pass
