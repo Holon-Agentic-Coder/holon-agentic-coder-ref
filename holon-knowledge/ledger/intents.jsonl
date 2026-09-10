@@ -1,0 +1,1 @@
+{"slug": "test-intent-integration", "description": "Integration test description", "goal": "Verify intent creator via docker", "target_branch": "main", "branch": "I-1788999426-test-intent-integration", "status": "proposed", "created_at": "2026-09-10T00:17:09.927Z"}
