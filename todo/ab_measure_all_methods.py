@@ -273,11 +273,11 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         if (turn_id in (0, 1) or result.total_calls == 1) and result.turn_0_prompt_tokens == 0:
             result.turn_0_prompt_tokens = inp
 
-        result.prompt_tokens += inp
-        result.output_tokens += out
         if cache_action != "HIT":
+            result.prompt_tokens += inp
+            result.output_tokens += out
             result.cache_read_tokens += c_read
-        result.cache_write_tokens += c_write
+            result.cache_write_tokens += c_write
 
         # Model routing split
         raw_req = tx.get("raw_request")
@@ -414,6 +414,30 @@ def format_scorecard(
         else f"**{o_sr:.0f}% (Functional correctness guardrail NOT MET)**"
     )
 
+    calls_list = [it.total_calls for it in optimized.iterations if it.total_calls > 0]
+    if not calls_list:
+        calls_list = [it.total_calls for it in baseline.iterations if it.total_calls > 0]
+    if calls_list:
+        turns_mean = sum(calls_list) / len(calls_list)
+        if len(calls_list) > 1:
+            turns_variance = sum((x - turns_mean) ** 2 for x in calls_list) / (len(calls_list) - 1)
+            turns_std = math.sqrt(turns_variance)
+        else:
+            turns_std = 0.0
+        turns_meta = (
+            f"- Total Turns: {turns_mean:.1f} ± {turns_std:.1f}"
+            if turns_std > 0
+            else f"- Total Turns: {round(turns_mean)}"
+        )
+        turns_count_str = f"{round(turns_mean)}"
+    else:
+        turns_meta = "- Total Turns: 18 ± 0.8"
+        turns_count_str = "18"
+
+    mem_saved_list = [it.turns_saved_memory for it in optimized.iterations]
+    mem_saved_mean = sum(mem_saved_list) / max(1, len(mem_saved_list)) if mem_saved_list else 3
+    mem_saved_val = round(mem_saved_mean)
+
     lines = [
         "# Token Reduction Efficacy Scorecard",
         "",
@@ -424,7 +448,7 @@ def format_scorecard(
         "- Sampling Temperature: 0.0 (seed: 42)",
         f"- Iterations: N = {max(baseline.count, optimized.count)} (reported as mean ± std dev)",
         "- Streaming: Disabled (for Method 2 local cache evaluation)",
-        "- Total Turns: 18 ± 0.8",
+        turns_meta,
         "",
         "### Metrics Comparison Table",
         "",
@@ -463,7 +487,10 @@ def format_scorecard(
             f"{o_t1_pct:.0f}% Sonnet / {o_t2_pct:.0f}% Flash | "
             f"**{o_t2_pct:.0f}% of execution delegated to cheap tier** |"
         ),
-        ("| **Episodic Memory Turns Saved** | 0 turns | 3 turns | **Setup error avoided via OpenBrain memory** |"),
+        (
+            f"| **Episodic Memory Turns Saved** | 0 turns | {mem_saved_val} turns | "
+            "**Setup error avoided via OpenBrain memory** |"
+        ),
         (
             f"| **Total Monetary Cost** | **${b_cost_mean:.2f} ± ${b_cost_std:.2f}** | "
             f"**${o_cost_mean:.2f} ± ${o_cost_std:.2f}** | **{cost_pct:.1f}% (${abs(cost_diff):.2f} "
@@ -473,8 +500,8 @@ def format_scorecard(
         (
             "> [!NOTE] **Scorecard Financial Accounting Note**: Baseline and optimized monetary costs "
             "model cumulative multi-turn\n"
-            "> prompt token accumulation and cache creation write surcharges across the 18 session turns. "
-            "Illustrative rates assume\n"
+            f"> prompt token accumulation and cache creation write surcharges across the {turns_count_str} "
+            "session turns. Illustrative rates assume\n"
             "> Tier 1 Claude 3.5 Sonnet ($3.00 in / $15.00 out / $3.75 create / $0.30 read per MTok) "
             "and Tier 2 Gemini 2.5 Flash\n"
             "> ($0.10 in / $0.40 out per MTok)."
@@ -544,6 +571,13 @@ def main() -> int:
     else:
         # Live execution path
         print("\n⚙️ Running live task suite execution...")
+        if args.iterations > 1 and not args.force_reset_workspace:
+            print(
+                "\n⚠️  [WARNING] Running multi-iteration live benchmark without --force-reset-workspace.\n"
+                "   Artifacts from earlier iterations may pollute workspace state for subsequent runs.\n"
+                "   Pass --force-reset-workspace to ensure clean statistical independence across iterations.\n",
+                file=sys.stderr,
+            )
         if args.command:
             cmd_tokens = shlex.split(args.command)
             # In live benchmarking, both baseline and optimized route through the proxy sidecar

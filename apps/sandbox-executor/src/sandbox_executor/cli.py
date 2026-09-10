@@ -362,15 +362,28 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
 
     repo_root = _find_git_root()
-    host_wire_log_dir = os.getenv("WIRE_LOG_DIR") or os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
+    wire_dir_env = os.getenv("WIRE_LOG_DIR")
+    if wire_dir_env:
+        host_wire_log_dir = (
+            wire_dir_env if os.path.isabs(wire_dir_env) else os.path.abspath(os.path.join(repo_root, wire_dir_env))
+        )
+    else:
+        host_wire_log_dir = os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
     os.makedirs(host_wire_log_dir, exist_ok=True)
 
-    host_cache_dir = os.getenv("CACHE_DIR") or os.path.abspath(os.path.join(repo_root, "todo", "cache"))
+    cache_dir_env = os.getenv("CACHE_DIR")
+    if cache_dir_env:
+        host_cache_dir = (
+            cache_dir_env if os.path.isabs(cache_dir_env) else os.path.abspath(os.path.join(repo_root, cache_dir_env))
+        )
+    else:
+        host_cache_dir = os.path.abspath(os.path.join(repo_root, "todo", "cache"))
     os.makedirs(host_cache_dir, exist_ok=True)
 
     # Ensure non-root container UID 1000 can write without permission errors on Linux hosts.
-    # Note: On Linux hosts where user UID/GID != 1000, set HOLON_MITM_USER="$(id -u):$(id -g)"
-    # or ensure directory permissions allow writes.
+    # Note: On shared multi-user hosts or environments where host UID/GID != 1000, setting
+    # HOLON_MITM_USER="$(id -u):$(id -g)" is strongly recommended, allowing the host
+    # directories to use restrictive 0o700 or 0o750 permissions rather than 0o775.
     for d in (host_wire_log_dir, host_cache_dir):
         try:
             os.chmod(d, 0o775)

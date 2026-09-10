@@ -80,7 +80,7 @@ _BODY_SECRET_PATTERNS = [
 ]
 
 _SECRET_DICT_KEY_PATTERN = re.compile(
-    r"(?i)^(?:password|passwd|api_key|api-key|apikey|secret|access_token|access-token|auth_token|auth-token|secret_key|private_key|client_secret|session_token)$"
+    r"(?i)^(?:password|passwd|api[-_]?key|apikey|api[-_]?token|auth[-_]?token|access[-_]?token|secret[-_]?key|secret|private[-_]?key|client[-_]?secret|session[-_]?token)$"
 )
 
 
@@ -227,7 +227,20 @@ def flush_wire_logs(timeout: float = 5.0) -> None:
         concurrent.futures.wait(pending, timeout=timeout)
 
 
-atexit.register(flush_wire_logs)
+def shutdown_wire_logs(wait: bool = True, timeout: float = 5.0) -> None:
+    """Blocks until pending wire log writes finish and cleanly shuts down the ThreadPoolExecutor."""
+    global _wire_log_executor
+    flush_wire_logs(timeout=timeout)
+    with _wire_log_lock:
+        if _wire_log_executor is not None and not getattr(_wire_log_executor, "_shutdown", False):
+            try:
+                _wire_log_executor.shutdown(wait=wait)
+            except Exception as exc:
+                logger.debug("Error shutting down wire log executor: %s", exc)
+            _wire_log_executor = None
+
+
+atexit.register(shutdown_wire_logs)
 
 
 def get_header_case_insensitive(headers: Any, target_header: str) -> str | None:
@@ -363,6 +376,14 @@ class MITMProxyInterceptor:
             tuple[dict[str, Any], dict[str, Any] | None, CleaningResult | None]:
                 (cleaned_request_json, cached_response_or_none, cleaner_result_or_none)
         """
+        # Backward compatibility if intercept_request was overridden on class or monkeypatched on instance
+        custom_intercept = getattr(self, "intercept_request", None)
+        if custom_intercept is not None:
+            func = getattr(custom_intercept, "__func__", custom_intercept)
+            if func is not MITMProxyInterceptor.intercept_request:
+                cleaned_req, cached_resp = self.intercept_request(endpoint, request_json)
+                return cleaned_req, cached_resp, None
+
         provider = self.detect_provider(endpoint, request_json)
         if provider == "unknown":
             logger.warning("Unknown LLM provider for endpoint: %s. Bypassing payload cleaning.", endpoint)
@@ -960,14 +981,7 @@ class MitmproxyAddon:
 
     def done(self) -> None:
         """Called when mitmproxy is shutting down to flush in-flight logs."""
-        flush_wire_logs(timeout=5.0)
-        global _wire_log_executor
-        with _wire_log_lock:
-            if _wire_log_executor is not None and not getattr(_wire_log_executor, "_shutdown", False):
-                try:
-                    _wire_log_executor.shutdown(wait=False)
-                except Exception as exc:
-                    logger.debug("Error shutting down wire log executor: %s", exc)
+        shutdown_wire_logs(wait=False, timeout=5.0)
 
     def _dump_flow_transaction(
         self,
@@ -1093,11 +1107,7 @@ class MitmproxyAddon:
                         flow.cleaner_result = None
                         flow.req_data = data
                     else:
-                        if (
-                            hasattr(self.interceptor, "intercept_request_with_stats")
-                            and "intercept_request" not in self.interceptor.__dict__
-                            and type(self.interceptor).intercept_request is MITMProxyInterceptor.intercept_request
-                        ):
+                        if hasattr(self.interceptor, "intercept_request_with_stats"):
                             cleaned_data, cached_resp, clean_res = self.interceptor.intercept_request_with_stats(
                                 url, data
                             )

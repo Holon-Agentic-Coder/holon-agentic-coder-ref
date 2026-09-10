@@ -3215,3 +3215,122 @@ def test_ab_measure_non_dict_raw_request(tmp_path):
     # Should not raise AttributeError: 'str' object has no attribute 'get'
     res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
     assert res is not None
+
+
+def test_shutdown_wire_logs(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import (
+        _get_wire_log_executor,
+        dump_wire_transaction,
+        shutdown_wire_logs,
+    )
+
+    os.environ["HOLON_WIRE_LOGS"] = "1"
+    wire_dir = tmp_path / "shutdown_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    fut = dump_wire_transaction({"flow_id": "shut1", "turn_id": 1}, str(wire_dir))
+    shutdown_wire_logs(wait=True)
+    assert fut.done()
+    # Re-calling _get_wire_log_executor creates a fresh one
+    fresh_executor = _get_wire_log_executor()
+    assert fresh_executor is not None
+    assert not getattr(fresh_executor, "_shutdown", False)
+    shutdown_wire_logs(wait=True)
+
+
+def test_secret_dict_key_pattern_extended():
+    from sandbox_executor.token_reduction.mitm_addon import _SECRET_DICT_KEY_PATTERN
+
+    assert _SECRET_DICT_KEY_PATTERN.match("api-key")
+    assert _SECRET_DICT_KEY_PATTERN.match("api_key")
+    assert _SECRET_DICT_KEY_PATTERN.match("apikey")
+    assert _SECRET_DICT_KEY_PATTERN.match("api-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("api_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("auth-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("auth_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("access-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("access_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("client_secret")
+    assert _SECRET_DICT_KEY_PATTERN.match("client-secret")
+    assert _SECRET_DICT_KEY_PATTERN.match("session_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("session-token")
+    assert not _SECRET_DICT_KEY_PATTERN.match("tokens")
+    assert not _SECRET_DICT_KEY_PATTERN.match("max_tokens")
+
+
+def test_interceptor_subclass_override_backward_compatibility():
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    class CustomOldInterceptor(MITMProxyInterceptor):
+        def intercept_request(self, endpoint, request_json):
+            modified = dict(request_json)
+            modified["custom_key"] = "injected"
+            return modified, None
+
+    custom = CustomOldInterceptor(enable_caching=False)
+    cleaned, cached, clean_res = custom.intercept_request_with_stats(
+        "https://api.openai.com/v1/chat/completions", {"model": "gpt-4o"}
+    )
+    assert cleaned.get("custom_key") == "injected"
+    assert cached is None
+    assert clean_res is None
+
+
+def test_ab_measure_local_cache_hit_token_accounting(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "cache_hit_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    tx = {
+        "turn_id": 1,
+        "flow_id": "f_hit",
+        "provider": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "status_code": 200,
+        "cache": {"action": "HIT"},
+        "raw_request": {"model": "gpt-4o", "messages": []},
+        "cleaned_request": {"model": "gpt-4o", "messages": []},
+        "response": {"usage": {"input_tokens": 500, "output_tokens": 100}},
+        "token_counts": {"input_tokens": 500, "output_tokens": 100},
+    }
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.local_cache_hits == 1
+    # On local cache HIT, upstream billed tokens must be 0
+    assert res.prompt_tokens == 0
+    assert res.output_tokens == 0
+
+
+def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
+    monkeypatch.setenv("WIRE_LOG_DIR", "custom/rel_wire_logs")
+    monkeypatch.setenv("CACHE_DIR", "custom/rel_cache")
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    _mounts, _envs = setup_token_reduction_proxy(mitm_web=False)
+    teardown_token_reduction_proxy()
+
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    wire_mounts = [arg for arg in run_cmd if arg.endswith(":/tmp/wire_logs")]
+    cache_mounts = [arg for arg in run_cmd if arg.endswith(":/tmp/cache")]
+    assert len(wire_mounts) == 1
+    assert len(cache_mounts) == 1
+    host_wire = wire_mounts[0].split(":")[0]
+    host_cache = cache_mounts[0].split(":")[0]
+    assert os.path.isabs(host_wire)
+    assert host_wire.endswith("custom/rel_wire_logs")
+    assert os.path.isabs(host_cache)
+    assert host_cache.endswith("custom/rel_cache")
