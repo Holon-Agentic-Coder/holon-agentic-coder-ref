@@ -1,0 +1,1 @@
+{"slug": "test-planner-integration", "description": "Integration test description for planner", "goal": "Verify planner fail-fast via docker", "target_branch": "main", "branch": "I-1788999440-test-planner-integration", "status": "proposed", "created_at": "2026-09-10T00:17:23.915Z"}
