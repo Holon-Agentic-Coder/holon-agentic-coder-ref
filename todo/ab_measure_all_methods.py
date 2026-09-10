@@ -174,8 +174,33 @@ class BenchmarkSummary:
         return self._mean_std(lambda it: it.monetary_cost)
 
 
+def check_wire_log_disk_usage(wire_log_dir: Path, max_mb: float = 500.0) -> None:
+    """Warns if wire log directory or its sibling archives exceed a storage threshold."""
+    try:
+        parent_dir = wire_log_dir.parent
+        total_bytes = 0
+        if parent_dir.exists():
+            for p in parent_dir.glob(f"{wire_log_dir.name}*"):
+                if p.is_file():
+                    total_bytes += p.stat().st_size
+                elif p.is_dir():
+                    for f in p.rglob("*"):
+                        if f.is_file():
+                            total_bytes += f.stat().st_size
+        total_mb = total_bytes / (1024 * 1024)
+        if total_mb > max_mb:
+            print(
+                f"⚠️ Warning: Wire log directory and archives consume {total_mb:.1f} MB (threshold: {max_mb:.0f} MB). "
+                "Consider pruning old benchmark archives to reclaim disk space.",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(f"Debug: Failed to check wire log disk usage: {e}", file=sys.stderr)
+
+
 def pre_clean_environment(cache_dir: Path, wire_log_dir: Path, clean_global_cache: bool = False) -> None:
     """Purges/isolates the SQLite cache database and archives previous transaction logs."""
+    check_wire_log_disk_usage(wire_log_dir)
     # 1. Purge/isolate SQLite cache
     cache_dir.mkdir(parents=True, exist_ok=True)
     sqlite_patterns = ("*.db", "*.db-wal", "*.db-shm", "*.sqlite*")
@@ -286,15 +311,18 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
         clean_model = clean_req.get("model") if isinstance(clean_req, dict) else None
         model = str(raw_model or clean_model or tx.get("endpoint") or "").lower()
         pricing = get_model_pricing(model)
-        if any(lightweight in model for lightweight in ("flash", "haiku", "mini")):
-            result.tier2_tokens += inp + out
-        else:
-            result.tier1_tokens += inp + out
+        if cache_action != "HIT":
+            if any(lightweight in model for lightweight in ("flash", "haiku", "mini")):
+                result.tier2_tokens += inp + out
+            else:
+                result.tier1_tokens += inp + out
 
         # Financial cost calculation
         if cache_action == "HIT":
             cost = 0.0
         else:
+            # Schema contract: `inp` represents normalized total input tokens from mitm_addon.py
+            # (uncached + c_read + c_write). We subtract cached tokens to derive the uncached base input.
             uncached_inp = max(0, inp - c_read - c_write)
             cost = (
                 (uncached_inp * pricing["input"] / 1_000_000.0)

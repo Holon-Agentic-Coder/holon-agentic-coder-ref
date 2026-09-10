@@ -152,6 +152,13 @@ transaction details to `${WIRE_LOG_DIR}/turn_{turn_id}_{flow_id}.json` and `${WI
   All detected secret matches in message bodies and payloads are replaced with `"[REDACTED_SECRET]"` prior to persisting
   transaction payloads or endpoint URLs to disk.
 
+> [!CAUTION] **Proprietary Code & PII Hygiene Advisory for Local Wire Logs**: While API keys, auth headers, and common
+> secrets are thoroughly redacted by `mitm_addon.py`, full prompt message bodies containing proprietary source code,
+> internal documentation, or developer PII may still be recorded in `transactions.jsonl` and individual turn files
+> during live benchmark runs. Local wire logs should be periodically purged or stored on encrypted volumes when
+> evaluating benchmarks with sensitive or proprietary code. Never commit wire logs to version control (`.gitignore`
+> enforces this by default).
+
 ```json
 {
   "turn_id": 4,
@@ -686,7 +693,9 @@ gantt
      capturing internal reasoning tokens (`usage.completion_tokens_details.reasoning_tokens`) alongside visible content.
 3. **Update Runner CLI**:
    - Add flag `--mitm-web` to launch `mitmweb` instead of `mitmdump` with web port `8081` bound to localhost, logging
-     `🌐 mitmweb dashboard active at http://localhost:8081` upon startup.
+     `🌐 mitmweb dashboard active at http://127.0.0.1:8081` upon startup.
+   - For shared staging servers or remote testing environments, support `HOLON_MITM_WEB_PASSWORD` to secure the mitmweb
+     dashboard against unauthenticated access.
 4. **Implement A/B Benchmark Script**:
    - Provide an automated runner in `todo/ab_measure_all_methods.py` that enforces a benchmark pre-clean step:
      explicitly purging or isolating the SQLite cache database (`llm_cache.db` / `~/.holon/cache/` /

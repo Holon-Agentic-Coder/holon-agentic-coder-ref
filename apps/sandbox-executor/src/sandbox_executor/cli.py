@@ -473,6 +473,9 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     )
     if mitm_web:
         docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", str(web_port)])
+        web_password = os.getenv("HOLON_MITM_WEB_PASSWORD")
+        if web_password:
+            docker_run_proxy.extend(["--set", f"web_password={web_password}"])
 
     logger.info(
         "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
@@ -713,7 +716,10 @@ def main() -> None:
     plan_parser.add_argument(
         "--mitm-web",
         action="store_true",
-        help="Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection.",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
+            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
+        ),
     )
 
     # Subcommand: execute
@@ -729,7 +735,10 @@ def main() -> None:
     exec_parser.add_argument(
         "--mitm-web",
         action="store_true",
-        help="Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection.",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
+            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
+        ),
     )
 
     args = parser.parse_args()

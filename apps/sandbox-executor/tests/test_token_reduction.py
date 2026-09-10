@@ -3334,3 +3334,115 @@ def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     assert host_wire.endswith("custom/rel_wire_logs")
     assert os.path.isabs(host_cache)
     assert host_cache.endswith("custom/rel_cache")
+
+
+def test_secret_dict_key_pattern_oauth_and_id_token():
+    from sandbox_executor.token_reduction.mitm_addon import _SECRET_DICT_KEY_PATTERN
+
+    assert _SECRET_DICT_KEY_PATTERN.match("refresh-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("refresh_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("id-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("id_token")
+
+
+def test_token_counts_unpacking_and_attributes():
+    from sandbox_executor.token_reduction.mitm_addon import TokenCounts
+
+    tc = TokenCounts(100, 50, 20, cache_creation_tokens=10, reasoning_tokens=5)
+    inp, out, read = tc
+    assert inp == 100
+    assert out == 50
+    assert read == 20
+    assert tc.input_tokens == 100
+    assert tc.output_tokens == 50
+    assert tc.cache_read_tokens == 20
+    assert tc.cache_creation_tokens == 10
+    assert tc.reasoning_tokens == 5
+
+
+def test_scrub_payload_tuple_support():
+    from sandbox_executor.token_reduction.mitm_addon import scrub_payload
+
+    data_tuple = ({"api_key": "secret123"}, "normal_string")
+    scrubbed = scrub_payload(data_tuple)
+    assert isinstance(scrubbed, tuple)
+    assert scrubbed[0]["api_key"] == "[REDACTED]"
+    assert scrubbed[1] == "normal_string"
+
+
+def test_mitm_web_password_support(host_paths, monkeypatch):
+    from sandbox_executor.cli import setup_token_reduction_proxy, teardown_token_reduction_proxy
+
+    monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", "secretpass123")
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    _mounts, _envs = setup_token_reduction_proxy(mitm_web=True)
+    teardown_token_reduction_proxy()
+
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    assert "web_password=secretpass123" in run_cmd
+
+
+def test_ab_measure_tier_token_accounting_on_cache_hit(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "cache_hit_tier_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    tx = {
+        "turn_id": 1,
+        "flow_id": "f_hit_tier",
+        "provider": "anthropic",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "status_code": 200,
+        "cache": {"action": "HIT"},
+        "raw_request": {"model": "claude-3-5-sonnet-20241022", "messages": []},
+        "cleaned_request": {"model": "claude-3-5-sonnet-20241022", "messages": []},
+        "response": {"usage": {"input_tokens": 800, "output_tokens": 150}},
+        "token_counts": {"input_tokens": 800, "output_tokens": 150},
+    }
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.local_cache_hits == 1
+    # On local cache HIT, both prompt/output tokens and tier tokens must be 0
+    assert res.prompt_tokens == 0
+    assert res.output_tokens == 0
+    assert res.tier1_tokens == 0
+    assert res.tier2_tokens == 0
+
+
+def test_check_wire_log_disk_usage(tmp_path, capsys):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "quota_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    dummy_file = wire_dir / "big.log"
+    dummy_file.write_bytes(b"x" * 200)
+
+    ab.check_wire_log_disk_usage(wire_dir, max_mb=0.0001)
+    captured = capsys.readouterr()
+    assert "Warning: Wire log directory and archives consume" in captured.err

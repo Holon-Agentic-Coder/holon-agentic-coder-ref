@@ -80,7 +80,7 @@ _BODY_SECRET_PATTERNS = [
 ]
 
 _SECRET_DICT_KEY_PATTERN = re.compile(
-    r"(?i)^(?:password|passwd|api[-_]?key|apikey|api[-_]?token|auth[-_]?token|access[-_]?token|secret[-_]?key|secret|private[-_]?key|client[-_]?secret|session[-_]?token)$"
+    r"(?i)^(?:password|passwd|api[-_]?key|apikey|api[-_]?token|auth[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|secret[-_]?key|secret|private[-_]?key|client[-_]?secret|session[-_]?token)$"
 )
 
 
@@ -135,8 +135,9 @@ def scrub_payload(data: Any, max_depth: int = 50) -> Any:
             else:
                 cleaned[k] = scrub_payload(v, max_depth=max_depth - 1)
         return cleaned
-    elif isinstance(data, list):
-        return [scrub_payload(elem, max_depth=max_depth - 1) for elem in data]
+    elif isinstance(data, (list, tuple)):
+        scrubbed_seq = [scrub_payload(elem, max_depth=max_depth - 1) for elem in data]
+        return tuple(scrubbed_seq) if isinstance(data, tuple) else scrubbed_seq
     elif isinstance(data, str):
         return scrub_string(data)
     else:
@@ -981,7 +982,7 @@ class MitmproxyAddon:
 
     def done(self) -> None:
         """Called when mitmproxy is shutting down to flush in-flight logs."""
-        shutdown_wire_logs(wait=False, timeout=5.0)
+        shutdown_wire_logs(wait=True, timeout=5.0)
 
     def _dump_flow_transaction(
         self,
