@@ -2201,3 +2201,1249 @@ def test_log_telemetry_ctx_handling(monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         log_telemetry("test fallback message")
     assert any("test fallback message" in r.message for r in caplog.records)
+
+
+def test_payload_cleaner_cleaning_result_metrics():
+    from sandbox_executor.token_reduction.payload_cleaner import CleaningResult, JSONContextCleaner
+
+    cleaner = JSONContextCleaner(enable_deduplication=True, enable_prompt_caching=True, max_turns=10)
+
+    # 1. Deduplication and cache control injection
+    dup_tool_output = "Line " + "x" * 2000
+    payload = {
+        "system": "You are a helpful assistant.",
+        "tools": [{"name": "read_file", "description": "Reads a file"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": dup_tool_output}],
+            },
+            {"role": "assistant", "content": "Got it."},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "call_2", "content": dup_tool_output}],
+            },
+            {"role": "assistant", "content": "Checking."},
+            {"role": "user", "content": "Latest query."},
+        ],
+    }
+
+    result = cleaner.process_payload_with_stats(payload, provider="anthropic")
+    assert isinstance(result, CleaningResult)
+    assert result.tool_outputs_omitted >= 1
+    assert result.cache_control_injected >= 1
+    assert result.chars_saved > 0
+    assert "[Omitted:" in json.dumps(result.payload)
+
+    # 2. History summarization
+    many_turns_payload = {
+        "messages": [
+            {"role": "user", "content": f"Turn {i} " + "content " * 10}
+            if i % 2 == 0
+            else {"role": "assistant", "content": f"Reply {i}"}
+            for i in range(15)
+        ]
+    }
+    sum_res = cleaner.process_payload_with_stats(many_turns_payload, provider="anthropic")
+    assert sum_res.turns_summarized > 0
+    assert any("[Summary of omitted" in json.dumps(m) for m in sum_res.payload["messages"])
+
+
+def test_secret_scrubbing():
+    from sandbox_executor.token_reduction.mitm_addon import (
+        scrub_headers,
+        scrub_payload,
+        scrub_string,
+    )
+
+    # 1. URL query parameters
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash?key=AIzaSyA1234567890123456789012345678901&token=secret-token-value"
+    scrubbed_url = scrub_string(url)
+    assert "AIza" not in scrubbed_url
+    assert "secret-token-value" not in scrubbed_url
+    assert "key=[REDACTED]" in scrubbed_url
+    assert "token=[REDACTED]" in scrubbed_url
+
+    # 2. Secret regex patterns in text
+    secrets = [
+        "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345",
+        "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+        "sk-admin-abcdefghijklmnopqrstuvwxyz0123456789",
+        "sk-svcacct-abcdefghijklmnopqrstuvwxyz0123456789",
+        "AIzaSyDabcdefghijklmnopqrstuvwxyz012345",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "gho_abcdefghijklmnopqrstuvwxyz0123456789",
+        "github_pat_11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "hf_abcdefghijklmnopqrstuvwxyz012345678",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----",
+    ]
+    for sec in secrets:
+        scrubbed = scrub_string(f"Here is a secret: {sec} in code")
+        assert sec not in scrubbed
+        assert "[REDACTED_SECRET]" in scrubbed
+
+    # 3. Case-insensitive header names
+    headers = {
+        "AUTHORIZATION": "Bearer my-secret-token",
+        "X-Api-Key": "secret-api-key",
+        "api-key": "secret-api-key-2",
+        "X-Goog-Api-Key": "goog-key",
+        "Holon-Agent-Key": "agent-key",
+        "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+        "X-Amz-Security-Token": "amz-token",
+        "Cookie": "session=xyz123; user=admin",
+        "Set-Cookie": "auth=secrettoken",
+        "X-Auth-Token": "my-x-auth-token",
+        "Content-Type": "application/json",
+    }
+    scrubbed_h = scrub_headers(headers)
+    for k in [
+        "authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "holon-agent-key",
+        "proxy-authorization",
+        "x-amz-security-token",
+        "cookie",
+        "set-cookie",
+        "x-auth-token",
+    ]:
+        assert scrubbed_h[k] == "[REDACTED]"
+    assert scrubbed_h["content-type"] == "application/json"
+
+    # 4. Recursive payload scrubbing
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Secret is sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 and key=secret123",
+            }
+        ],
+        "metadata": {"token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
+        "credentials": {
+            "password": "super-secret-password",
+            "api_key": "custom-unmatched-secret-value",
+            "access_token": "my-custom-access-token",
+        },
+    }
+    scrubbed_p = scrub_payload(payload)
+    assert "sk-ant-" not in json.dumps(scrubbed_p)
+    assert "ghp_" not in json.dumps(scrubbed_p)
+    assert "[REDACTED_SECRET]" in scrubbed_p["messages"][0]["content"]
+    assert "[REDACTED_SECRET]" in scrubbed_p["metadata"]["token"]
+    assert scrubbed_p["credentials"]["password"] == "[REDACTED]"
+    assert scrubbed_p["credentials"]["api_key"] == "[REDACTED]"
+    assert scrubbed_p["credentials"]["access_token"] == "[REDACTED]"
+
+
+def test_derive_turn_id_precedence():
+    from sandbox_executor.token_reduction.mitm_addon import derive_turn_id
+
+    # Tier 1: Explicit X-Holon-Turn-Id header
+    headers = {"X-Holon-Turn-Id": "7"}
+    payload = {"messages": [{"role": "assistant"}, {"role": "assistant"}]}
+    assert derive_turn_id(headers, payload, fallback_id=1) == 7
+
+    # Tier 2: Assistant completion count in messages (+ 1)
+    no_header = {}
+    payload_messages = {
+        "messages": [
+            {"role": "user"},
+            {"role": "assistant"},
+            {"role": "user"},
+            {"role": "assistant"},
+        ]
+    }
+    assert derive_turn_id(no_header, payload_messages, fallback_id=1) == 3
+
+    # Tier 2 (Gemini contents): Model count in contents (+ 1)
+    payload_gemini = {
+        "contents": [
+            {"role": "user"},
+            {"role": "model"},
+            {"role": "user"},
+        ]
+    }
+    assert derive_turn_id(no_header, payload_gemini, fallback_id=1) == 2
+
+    # Tier 3: Fallback sequential counter
+    assert derive_turn_id({}, {}, fallback_id=42) == 42
+
+
+def test_dump_wire_transaction_and_flush(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import dump_wire_transaction, flush_wire_logs
+
+    wire_dir = str(tmp_path / "mitm_logs")
+    record = {
+        "turn_id": 3,
+        "flow_id": "test_flow_xyz",
+        "agent_id": "subagent_01",
+        "agent_role": "executor",
+        "timestamp": "2026-09-08T21:30:00.000Z",
+        "provider": "anthropic",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "headers": {"content-type": "application/json", "x-api-key": "[REDACTED]"},
+        "raw_request": {"messages": [{"role": "user", "content": "hi"}]},
+        "cleaned_request": {"messages": [{"role": "user", "content": "hi"}]},
+        "delta": {
+            "raw_chars": 50,
+            "cleaned_chars": 50,
+            "chars_saved": 0,
+            "tool_outputs_omitted": 0,
+            "turns_summarized": 0,
+            "cache_control_injected": 0,
+        },
+        "cache_action": "MISS",
+        "response": {
+            "status": 200,
+            "usage": {
+                "input_tokens": 100,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 50,
+                "output_tokens": 20,
+                "reasoning_tokens": 5,
+            },
+            "content": "Hello there!",
+        },
+        "timing": {"ttft_ms": 150.0, "total_ms": 800.0},
+    }
+
+    dump_wire_transaction(record, wire_log_dir=wire_dir)
+    flush_wire_logs()
+
+    # Verify per-turn JSON dump
+    turn_file = tmp_path / "mitm_logs" / "turn_3_test_flow_xyz.json"
+    assert turn_file.is_file()
+    with open(turn_file) as f:
+        loaded_turn = json.load(f)
+    assert loaded_turn["turn_id"] == 3
+    assert loaded_turn["response"]["usage"]["reasoning_tokens"] == 5
+
+    # Verify transactions.jsonl append
+    jsonl_file = tmp_path / "mitm_logs" / "transactions.jsonl"
+    assert jsonl_file.is_file()
+    with open(jsonl_file) as f:
+        lines = [json.loads(line) for line in f if line.strip()]
+    assert len(lines) == 1
+    assert lines[0]["flow_id"] == "test_flow_xyz"
+
+
+def test_cli_mitm_web_configuration(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    setup_token_reduction_proxy(mitm_web=True)
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    joined_run = " ".join(run_cmd)
+
+    # Verify mitmweb is invoked instead of mitmdump
+    assert "mitmweb" in joined_run
+    # Verify port 8081 is bound
+    assert "127.0.0.1:8081:8081" in joined_run
+    # Verify web host and port arguments
+    assert "--web-host 0.0.0.0" in joined_run
+    assert "--web-port 8081" in joined_run
+    # Verify WIRE_LOG_DIR is mounted and set
+    assert "-e WIRE_LOG_DIR=/tmp/wire_logs" in joined_run
+    assert ":/tmp/wire_logs" in joined_run
+    # Verify CACHE_DIR is mounted and set
+    assert "-e CACHE_DIR=/tmp/cache" in joined_run
+    assert ":/tmp/cache" in joined_run
+    # Verify PYTHONPATH and src directory are mounted
+    assert "-e PYTHONPATH=/tmp/src" in joined_run
+    assert ":/tmp/src:ro" in joined_run
+    teardown_token_reduction_proxy()
+
+
+def test_extract_detailed_token_counts_sse_streams():
+    from sandbox_executor.token_reduction.mitm_addon import extract_detailed_token_counts
+
+    # Anthropic SSE stream with message_start (cache_read, cache_creation, input) and message_delta (output, thinking)
+    anthropic_sse = (
+        "event: message_start\n"
+        'data: {"type": "message_start", "message": {"id": "msg_123", '
+        '"usage": {"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50}}}\n\n'
+        "event: message_delta\n"
+        'data: {"type": "message_delta", "usage": {"output_tokens": 80, "thinking_tokens": 25}}\n\n'
+    )
+    counts_ant = extract_detailed_token_counts({}, anthropic_sse, "anthropic")
+    assert counts_ant["input_tokens"] == 550
+    assert counts_ant["output_tokens"] == 80
+    assert counts_ant["cache_read_input_tokens"] == 400
+    assert counts_ant["cache_creation_input_tokens"] == 50
+    assert counts_ant["reasoning_tokens"] == 25
+
+    # OpenAI SSE stream with cached_tokens and reasoning_tokens
+    openai_sse = (
+        'data: {"choices": [{"delta": {"content": "Hello"}}], '
+        '"usage": {"prompt_tokens": 120, "completion_tokens": 30, '
+        '"prompt_tokens_details": {"cached_tokens": 80}, '
+        '"completion_tokens_details": {"reasoning_tokens": 15}}}\n\n'
+    )
+    counts_oai = extract_detailed_token_counts({}, openai_sse, "openai")
+    assert counts_oai["input_tokens"] == 120
+    assert counts_oai["output_tokens"] == 30
+    assert counts_oai["cache_read_input_tokens"] == 80
+    assert counts_oai["cache_creation_input_tokens"] == 0
+    assert counts_oai["reasoning_tokens"] == 15
+
+    # Google Gemini SSE stream with usageMetadata, cachedContentTokenCount, candidatesTokenCount, reasoningTokenCount
+    gemini_sse = (
+        'data: {"candidates": [{"content": {"parts": [{"text": "Hello world"}]}}], '
+        '"usageMetadata": {"promptTokenCount": 95, "candidatesTokenCount": 42, '
+        '"cachedContentTokenCount": 30, "reasoningTokenCount": 18}}\n\n'
+    )
+    counts_gem = extract_detailed_token_counts({}, gemini_sse, "gemini")
+    assert counts_gem["input_tokens"] == 95
+    assert counts_gem["output_tokens"] == 42
+    assert counts_gem["cache_read_input_tokens"] == 30
+    assert counts_gem["cache_creation_input_tokens"] == 0
+    assert counts_gem["reasoning_tokens"] == 18
+
+
+def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setenv("HOLON_MITM_WEB_PORT", "9090")
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    setup_token_reduction_proxy(mitm_web=True)
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    joined_run = " ".join(run_cmd)
+
+    assert "127.0.0.1:9090:9090" in joined_run
+    assert "--web-port 9090" in joined_run
+    teardown_token_reduction_proxy()
+
+
+def test_turn_id_sanitization_prevents_traversal(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import _write_transaction_sync
+
+    target_dir = tmp_path / "wire_logs"
+    record = {
+        "turn_id": "../../etc/malicious",
+        "flow_id": "../../escape",
+        "timestamp": "2026-09-10T00:00:00Z",
+    }
+    _write_transaction_sync(record, str(target_dir))
+
+    # All generated files must reside strictly within target_dir
+    files = list(target_dir.iterdir())
+    assert len(files) == 2  # turn_*.json and transactions.jsonl
+    turn_file = next(f for f in files if f.name.startswith("turn_"))
+    assert ".." not in turn_file.name
+    assert "/" not in turn_file.name
+    assert turn_file.name == "turn_______etc_malicious_______escape.json"
+
+
+def test_enable_wire_logging_toggle(tmp_path, monkeypatch):
+    from sandbox_executor.token_reduction.mitm_addon import dump_wire_transaction
+
+    target_dir = tmp_path / "disabled_logs"
+
+    monkeypatch.setenv("ENABLE_WIRE_LOGGING", "0")
+    record = {"turn_id": 1, "flow_id": "f1"}
+    future = dump_wire_transaction(record, str(target_dir))
+    future.result()
+
+    assert not target_dir.exists()
+
+
+def test_extract_sse_content_anthropic_tools():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_content
+
+    anthropic_tool_sse = (
+        'data: {"type": "content_block_start", "index": 0, '
+        '"content_block": {"type": "tool_use", "id": "t1", "name": "run_command"}}\n\n'
+        'data: {"type": "content_block_delta", "index": 0, '
+        '"delta": {"type": "input_json_delta", "partial_json": "{\\"command\\": "}}\n\n'
+        'data: {"type": "content_block_delta", "index": 0, '
+        '"delta": {"type": "input_json_delta", "partial_json": "\\"ls\\"}"}}\n\n'
+        'data: {"type": "content_block_stop", "index": 0}\n\n'
+    )
+    extracted = extract_sse_content(anthropic_tool_sse, "anthropic")
+    assert 'run_command({"command": "ls"})' in extracted
+
+
+def test_extract_sse_content_openai_tools():
+    from sandbox_executor.token_reduction.mitm_addon import extract_sse_content
+
+    openai_tool_sse = (
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "function": {"name": "run_command", "arguments": ""}}]}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "function": {"arguments": "{\\"command\\": "}}]}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": ['
+        '{"index": 0, "function": {"arguments": "\\"ls\\"}"}}]}}]}\n\n'
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    extracted = extract_sse_content(openai_tool_sse, "openai")
+    assert 'run_command({"command": "ls"})' in extracted
+
+
+def test_dump_flow_transaction_case_insensitive_agent_headers(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    wire_dir = tmp_path / "addon_logs"
+    addon = MitmproxyAddon(wire_log_dir=str(wire_dir))
+
+    flow = SimpleNamespace(
+        id="flow_headers_case",
+        provider="anthropic",
+        is_cached=False,
+        request=SimpleNamespace(
+            pretty_url="https://api.anthropic.com/v1/messages",
+            headers={
+                "X-Holon-Agent-Id": "custom_architect",
+                "X-Holon-Agent-Role": "planner",
+                "X-Holon-Turn-Id": "7",
+            },
+            get_text=lambda: '{"model": "claude-3-5-sonnet", "messages": []}',
+        ),
+        response=SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            get_text=lambda: '{"usage": {"input_tokens": 10, "output_tokens": 5}}',
+        ),
+        request_start_time=1.0,
+    )
+
+    addon.response(flow)
+    addon.done()
+
+    jsonl = wire_dir / "transactions.jsonl"
+    assert jsonl.is_file()
+    with open(jsonl) as f:
+        data = json.loads(f.readline())
+    assert data["agent_id"] == "custom_architect"
+    assert data["agent_role"] == "planner"
+    assert data["turn_id"] == 7
+
+
+def test_mitm_addon_done_and_non_200_logging(tmp_path):
+    import time
+
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    wire_dir = tmp_path / "addon_logs"
+    addon = MitmproxyAddon(wire_log_dir=str(wire_dir))
+
+    flow = SimpleNamespace(
+        id="flow_400",
+        provider="anthropic",
+        is_cached=False,
+        request=SimpleNamespace(
+            pretty_url="https://api.anthropic.com/v1/messages",
+            headers={"x-holon-agent-id": "test_agent"},
+            get_text=lambda: '{"model": "claude-3-5-sonnet", "messages": []}',
+        ),
+        response=SimpleNamespace(
+            status_code=400,
+            headers={"content-type": "application/json"},
+            get_text=lambda: '{"error": {"type": "invalid_request_error", "message": "Bad request"}}',
+        ),
+        request_start_time=time.perf_counter() - 0.1,
+    )
+
+    addon.response(flow)
+    addon.done()
+
+    # Verify transaction was dumped
+    jsonl = wire_dir / "transactions.jsonl"
+    assert jsonl.is_file()
+    with open(jsonl) as f:
+        data = json.loads(f.readline())
+    assert data["response"]["status"] == 400
+    assert "error" in data["response"]["content"]
+    assert data["raw_request"]["model"] == "claude-3-5-sonnet"
+
+
+def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab_module
+    spec.loader.exec_module(ab_module)
+
+    # Test endpoint model resolution fallback when model is absent from request payload
+    tx = {
+        "turn_id": 1,
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+        "raw_request": {},
+        "cleaned_request": {},
+        "response": {
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+            }
+        },
+    }
+    wire_dir = tmp_path / "endpoint_wire_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    res = ab_module.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.tier2_tokens == 120
+    assert res.tier1_tokens == 0
+
+
+def test_cli_directory_permissions_0o775_and_socket_conflict(monkeypatch):
+    chmod_calls = []
+    monkeypatch.setattr(cli.os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    # Test permissions 0o775
+    setup_token_reduction_proxy(mitm_web=False)
+    teardown_token_reduction_proxy()
+
+    wire_and_cache_modes = [mode for path, mode in chmod_calls if "mitm_wire_logs" in path or "cache" in path]
+    assert len(wire_and_cache_modes) >= 2
+    for mode in wire_and_cache_modes:
+        assert mode == 0o775
+
+    # Test socket conflict check when port is in use
+    class InUseSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect_ex(self, addr):
+            return 0  # In use
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: InUseSocket())
+    with pytest.raises(RuntimeError, match="already in use"):
+        setup_token_reduction_proxy(mitm_web=True)
+
+
+def test_write_transaction_sync_resilient_serialization(tmp_path):
+    import datetime
+
+    from sandbox_executor.token_reduction.mitm_addon import _write_transaction_sync
+
+    target_dir = tmp_path / "resilient_logs"
+    record = {
+        "turn_id": 1,
+        "flow_id": "f_non_primitive",
+        "timestamp": datetime.datetime(2026, 9, 10, 12, 0, 0, tzinfo=datetime.UTC),
+        "raw_request": {
+            "bytes_val": b"binary_data",
+            "set_val": {1, 2, 3},
+        },
+        "response": {"status": 200, "content": "ok"},
+    }
+
+    # Should not raise TypeError
+    _write_transaction_sync(record, str(target_dir))
+
+    jsonl = target_dir / "transactions.jsonl"
+    assert jsonl.is_file()
+    with open(jsonl) as f:
+        loaded = json.loads(f.readline())
+    assert loaded["turn_id"] == 1
+    assert "2026-09-10" in loaded["timestamp"]
+    assert "binary_data" in loaded["raw_request"]["bytes_val"]
+
+
+def test_mitm_addon_intercept_request_with_stats_no_state_leak(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    interceptor = MITMProxyInterceptor(cache_dir=str(tmp_path))
+    assert not hasattr(interceptor, "last_cleaning_result")
+
+    url = "https://api.anthropic.com/v1/messages"
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    cleaned_req, cached_resp, stats = interceptor.intercept_request_with_stats(url, payload)
+    assert cleaned_req is not None
+    assert cached_resp is None
+    assert stats is not None
+    assert hasattr(stats, "chars_saved")
+    assert not hasattr(interceptor, "last_cleaning_result")
+
+
+def test_mitm_addon_secret_headers_extended():
+    from sandbox_executor.token_reduction.mitm_addon import scrub_headers
+
+    headers = {
+        "authorization": "Bearer secret1",
+        "openai-api-key": "sk-123456789012345678901234",
+        "x-session-token": "sess-token-abc-xyz",
+        "content-type": "application/json",
+    }
+    scrubbed = scrub_headers(headers)
+    assert scrubbed["authorization"] == "[REDACTED]"
+    assert scrubbed["openai-api-key"] == "[REDACTED]"
+    assert scrubbed["x-session-token"] == "[REDACTED]"
+    assert scrubbed["content-type"] == "application/json"
+
+
+def test_ab_measure_pricing_and_cache_hit_gate(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab_module
+    spec.loader.exec_module(ab_module)
+
+    # Test frontier model pricing
+    for m in [
+        "claude-3-7-sonnet",
+        "claude-3-5-sonnet",
+        "claude-3-5-haiku",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+    ]:
+        pricing = ab_module.get_model_pricing(m)
+        assert pricing is not None
+        assert "input" in pricing
+        assert "output" in pricing
+
+    # Test local cache hit gate on cache_read_tokens
+    tx_hit = {
+        "turn_id": 1,
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "cache_action": "HIT",
+        "response": {
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 1000,
+            }
+        },
+    }
+    wire_dir = tmp_path / "hit_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx_hit) + "\n")
+
+    res = ab_module.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.local_cache_hits == 1
+    # cache_read_tokens must NOT be incremented for local cache HIT
+    assert res.cache_read_tokens == 0
+    assert res.monetary_cost == 0.0
+
+    # Test pre_clean_environment isolates custom cache
+    custom_cache = tmp_path / "custom_cache"
+    custom_cache.mkdir()
+    (custom_cache / "test.db").write_text("data")
+    ab_module.pre_clean_environment(custom_cache, wire_dir, clean_global_cache=False)
+    assert not (custom_cache / "test.db").exists()
+
+
+def test_setup_token_reduction_proxy_chmod_oserror_fallback(monkeypatch):
+    """Verifies that OSError on os.chmod is logged and does not halt proxy startup."""
+    from sandbox_executor import cli
+
+    original_chmod = os.chmod
+
+    def fake_chmod(path, mode):
+        if "mitm_wire_logs" in str(path) or "cache" in str(path):
+            raise OSError("Permission denied (mocked)")
+        return original_chmod(path, mode)
+
+    monkeypatch.setattr(cli.os, "chmod", fake_chmod)
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    # Must complete without raising OSError
+    mounts, envs = setup_token_reduction_proxy(mitm_web=False)
+    teardown_token_reduction_proxy()
+    assert mounts is not None
+    assert "HTTP_PROXY" in envs
+
+
+def test_write_transaction_sync_atomic_swapping(tmp_path):
+    """Verifies that _write_transaction_sync writes atomically and leaves no lingering tmp files."""
+    from sandbox_executor.token_reduction.mitm_addon import _write_transaction_sync
+
+    target_dir = tmp_path / "atomic_wire_logs"
+    record = {
+        "turn_id": 42,
+        "flow_id": "atomic_test",
+        "raw_request": {"messages": [{"role": "user", "content": "hello"}]},
+        "response": {"choices": [{"message": {"role": "assistant", "content": "hi"}}]},
+    }
+    _write_transaction_sync(record, str(target_dir))
+
+    target_file = target_dir / "turn_42_atomic_test.json"
+    assert target_file.exists()
+    loaded = json.loads(target_file.read_text(encoding="utf-8"))
+    assert loaded["turn_id"] == 42
+    # Ensure no temporary files (.tmp) remain in the directory
+    tmp_files = list(target_dir.glob("*.tmp"))
+    assert len(tmp_files) == 0
+
+
+def test_scrub_payload_recursion_depth_guard():
+    """Verifies that scrub_payload respects max_depth and does not overflow on deep structures."""
+    from sandbox_executor.token_reduction.mitm_addon import scrub_payload
+
+    # Construct nested structure 60 levels deep
+    nested = "deep_value"
+    for _ in range(60):
+        nested = {"level": nested}
+
+    # Should safely return without RecursionError
+    scrubbed = scrub_payload(nested, max_depth=10)
+    assert scrubbed is not None
+
+
+def test_secret_headers_anthropic_api_key():
+    """Verifies x-anthropic-api-key is scrubbed."""
+    from sandbox_executor.token_reduction.mitm_addon import _SECRET_HEADER_NAMES
+
+    assert "x-anthropic-api-key" in _SECRET_HEADER_NAMES
+
+
+def test_mitm_addon_passive_monitoring_mode(monkeypatch, tmp_path):
+    """Verifies that MitmproxyAddon in passive monitoring mode preserves request bodies and skips caching."""
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    monkeypatch.setenv("HOLON_PASSIVE_MONITORING", "1")
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(tmp_path / "logs"))
+
+    # Construct mock flow
+    request_data = {
+        "model": "claude-3-5-sonnet-20241022",
+        "messages": [
+            {"role": "user", "content": "test tool output repeated repeated repeated"},
+        ],
+    }
+
+    class MockRequest:
+        def __init__(self):
+            self.pretty_url = "https://api.anthropic.com/v1/messages"
+            self.headers = {"content-type": "application/json"}
+            self._text = ""
+
+        def get_text(self):
+            return json.dumps(request_data)
+
+        def set_text(self, text):
+            self._text = text
+
+    flow = SimpleNamespace(
+        request=MockRequest(),
+        response=None,
+        is_cached=False,
+    )
+
+    addon.request(flow)
+    # In passive mode, cleaner_result must be None and request body must NOT be altered
+    assert flow.cleaner_result is None
+    assert flow.req_data == request_data
+    assert not flow.is_cached
+
+
+def test_scorecard_dynamic_guardrail_status():
+    """Verifies that format_scorecard dynamically reflects guardrail status when pass rate < 100%."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    # Case 1: 100% pass rate
+    b1 = ab.BenchmarkSummary(
+        name="baseline",
+        iterations=[
+            ab.IterationResult(
+                iteration=1,
+                success=True,
+                prompt_tokens=1000,
+                output_tokens=200,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                turn_0_prompt_tokens=500,
+                pruned_bytes=0,
+                duplicate_tools_omitted=0,
+                local_cache_hits=0,
+                total_calls=1,
+                tier1_tokens=1000,
+                tier2_tokens=0,
+                turns_saved_memory=0,
+                monetary_cost=0.01,
+                wall_clock_s=5.0,
+            )
+        ],
+    )
+    o1 = ab.BenchmarkSummary(
+        name="optimized",
+        iterations=[
+            ab.IterationResult(
+                iteration=1,
+                success=True,
+                prompt_tokens=500,
+                output_tokens=200,
+                cache_read_tokens=100,
+                cache_write_tokens=0,
+                turn_0_prompt_tokens=200,
+                pruned_bytes=500,
+                duplicate_tools_omitted=2,
+                local_cache_hits=1,
+                total_calls=1,
+                tier1_tokens=300,
+                tier2_tokens=200,
+                turns_saved_memory=3,
+                monetary_cost=0.005,
+                wall_clock_s=3.0,
+            )
+        ],
+    )
+    sc1 = ab.format_scorecard(b1, o1)
+    assert "**100% (Functional correctness guardrail met)**" in sc1
+
+    # Case 2: 0% pass rate (test failed)
+    o2 = ab.BenchmarkSummary(
+        name="optimized",
+        iterations=[
+            ab.IterationResult(
+                iteration=1,
+                success=False,
+                prompt_tokens=500,
+                output_tokens=200,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+                turn_0_prompt_tokens=200,
+                pruned_bytes=0,
+                duplicate_tools_omitted=0,
+                local_cache_hits=0,
+                total_calls=1,
+                tier1_tokens=500,
+                tier2_tokens=0,
+                turns_saved_memory=0,
+                monetary_cost=0.005,
+                wall_clock_s=3.0,
+            )
+        ],
+    )
+    sc2 = ab.format_scorecard(b1, o2)
+    assert "**0% (Functional correctness guardrail NOT MET)**" in sc2
+
+
+def test_write_transaction_sync_orphaned_tmp_cleanup(tmp_path, monkeypatch):
+    """Verifies that _write_transaction_sync unlinks .tmp file if atomic replace fails."""
+    import os
+
+    from sandbox_executor.token_reduction import mitm_addon
+
+    target_dir = tmp_path / "tmp_cleanup_logs"
+    record = {"turn_id": 99, "flow_id": "fail_replace"}
+
+    # Mock os.replace to raise an exception midway
+    def failing_replace(src, dst):
+        assert os.path.exists(src)
+        raise OSError("Disk failure during replace")
+
+    monkeypatch.setattr(mitm_addon.os, "replace", failing_replace)
+
+    mitm_addon._write_transaction_sync(record, str(target_dir))
+
+    # Assert no .tmp files exist in target_dir
+    tmp_files = list(target_dir.glob("*.tmp"))
+    assert len(tmp_files) == 0
+
+
+def test_scrub_headers_defense_in_depth():
+    """Verifies that custom token/secret headers are redacted by defense-in-depth."""
+    from sandbox_executor.token_reduction.mitm_addon import scrub_headers
+
+    headers = {
+        "x-custom-token": "opaque_custom_token_123",
+        "client_secret": "my-top-secret",
+        "session-token": "sess-xyz",
+        "content-type": "application/json",
+        "accept": "*/*",
+    }
+    cleaned = scrub_headers(headers)
+    assert cleaned["x-custom-token"] == "[REDACTED]"
+    assert cleaned["client_secret"] == "[REDACTED]"
+    assert cleaned["session-token"] == "[REDACTED]"
+    assert cleaned["content-type"] == "application/json"
+    assert cleaned["accept"] == "*/*"
+
+
+def test_mitm_addon_subclass_override_detection(tmp_path):
+    """Verifies that a subclass overriding intercept_request is respected by MitmproxyAddon."""
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, MITMProxyInterceptor
+
+    calls = []
+
+    class CustomInterceptor(MITMProxyInterceptor):
+        def intercept_request(self, endpoint, request_json):
+            calls.append(endpoint)
+            return request_json, None
+
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(tmp_path / "logs"))
+    addon.interceptor = CustomInterceptor(cache_dir=str(tmp_path / "cache"))
+
+    class MockRequest:
+        def __init__(self):
+            self.pretty_url = "https://api.anthropic.com/v1/messages"
+            self.headers = {"content-type": "application/json"}
+            self._text = json.dumps({"model": "claude-3-5-sonnet", "messages": []})
+
+        def get_text(self):
+            return self._text
+
+        def set_text(self, text):
+            self._text = text
+
+    flow = SimpleNamespace(
+        request=MockRequest(),
+        response=None,
+        is_cached=False,
+    )
+    addon.request(flow)
+    assert len(calls) == 1
+    assert calls[0] == "https://api.anthropic.com/v1/messages"
+
+
+@pytest.mark.parametrize("status_code", [429, 503])
+def test_non_200_transaction_logging_429_503(tmp_path, status_code):
+    """Verifies that HTTP 429 and 503 responses are properly logged into transactions.jsonl."""
+    from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
+
+    wire_dir = tmp_path / "error_wire_logs"
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(wire_dir))
+
+    class MockResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = {"content-type": "application/json"}
+
+        def get_text(self):
+            return json.dumps({"error": {"message": f"HTTP {status_code} Error"}})
+
+    flow = SimpleNamespace(
+        id=f"flow_{status_code}",
+        provider="openai",
+        request_start_time=100.0,
+        response_headers_time=100.2,
+        first_chunk_time=None,
+        request=SimpleNamespace(
+            pretty_url="https://api.openai.com/v1/chat/completions",
+            headers={"content-type": "application/json"},
+        ),
+        response=MockResponse(),
+        raw_request_data={"model": "gpt-4o", "messages": []},
+        req_data={"model": "gpt-4o", "messages": []},
+        cleaner_result=None,
+        is_cached=False,
+    )
+
+    addon.response(flow)
+    addon.done()
+
+    jsonl_file = wire_dir / "transactions.jsonl"
+    assert jsonl_file.exists()
+    lines = [json.loads(line) for line in jsonl_file.read_text(encoding="utf-8").strip().split("\n")]
+    assert any(rec.get("response", {}).get("status") == status_code for rec in lines)
+
+
+def test_ab_measure_non_dict_raw_request(tmp_path):
+    """Verifies parse_wire_logs_into_result gracefully handles non-dict raw_request bodies."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "str_req_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    tx = {
+        "turn_id": 1,
+        "flow_id": "f_str",
+        "provider": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "status_code": 400,
+        "raw_request": "unparseable string body",
+        "cleaned_request": "unparseable string body",
+        "response": {"error": "bad request"},
+        "token_counts": {"input_tokens": 0, "output_tokens": 0},
+    }
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    # Should not raise AttributeError: 'str' object has no attribute 'get'
+    res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res is not None
+
+
+def test_shutdown_wire_logs(tmp_path):
+    from sandbox_executor.token_reduction.mitm_addon import (
+        _get_wire_log_executor,
+        dump_wire_transaction,
+        shutdown_wire_logs,
+    )
+
+    os.environ["HOLON_WIRE_LOGS"] = "1"
+    wire_dir = tmp_path / "shutdown_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    fut = dump_wire_transaction({"flow_id": "shut1", "turn_id": 1}, str(wire_dir))
+    shutdown_wire_logs(wait=True)
+    assert fut.done()
+    # Re-calling _get_wire_log_executor creates a fresh one
+    fresh_executor = _get_wire_log_executor()
+    assert fresh_executor is not None
+    assert not getattr(fresh_executor, "_shutdown", False)
+    shutdown_wire_logs(wait=True)
+
+
+def test_secret_dict_key_pattern_extended():
+    from sandbox_executor.token_reduction.mitm_addon import _SECRET_DICT_KEY_PATTERN
+
+    assert _SECRET_DICT_KEY_PATTERN.match("api-key")
+    assert _SECRET_DICT_KEY_PATTERN.match("api_key")
+    assert _SECRET_DICT_KEY_PATTERN.match("apikey")
+    assert _SECRET_DICT_KEY_PATTERN.match("api-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("api_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("auth-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("auth_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("access-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("access_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("client_secret")
+    assert _SECRET_DICT_KEY_PATTERN.match("client-secret")
+    assert _SECRET_DICT_KEY_PATTERN.match("session_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("session-token")
+    assert not _SECRET_DICT_KEY_PATTERN.match("tokens")
+    assert not _SECRET_DICT_KEY_PATTERN.match("max_tokens")
+
+
+def test_interceptor_subclass_override_backward_compatibility():
+    from sandbox_executor.token_reduction.mitm_addon import MITMProxyInterceptor
+
+    class CustomOldInterceptor(MITMProxyInterceptor):
+        def intercept_request(self, endpoint, request_json):
+            modified = dict(request_json)
+            modified["custom_key"] = "injected"
+            return modified, None
+
+    custom = CustomOldInterceptor(enable_caching=False)
+    cleaned, cached, clean_res = custom.intercept_request_with_stats(
+        "https://api.openai.com/v1/chat/completions", {"model": "gpt-4o"}
+    )
+    assert cleaned.get("custom_key") == "injected"
+    assert cached is None
+    assert clean_res is None
+
+
+def test_ab_measure_local_cache_hit_token_accounting(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "cache_hit_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    tx = {
+        "turn_id": 1,
+        "flow_id": "f_hit",
+        "provider": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "status_code": 200,
+        "cache": {"action": "HIT"},
+        "raw_request": {"model": "gpt-4o", "messages": []},
+        "cleaned_request": {"model": "gpt-4o", "messages": []},
+        "response": {"usage": {"input_tokens": 500, "output_tokens": 100}},
+        "token_counts": {"input_tokens": 500, "output_tokens": 100},
+    }
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.local_cache_hits == 1
+    # On local cache HIT, upstream billed tokens must be 0
+    assert res.prompt_tokens == 0
+    assert res.output_tokens == 0
+
+
+def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
+    monkeypatch.setenv("WIRE_LOG_DIR", "custom/rel_wire_logs")
+    monkeypatch.setenv("CACHE_DIR", "custom/rel_cache")
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    setup_token_reduction_proxy(mitm_web=False)
+    teardown_token_reduction_proxy()
+
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    wire_mounts = [arg for arg in run_cmd if arg.endswith(":/tmp/wire_logs")]
+    cache_mounts = [arg for arg in run_cmd if arg.endswith(":/tmp/cache")]
+    assert len(wire_mounts) == 1
+    assert len(cache_mounts) == 1
+    host_wire = wire_mounts[0].split(":")[0]
+    host_cache = cache_mounts[0].split(":")[0]
+    assert os.path.isabs(host_wire)
+    assert host_wire.endswith("custom/rel_wire_logs")
+    assert os.path.isabs(host_cache)
+    assert host_cache.endswith("custom/rel_cache")
+
+
+def test_secret_dict_key_pattern_oauth_and_id_token():
+    from sandbox_executor.token_reduction.mitm_addon import _SECRET_DICT_KEY_PATTERN
+
+    assert _SECRET_DICT_KEY_PATTERN.match("refresh-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("refresh_token")
+    assert _SECRET_DICT_KEY_PATTERN.match("id-token")
+    assert _SECRET_DICT_KEY_PATTERN.match("id_token")
+
+
+def test_token_counts_unpacking_and_attributes():
+    from sandbox_executor.token_reduction.mitm_addon import TokenCounts
+
+    tc = TokenCounts(100, 50, 20, cache_creation_tokens=10, reasoning_tokens=5)
+    inp, out, read = tc
+    assert inp == 100
+    assert out == 50
+    assert read == 20
+    assert tc.input_tokens == 100
+    assert tc.output_tokens == 50
+    assert tc.cache_read_tokens == 20
+    assert tc.cache_creation_tokens == 10
+    assert tc.reasoning_tokens == 5
+
+
+def test_scrub_payload_tuple_support():
+    from sandbox_executor.token_reduction.mitm_addon import scrub_payload
+
+    data_tuple = ({"api_key": "secret123"}, "normal_string")
+    scrubbed = scrub_payload(data_tuple)
+    assert isinstance(scrubbed, tuple)
+    assert scrubbed[0]["api_key"] == "[REDACTED]"
+    assert scrubbed[1] == "normal_string"
+
+
+def test_mitm_web_password_support(host_paths, monkeypatch):
+    from sandbox_executor.cli import setup_token_reduction_proxy, teardown_token_reduction_proxy
+
+    monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", "secretpass123")
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    fake = FakeDocker()
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    setup_token_reduction_proxy(mitm_web=True)
+    teardown_token_reduction_proxy()
+
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    assert "web_password=secretpass123" in run_cmd
+
+
+def test_ab_measure_tier_token_accounting_on_cache_hit(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "cache_hit_tier_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    tx = {
+        "turn_id": 1,
+        "flow_id": "f_hit_tier",
+        "provider": "anthropic",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "status_code": 200,
+        "cache": {"action": "HIT"},
+        "raw_request": {"model": "claude-3-5-sonnet-20241022", "messages": []},
+        "cleaned_request": {"model": "claude-3-5-sonnet-20241022", "messages": []},
+        "response": {"usage": {"input_tokens": 800, "output_tokens": 150}},
+        "token_counts": {"input_tokens": 800, "output_tokens": 150},
+    }
+    with open(wire_dir / "transactions.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps(tx) + "\n")
+
+    res = ab.parse_wire_logs_into_result(wire_dir, 1, 0)
+    assert res.local_cache_hits == 1
+    # On local cache HIT, both prompt/output tokens and tier tokens must be 0
+    assert res.prompt_tokens == 0
+    assert res.output_tokens == 0
+    assert res.tier1_tokens == 0
+    assert res.tier2_tokens == 0
+
+
+def test_check_wire_log_disk_usage(tmp_path, capsys):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "ab_measure_all_methods",
+        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
+    )
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ab
+    spec.loader.exec_module(ab)
+
+    wire_dir = tmp_path / "quota_logs"
+    wire_dir.mkdir(parents=True, exist_ok=True)
+    dummy_file = wire_dir / "big.log"
+    dummy_file.write_bytes(b"x" * 200)
+
+    ab.check_wire_log_disk_usage(wire_dir, max_mb=0.0001)
+    captured = capsys.readouterr()
+    assert "Warning: Wire log directory and archives consume" in captured.err

@@ -37,13 +37,10 @@ PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 
 _TOKEN_REDUCE_HELP = (
-    "EXPERIMENTAL / NOT YET FUNCTIONAL (Phase 2): cut agent token usage by routing sandbox egress "
-    "through a locally-owned mitmproxy sidecar. The Phase 2 addon (mitm_addon.py) is not shipped "
-    "yet, so the preflight fails and the run degrades to direct egress. Requires the 'docker' and "
-    "'openssl' host binaries and performs LOCAL TLS INTERCEPTION: a Holon Root CA is generated under "
-    "~/.holon/certs, its private key is mounted read-only into the proxy sidecar only (never into "
-    "the agent container), and the sandbox trusts a merged CA bundle built at container start. Only "
-    "use against a locally-owned proxy: no credential redaction is implemented yet."
+    "Cut agent token usage by routing sandbox egress through a locally-owned mitmproxy sidecar "
+    "(context deduplication, local caching, and provider prompt cache optimization). "
+    "Requires 'docker' and 'openssl' and performs LOCAL TLS INTERCEPTION using an auto-generated "
+    "Holon Root CA. All wire transactions and credentials are sanitized prior to logging."
 )
 
 
@@ -266,6 +263,8 @@ def _token_reduce_opt_in(token_reduce: bool) -> bool:
     """True only on explicit opt-in; host HTTP_PROXY/HTTPS_PROXY are never treated as opt-in."""
     if token_reduce:
         return True
+    if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES:
+        return True
     return os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
@@ -315,7 +314,22 @@ def _published_loopback_port(container_name: str) -> int | None:
     return None
 
 
-def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
+def _find_git_root(start_dir: str | None = None) -> str:
+    """Traverse upwards to find the git repository root containing .git, or fallback to start_dir / getcwd."""
+    for base in (start_dir, os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
+        if not base:
+            continue
+        cur = os.path.abspath(base)
+        while True:
+            if os.path.exists(os.path.join(cur, ".git")):
+                return cur
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+    return os.path.abspath(start_dir or os.getcwd())
+
+
+def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:
     """Start this run's mitmproxy sidecar and return the sandbox mounts and env vars.
 
     Resources are named per run (pid + uuid suffix) and recorded in ``_sidecar_state`` so teardown
@@ -347,9 +361,55 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
     # the two files it expects, read-only, instead of the whole certificate directory.
     mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
 
+    repo_root = _find_git_root()
+    wire_dir_env = os.getenv("WIRE_LOG_DIR")
+    if wire_dir_env:
+        host_wire_log_dir = (
+            wire_dir_env if os.path.isabs(wire_dir_env) else os.path.abspath(os.path.join(repo_root, wire_dir_env))
+        )
+    else:
+        host_wire_log_dir = os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
+    os.makedirs(host_wire_log_dir, exist_ok=True)
+
+    cache_dir_env = os.getenv("CACHE_DIR")
+    if cache_dir_env:
+        host_cache_dir = (
+            cache_dir_env if os.path.isabs(cache_dir_env) else os.path.abspath(os.path.join(repo_root, cache_dir_env))
+        )
+    else:
+        host_cache_dir = os.path.abspath(os.path.join(repo_root, "todo", "cache"))
+    os.makedirs(host_cache_dir, exist_ok=True)
+
+    # Ensure non-root container UID 1000 can write without permission errors on Linux hosts.
+    # Note: On shared multi-user hosts or environments where host UID/GID != 1000, setting
+    # HOLON_MITM_USER="$(id -u):$(id -g)" is strongly recommended, allowing the host
+    # directories to use restrictive 0o700 or 0o750 permissions rather than 0o775.
+    for d in (host_wire_log_dir, host_cache_dir):
+        try:
+            os.chmod(d, 0o775)
+        except OSError as e:
+            logger.debug("Could not chmod 0o775 on %s: %s", d, e)
+
+    try:
+        web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
+    except ValueError:
+        logger.warning("Invalid HOLON_MITM_WEB_PORT; falling back to 8081.")
+        web_port = 8081
+
+    if mitm_web:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(PROXY_CONNECT_TIMEOUT_SECONDS)
+            if s.connect_ex(("127.0.0.1", web_port)) == 0:
+                raise RuntimeError(
+                    f"Port {web_port} is already in use on 127.0.0.1. "
+                    "Specify a different dashboard port using HOLON_MITM_WEB_PORT=<port>."
+                )
+
     _sidecar_state.network_name = network_name
     _sidecar_state.network_created = _ensure_network(network_name)
     _sidecar_state.container_name = container_name
+
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
     docker_run_proxy = [
         "docker",
@@ -369,23 +429,53 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
         # Loopback-only publish so the host can run a real TCP readiness probe.
         "-p",
         f"127.0.0.1::{PROXY_LISTEN_PORT}",
-        "-v",
-        f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
-        "-v",
-        f"{mitm_ca_combined}:{MITM_PROXY_CA_DIR}/mitmproxy-ca.pem:ro",
-        "-v",
-        f"{mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
-        "-v",
-        f"{addon_path}:/tmp/mitm_addon.py:ro",
-        "mitmproxy/mitmproxy:12.2.3",
-        "mitmdump",
-        "-s",
-        "/tmp/mitm_addon.py",
-        "--listen-port",
-        str(PROXY_LISTEN_PORT),
-        "--set",
-        "stream_large_bodies=1m",
     ]
+    mitm_user = os.getenv("HOLON_MITM_USER")
+    if mitm_user:
+        docker_run_proxy.extend(["--user", mitm_user])
+    if mitm_web:
+        docker_run_proxy.extend(["-p", f"127.0.0.1:{web_port}:{web_port}"])
+
+    passive_val = "1" if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES else "0"
+    docker_run_proxy.extend(
+        [
+            "-e",
+            "PYTHONPATH=/tmp/src",
+            "-e",
+            "WIRE_LOG_DIR=/tmp/wire_logs",
+            "-e",
+            "CACHE_DIR=/tmp/cache",
+            "-e",
+            f"HOLON_PASSIVE_MONITORING={passive_val}",
+            "-v",
+            f"{src_dir}:/tmp/src:ro",
+            "-v",
+            f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
+            "-v",
+            f"{host_cache_dir}:/tmp/cache",
+            "-v",
+            f"{mitm_ca_combined}:{MITM_PROXY_CA_DIR}/mitmproxy-ca.pem:ro",
+            "-v",
+            f"{mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
+            "-v",
+            f"{addon_path}:/tmp/mitm_addon.py:ro",
+            "-v",
+            f"{host_wire_log_dir}:/tmp/wire_logs",
+            "mitmproxy/mitmproxy:12.2.3",
+            "mitmweb" if mitm_web else "mitmdump",
+            "-s",
+            "/tmp/mitm_addon.py",
+            "--listen-port",
+            str(PROXY_LISTEN_PORT),
+            "--set",
+            "stream_large_bodies=1m",
+        ]
+    )
+    if mitm_web:
+        docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", str(web_port)])
+        web_password = os.getenv("HOLON_MITM_WEB_PASSWORD")
+        if web_password:
+            docker_run_proxy.extend(["--set", f"web_password={web_password}"])
 
     logger.info(
         "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
@@ -415,6 +505,9 @@ def setup_token_reduction_proxy() -> tuple[list[str], dict[str, str]]:
             f"{PROXY_READY_TIMEOUT_SECONDS}s (the addon likely crashed on startup). "
             "Re-run without --token-reduce to execute with direct egress."
         )
+
+    if mitm_web:
+        logger.info("🌐 mitmweb dashboard active at http://127.0.0.1:%s", web_port)
 
     mounts = ["--network", network_name, *_gateway_host_args(), *_ca_mount_args(ca_cert_path)]
     return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")
@@ -481,18 +574,22 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
 
 def get_token_reduction_mounts_and_envs(
     token_reduce: bool = False,
+    mitm_web: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Build token-reduction mounts/env vars for an explicitly opted-in run.
 
-    Opt-in is strictly ``--token-reduce`` or ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
+    Opt-in is strictly ``--token-reduce``, ``--mitm-web``, or ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
     "on")``. Host ``HTTP_PROXY``/``HTTPS_PROXY`` alone never change sandbox networking. Any failure
     degrades to direct egress (empty mounts/envs) with an actionable error log.
     """
-    if not _token_reduce_opt_in(token_reduce):
+    if not _token_reduce_opt_in(token_reduce or mitm_web):
         return [], {}
 
     try:
-        if token_reduce:
+        is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
+        if token_reduce or mitm_web or is_passive:
+            if mitm_web:
+                return setup_token_reduction_proxy(mitm_web=True)
             return setup_token_reduction_proxy()
         return _attach_external_proxy()
     except (FileNotFoundError, RuntimeError, OSError) as exc:
@@ -512,6 +609,7 @@ def run_docker_container(
     agent_id: str = "antigravity",
     intent_file: str | None = None,
     token_reduce: bool = False,
+    mitm_web: bool = False,
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it."""
     if not shutil.which("docker"):
@@ -546,7 +644,7 @@ def run_docker_container(
     # Token Reduction Proxy & CA Mounts. From this point on the sidecar (and its network) may exist,
     # so every remaining exit path — early returns included — must run teardown, not just the final
     # subprocess.run.
-    tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce)
+    tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
     try:
         docker_cmd.extend(tr_mounts)
         for k, v in tr_envs.items():
@@ -615,6 +713,14 @@ def main() -> None:
         action="store_true",
         help=_TOKEN_REDUCE_HELP,
     )
+    plan_parser.add_argument(
+        "--mitm-web",
+        action="store_true",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
+            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
+        ),
+    )
 
     # Subcommand: execute
     exec_parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
@@ -625,6 +731,14 @@ def main() -> None:
         "--token-reduce",
         action="store_true",
         help=_TOKEN_REDUCE_HELP,
+    )
+    exec_parser.add_argument(
+        "--mitm-web",
+        action="store_true",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
+            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
+        ),
     )
 
     args = parser.parse_args()
@@ -648,26 +762,30 @@ def main() -> None:
     elif args.command == "plan":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.intent_branch, args.agent, args.model]
+        kwargs = {"agent_id": agent_id, "token_reduce": args.token_reduce}
+        if getattr(args, "mitm_web", False):
+            kwargs["mitm_web"] = True
         sys.exit(
             run_docker_container(
                 "planner",
                 image_name,
                 container_args,
-                agent_id=agent_id,
-                token_reduce=args.token_reduce,
+                **kwargs,
             )
         )
 
     elif args.command == "execute":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.plan_branch, args.agent, args.model]
+        kwargs = {"agent_id": agent_id, "token_reduce": args.token_reduce}
+        if getattr(args, "mitm_web", False):
+            kwargs["mitm_web"] = True
         sys.exit(
             run_docker_container(
                 "executor",
                 image_name,
                 container_args,
-                agent_id=agent_id,
-                token_reduce=args.token_reduce,
+                **kwargs,
             )
         )
 

@@ -4,12 +4,24 @@ import copy
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _RECENT_TURNS_TO_KEEP = 6
 """Number of recent conversation turns preserved verbatim at the end of the history during summarization."""
+
+
+@dataclass
+class CleaningResult:
+    """Result of context cleaning, tool output deduplication, and prompt cache optimization."""
+
+    payload: dict[str, Any]
+    tool_outputs_omitted: int = 0
+    turns_summarized: int = 0
+    cache_control_injected: int = 0
+    chars_saved: int = 0
 
 
 class JSONContextCleaner:
@@ -38,20 +50,53 @@ class JSONContextCleaner:
         Returns:
             dict[str, Any]: Optimized JSON payload dictionary.
         """
+        return self.process_payload_with_stats(payload, provider=provider).payload
+
+    def process_payload_with_stats(self, payload: dict[str, Any], provider: str = "anthropic") -> CleaningResult:
+        """Processes and optimizes an outgoing LLM JSON request payload and returns metrics.
+
+        Args:
+            payload: Parsed JSON payload dictionary.
+            provider: Provider format ('anthropic', 'openai', or 'gemini').
+
+        Returns:
+            CleaningResult: Dataclass containing the cleaned payload and execution stats.
+        """
         seen_content_hashes: dict[str, tuple[int, str]] = {}
         cleaned_payload = copy.deepcopy(payload)
+        stats = {
+            "tool_outputs_omitted": 0,
+            "turns_summarized": 0,
+            "cache_control_injected": 0,
+        }
 
         if provider == "anthropic":
-            cleaned_payload = self._clean_anthropic(cleaned_payload, seen_content_hashes)
+            cleaned_payload = self._clean_anthropic(cleaned_payload, seen_content_hashes, stats=stats)
         elif provider == "gemini":
-            cleaned_payload = self._clean_gemini(cleaned_payload, seen_content_hashes)
+            cleaned_payload = self._clean_gemini(cleaned_payload, seen_content_hashes, stats=stats)
         else:
-            cleaned_payload = self._clean_openai(cleaned_payload, seen_content_hashes)
+            cleaned_payload = self._clean_openai(cleaned_payload, seen_content_hashes, stats=stats)
 
-        return cleaned_payload
+        try:
+            raw_chars = len(json.dumps(payload))
+            cleaned_chars = len(json.dumps(cleaned_payload))
+            chars_saved = max(0, raw_chars - cleaned_chars)
+        except Exception:
+            chars_saved = 0
+
+        return CleaningResult(
+            payload=cleaned_payload,
+            tool_outputs_omitted=stats["tool_outputs_omitted"],
+            turns_summarized=stats["turns_summarized"],
+            cache_control_injected=stats["cache_control_injected"],
+            chars_saved=chars_saved,
+        )
 
     def _clean_anthropic(
-        self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]
+        self,
+        payload: dict[str, Any],
+        seen_content_hashes: dict[str, tuple[int, str]],
+        stats: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         messages = payload.get("messages", [])
         if not isinstance(messages, list):
@@ -59,23 +104,26 @@ class JSONContextCleaner:
 
         # 1. Deduplicate tool outputs in history turns
         if self.enable_deduplication:
-            messages = self._deduplicate_anthropic_tool_outputs(messages, seen_content_hashes)
+            messages = self._deduplicate_anthropic_tool_outputs(messages, seen_content_hashes, stats=stats)
 
         # 2. History summarization if message turns exceed max_turns
         if len(messages) > self.max_turns:
-            messages = self._summarize_anthropic_history(messages)
+            messages = self._summarize_anthropic_history(messages, stats=stats)
             messages = self._merge_consecutive_roles(messages)
 
         payload["messages"] = messages
 
         # 3. Automatic Prompt Cache Breakpoints Insertion for Anthropic
         if self.enable_prompt_caching:
-            payload = self._inject_anthropic_cache_control(payload)
+            payload = self._inject_anthropic_cache_control(payload, stats=stats)
 
         return payload
 
     def _deduplicate_anthropic_tool_outputs(
-        self, messages: list[dict[str, Any]], seen_content_hashes: dict[str, tuple[int, str]]
+        self,
+        messages: list[dict[str, Any]],
+        seen_content_hashes: dict[str, tuple[int, str]],
+        stats: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         cleaned_messages = []
         turn_count = len(messages)
@@ -108,6 +156,8 @@ class JSONContextCleaner:
                                 item_copy["content"] = (
                                     f"[Omitted: Tool result content is identical to Turn {prev_turn} ({prev_res})]"
                                 )
+                                if stats is not None:
+                                    stats["tool_outputs_omitted"] += 1
                             else:
                                 seen_content_hashes[content_hash] = (
                                     turn_idx,
@@ -122,6 +172,8 @@ class JSONContextCleaner:
                                     item_copy["content"] = (
                                         f"[Omitted: Tool result content is identical to Turn {prev_turn} ({prev_res})]"
                                     )
+                                    if stats is not None:
+                                        stats["tool_outputs_omitted"] += 1
                                 else:
                                     seen_content_hashes[content_hash] = (
                                         turn_idx,
@@ -136,6 +188,8 @@ class JSONContextCleaner:
                                 item_copy["text"] = (
                                     f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
                                 )
+                                if stats is not None:
+                                    stats["tool_outputs_omitted"] += 1
                             else:
                                 seen_content_hashes[content_hash] = (
                                     turn_idx,
@@ -150,6 +204,8 @@ class JSONContextCleaner:
                 if content_hash in seen_content_hashes and is_older_turn:
                     prev_turn, prev_res = seen_content_hashes[content_hash]
                     msg_copy["content"] = f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
+                    if stats is not None:
+                        stats["tool_outputs_omitted"] += 1
                 else:
                     seen_content_hashes[content_hash] = (turn_idx, f"turn_{turn_idx}")
 
@@ -175,7 +231,9 @@ class JSONContextCleaner:
             return True
         return False
 
-    def _summarize_anthropic_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _summarize_anthropic_history(
+        self, messages: list[dict[str, Any]], stats: dict[str, int] | None = None
+    ) -> list[dict[str, Any]]:
         target_idx = len(messages) - _RECENT_TURNS_TO_KEEP
         suffix_idx = None
         for i in range(target_idx, 0, -1):
@@ -194,6 +252,9 @@ class JSONContextCleaner:
         prefix = messages[:1]
         suffix = messages[suffix_idx:]
         middle = messages[1:suffix_idx]
+
+        if stats is not None:
+            stats["turns_summarized"] += len(middle)
 
         summary_text = f"[Summary of omitted {len(middle)} intermediate conversation turns]"
         summary_msg = {
@@ -282,13 +343,16 @@ class JSONContextCleaner:
 
         return count
 
-    def _inject_anthropic_cache_control(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _inject_anthropic_cache_control(
+        self, payload: dict[str, Any], stats: dict[str, int] | None = None
+    ) -> dict[str, Any]:
         existing_count = self._count_existing_cache_controls(payload)
         max_allowed = 4
         budget = max_allowed - existing_count
         if budget <= 0:
             return payload
 
+        injected = 0
         # Inject cache_control on system prompt block
         system = payload.get("system")
         if isinstance(system, list) and len(system) > 0:
@@ -296,9 +360,11 @@ class JSONContextCleaner:
             if isinstance(last_sys, dict) and "cache_control" not in last_sys:
                 last_sys["cache_control"] = {"type": "ephemeral"}
                 budget -= 1
+                injected += 1
         elif isinstance(system, str):
             payload["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
             budget -= 1
+            injected += 1
 
         # Inject cache_control on tools definition if present
         if budget > 0:
@@ -308,6 +374,7 @@ class JSONContextCleaner:
                 if isinstance(last_tool, dict) and "cache_control" not in last_tool:
                     last_tool["cache_control"] = {"type": "ephemeral"}
                     budget -= 1
+                    injected += 1
 
         # Inject cache_control on recent messages history turn
         if budget > 0:
@@ -321,15 +388,25 @@ class JSONContextCleaner:
                         if isinstance(last_block, dict) and "cache_control" not in last_block:
                             last_block["cache_control"] = {"type": "ephemeral"}
                             budget -= 1
+                            injected += 1
                     elif isinstance(content, str):
                         target_msg["content"] = [
                             {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
                         ]
                         budget -= 1
+                        injected += 1
+
+        if stats is not None:
+            stats["cache_control_injected"] += injected
 
         return payload
 
-    def _clean_openai(self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]) -> dict[str, Any]:
+    def _clean_openai(
+        self,
+        payload: dict[str, Any],
+        seen_content_hashes: dict[str, tuple[int, str]],
+        stats: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
         messages = payload.get("messages", [])
         if not isinstance(messages, list):
             return payload
@@ -350,6 +427,8 @@ class JSONContextCleaner:
                 if content_hash in seen_content_hashes and is_older_turn:
                     prev_turn, prev_res = seen_content_hashes[content_hash]
                     msg_copy["content"] = f"[Omitted: Message content is identical to Turn {prev_turn} ({prev_res})]"
+                    if stats is not None:
+                        stats["tool_outputs_omitted"] += 1
                 else:
                     seen_content_hashes[content_hash] = (turn_idx, f"turn_{turn_idx}")
 
@@ -386,6 +465,8 @@ class JSONContextCleaner:
                 suffix = cleaned_messages[suffix_idx:]
                 middle_count = len(cleaned_messages) - len(prefix) - len(suffix)
                 if middle_count > 0:
+                    if stats is not None:
+                        stats["turns_summarized"] += middle_count
                     summary_msg = {
                         "role": "assistant",
                         "content": f"[Summary of omitted {middle_count} intermediate conversation turns]",
@@ -396,7 +477,12 @@ class JSONContextCleaner:
         payload["messages"] = cleaned_messages
         return payload
 
-    def _clean_gemini(self, payload: dict[str, Any], seen_content_hashes: dict[str, tuple[int, str]]) -> dict[str, Any]:
+    def _clean_gemini(
+        self,
+        payload: dict[str, Any],
+        seen_content_hashes: dict[str, tuple[int, str]],
+        stats: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
         contents = payload.get("contents")
         if contents is None or not isinstance(contents, list):
             return payload
@@ -425,6 +511,8 @@ class JSONContextCleaner:
                         if text_hash in seen_content_hashes and is_older_turn:
                             prev_turn, prev_res = seen_content_hashes[text_hash]
                             part_copy["text"] = f"[Omitted: Content is identical to Turn {prev_turn} ({prev_res})]"
+                            if stats is not None:
+                                stats["tool_outputs_omitted"] += 1
                         else:
                             seen_content_hashes[text_hash] = (turn_idx, f"turn_{turn_idx}")
 
@@ -450,12 +538,15 @@ class JSONContextCleaner:
                 prefix = cleaned_contents[:1]
                 suffix = cleaned_contents[suffix_idx:]
                 middle_count = len(cleaned_contents) - len(prefix) - len(suffix)
-                summary_msg = {
-                    "role": "model",
-                    "parts": [{"text": f"[Summary of omitted {middle_count} intermediate conversation turns]"}],
-                }
-                cleaned_contents = [*prefix, summary_msg, *suffix]
-                cleaned_contents = self._merge_consecutive_roles(cleaned_contents)
+                if middle_count > 0:
+                    if stats is not None:
+                        stats["turns_summarized"] += middle_count
+                    summary_msg = {
+                        "role": "model",
+                        "parts": [{"text": f"[Summary of omitted {middle_count} intermediate conversation turns]"}],
+                    }
+                    cleaned_contents = [*prefix, summary_msg, *suffix]
+                    cleaned_contents = self._merge_consecutive_roles(cleaned_contents)
 
         payload["contents"] = cleaned_contents
         return payload
