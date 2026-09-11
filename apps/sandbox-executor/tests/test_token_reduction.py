@@ -2882,8 +2882,9 @@ def test_setup_token_reduction_proxy_chmod_oserror_fallback(monkeypatch):
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 
     # Must complete without raising OSError
-    _mounts, envs = setup_token_reduction_proxy(mitm_web=False)
+    mounts, envs = setup_token_reduction_proxy(mitm_web=False)
     teardown_token_reduction_proxy()
+    assert mounts is not None
     assert "HTTP_PROXY" in envs
 
 
@@ -3320,7 +3321,7 @@ def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 
-    _mounts, _envs = setup_token_reduction_proxy(mitm_web=False)
+    setup_token_reduction_proxy(mitm_web=False)
     teardown_token_reduction_proxy()
 
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
@@ -3379,7 +3380,7 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 
-    _mounts, _envs = setup_token_reduction_proxy(mitm_web=True)
+    setup_token_reduction_proxy(mitm_web=True)
     teardown_token_reduction_proxy()
 
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
